@@ -100,16 +100,30 @@ class ResearchResult:
             source_type = source.get('source', 'Unknown')
             date = source.get('date', '')
             
-            # Format the reference
-            ref_text = f"[{ref_id}] {title}"
-            if url:
-                ref_text += f" - {url}"
+            # Improved reference formatting with markdown
+            ref_text = f"**[{ref_id}]** "
+            
+            # Format title with emphasis if available
+            if title:
+                ref_text += f"*{title}*"
+            
+            # Format the reference details in a clean, consistent way
+            details = []
+            if source_type and source_type != "Unknown":
+                details.append(f"**Source**: {source_type}")
             if date:
-                ref_text += f" ({date})"
-            if source_type:
-                ref_text += f" [Source: {source_type}]"
-                
+                details.append(f"**Date**: {date}")
+            
+            # Add details if we have any
+            if details:
+                ref_text += " - " + ", ".join(details)
+            
+            # Add URL as a proper markdown link if available
+            if url:
+                ref_text += f"\n  <{url}>"
+            
             md.append(ref_text)
+            md.append("") # Add blank line between references for better readability
         md.append("")
         
         # Add concise research process stats

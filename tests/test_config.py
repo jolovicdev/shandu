@@ -42,7 +42,8 @@ class TestConfig(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_load_config_from_file(self):
         """Test loading configuration from file."""
-        with patch.object(Config, "_config_path", self.config_path):
+        # We need to patch as an instance attribute, not a class attribute
+        with patch('shandu.config.os.path.expanduser', return_value=self.config_path):
             config = Config()
             
             # Check if config was loaded correctly
@@ -61,7 +62,7 @@ class TestConfig(unittest.TestCase):
     })
     def test_load_config_from_env(self):
         """Test loading configuration from environment variables."""
-        with patch.object(Config, "_config_path", self.config_path):
+        with patch('shandu.config.os.path.expanduser', return_value=self.config_path):
             config = Config()
             
             # Check if environment variables override file config
@@ -73,7 +74,7 @@ class TestConfig(unittest.TestCase):
     
     def test_set_and_save(self):
         """Test setting and saving configuration."""
-        with patch.object(Config, "_config_path", self.config_path):
+        with patch('shandu.config.os.path.expanduser', return_value=self.config_path):
             config = Config()
             
             # Set new values
@@ -84,16 +85,15 @@ class TestConfig(unittest.TestCase):
             config.save()
             
             # Load config again to check if values were saved
-            new_config = Config()
-            with patch.object(new_config, "_config_path", self.config_path):
-                new_config._load_config()
+            with patch('shandu.config.os.path.expanduser', return_value=self.config_path):
+                new_config = Config()
                 
                 self.assertEqual(new_config.get("api", "model"), "new-model")
                 self.assertEqual(new_config.get("search", "max_results"), 20)
     
     def test_get_with_default(self):
         """Test getting configuration with default value."""
-        with patch.object(Config, "_config_path", self.config_path):
+        with patch('shandu.config.os.path.expanduser', return_value=self.config_path):
             config = Config()
             
             # Get existing value

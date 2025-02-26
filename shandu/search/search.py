@@ -6,7 +6,8 @@ from typing import List, Dict, Optional, Union, Any, Tuple
 from langchain_community.tools import DuckDuckGoSearchResults, DuckDuckGoSearchRun
 from googlesearch import search as google_search
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import time
 import hashlib
 import json
@@ -84,14 +85,41 @@ class SearchCache:
     
     def set(self, query: str, engine: str, results: List[Any]):
         """Cache search results."""
-        # Caching is temporarily disabled to avoid serialization errors
-        return
+        try:
+            key = self._get_cache_key(query, engine)
+            path = self._get_cache_path(key)
+            
+            # Create serializable results
+            serializable_results = []
+            for r in results:
+                if hasattr(r, 'to_dict'):
+                    serializable_results.append(r.to_dict())
+                elif isinstance(r, dict):
+                    serializable_results.append(r)
+                else:
+                    # Skip non-serializable results
+                    continue
+            
+            with open(path, 'w') as f:
+                json.dump({
+                    'timestamp': time.time(),
+                    'results': serializable_results
+                }, f)
+                
+        except Exception as e:
+            print(f"Error caching search results: {e}")
+            # Failures should be silent - don't impact the main functionality
 
 class UnifiedSearcher:
     """
     Unified search interface combining results from multiple search engines.
     Supports DuckDuckGo, Google, Wikipedia, and arXiv with caching and parallel processing.
+    Uses a shared ThreadPoolExecutor for better resource management.
     """
+    # Class-level executor for thread pool reuse
+    _executor = None
+    _executor_lock = None
+    
     def __init__(
         self,
         proxy: Optional[str] = None,
@@ -120,8 +148,17 @@ class UnifiedSearcher:
         # Initialize cache
         self.cache = SearchCache(ttl=cache_ttl)
         
-        # Set up thread pool for parallel searches
-        self.executor = ThreadPoolExecutor(max_workers=5)
+        # Use a shared executor for better resource management
+        if not hasattr(UnifiedSearcher, '_executor'):
+            UnifiedSearcher._executor_lock = threading.Lock()
+            with UnifiedSearcher._executor_lock:
+                if not hasattr(UnifiedSearcher, '_executor'):
+                    UnifiedSearcher._executor = ThreadPoolExecutor(max_workers=6)
+        
+        self.executor = UnifiedSearcher._executor
+        
+        # Add request timeout to prevent hanging
+        self.request_timeout = 10  # 10 second timeout for all requests
 
     async def _async_google_search(self, query: str, num_results: int) -> List[SearchResult]:
         """Perform Google search asynchronously with improved error handling and relevance filtering."""

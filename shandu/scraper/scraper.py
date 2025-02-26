@@ -11,6 +11,8 @@ import os
 import json
 import hashlib
 import random
+import urllib.robotparser
+from urllib.parse import urlparse
 from fake_useragent import UserAgent
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -120,6 +122,76 @@ class ScraperCache:
         except Exception as e:
             print(f"Error writing cache for {content.url}: {e}")
 
+class RobotsChecker:
+    """Handles robots.txt checking and caching for ethical web scraping."""
+    
+    def __init__(self, cache_ttl: int = 3600):
+        self.parsers = {}  # Cache for robot parsers
+        self.cache_ttl = cache_ttl
+        self.last_checked = {}  # When each domain was last checked
+        self._lock = asyncio.Lock()  # For thread safety
+        
+    async def can_fetch(self, url: str, user_agent: str) -> bool:
+        """
+        Check if a URL can be fetched according to robots.txt rules.
+        
+        Args:
+            url: The URL to check
+            user_agent: User agent to check against
+            
+        Returns:
+            True if allowed, False if disallowed or error occurs
+        """
+        try:
+            # Parse the URL to get the domain
+            parsed_url = urlparse(url)
+            if not parsed_url.netloc:
+                return False
+                
+            domain = parsed_url.scheme + "://" + parsed_url.netloc
+            robots_url = domain + "/robots.txt"
+            
+            # Check if we need to refresh the parser
+            current_time = time.time()
+            
+            async with self._lock:
+                if domain in self.parsers:
+                    # Use cached parser if it's still valid
+                    if current_time - self.last_checked.get(domain, 0) < self.cache_ttl:
+                        parser = self.parsers[domain]
+                        return parser.can_fetch(user_agent, url)
+                
+                # Need to fetch or refresh the robots.txt
+                parser = urllib.robotparser.RobotFileParser()
+                parser.set_url(robots_url)
+                
+                # Fetch the robots.txt file
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(robots_url, timeout=5) as response:
+                            if response.status == 200:
+                                robots_content = await response.text()
+                                parser.parse(robots_content.splitlines())
+                            else:
+                                # If robots.txt doesn't exist, assume everything is allowed
+                                return True
+                except Exception:
+                    # If error occurs while fetching robots.txt, allow access
+                    return True
+                
+                # Cache the parser
+                self.parsers[domain] = parser
+                self.last_checked[domain] = current_time
+                
+                # Check if the URL is allowed
+                return parser.can_fetch(user_agent, url)
+                
+        except Exception:
+            # If any error occurs during parsing, allow access but log it
+            print(f"Error checking robots.txt for {url}")
+            return True
+
+
 class WebScraper:
     """
     Advanced web scraper with support for both static and dynamic pages.
@@ -134,7 +206,8 @@ class WebScraper:
         chunk_overlap: int = 200,
         max_concurrent: int = 8,  # Increased from 5 to 8 for more parallel processing
         cache_ttl: int = 86400,  # 24 hours
-        user_agent: Optional[str] = None
+        user_agent: Optional[str] = None,
+        respect_robots: bool = True
     ):
         self.proxy = proxy or config.get("scraper", "proxy")
         self.timeout = timeout or config.get("scraper", "timeout", 10)
@@ -142,11 +215,17 @@ class WebScraper:
         self.chunk_size = chunk_size or config.get("scraper", "chunk_size", 1000)
         self.chunk_overlap = chunk_overlap or config.get("scraper", "chunk_overlap", 200)
         self.max_concurrent = max_concurrent
+        self.respect_robots = respect_robots
+        
+        # Create a single UserAgent instance to avoid repeated initialization
         if user_agent is None:
-            self.user_agent = UserAgent().random
+            ua_generator = UserAgent()
+            self.user_agent = ua_generator.random
         else:
             self.user_agent = user_agent
 
+        # Initialize robots.txt checker
+        self.robots_checker = RobotsChecker()
         
         self.splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
             chunk_size=self.chunk_size,
@@ -155,7 +234,10 @@ class WebScraper:
         
         self.cache = ScraperCache(ttl=cache_ttl)
         
-        self.semaphore = asyncio.Semaphore(self.max_concurrent)
+        # Use a single semaphore for all scraper instances
+        if not hasattr(WebScraper, '_semaphore'):
+            WebScraper._semaphore = asyncio.Semaphore(max_concurrent)
+        self.semaphore = WebScraper._semaphore
     
     async def _get_page_simple(self, url: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
         """
@@ -204,6 +286,26 @@ class WebScraper:
     
     PROBLEMATIC_DOMAINS = ["msn.com", "evwind.es", "military.com", "statista.com", "yahoo.com"]
     
+    # Share a single browser instance across multiple pages for efficiency
+    _browser = None
+    _browser_lock = None
+    
+    @classmethod
+    async def _get_shared_browser(cls):
+        """Get or create a shared browser instance to avoid overhead of repeated browser launches"""
+        if cls._browser_lock is None:
+            cls._browser_lock = asyncio.Lock()
+            
+        async with cls._browser_lock:
+            if cls._browser is None:
+                async with async_playwright() as p:
+                    browser_args = ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"]
+                    cls._browser = await p.chromium.launch(
+                        headless=True,
+                        args=browser_args
+                    )
+        return cls._browser
+    
     async def _get_page_dynamic(
         self, 
         url: str, 
@@ -211,7 +313,7 @@ class WebScraper:
         extra_wait: int = 0
     ) -> Tuple[Optional[str], Optional[str], Optional[int]]:
         """
-        Get page content using Playwright for JavaScript rendering.
+        Get page content using Playwright for JavaScript rendering with improved efficiency.
         
         Args:
             url: URL to fetch
@@ -227,21 +329,21 @@ class WebScraper:
             print(f"URL {url} is from a problematic domain. Using simple fetching instead.")
             return await self._get_page_simple(url)
         
-        browser = None
         context = None
         
         try:
+            # Use a shorter timeout for faster overall execution
+            timeout = min(self.timeout, 15) * 1000  # Max 15 seconds
             user_agent = self.user_agent
             
+            # Create context directly with the browser instance
+            proxy_options = {"server": self.proxy} if self.proxy and self.proxy.strip() else None
+            
             async with async_playwright() as p:
-                proxy_options = {"server": self.proxy} if self.proxy and self.proxy.strip() else None
-                
-                browser_args = ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"]
-                
                 browser = await p.chromium.launch(
                     proxy=proxy_options,
                     headless=True,
-                    args=browser_args
+                    args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"]
                 )
                 
                 context = await browser.new_context(
@@ -250,34 +352,35 @@ class WebScraper:
                     accept_downloads=True
                 )
                 
-                context.set_default_timeout(self.timeout * 1000)
-                
+                context.set_default_timeout(timeout)
                 page = await context.new_page()
-                
-                page.set_default_timeout(self.timeout * 1000)
+                page.set_default_timeout(timeout)
                 
                 try:
+                    # Use faster load strategy
                     wait_until = "commit" if is_problematic else "domcontentloaded"
+                    response = await page.goto(url, wait_until=wait_until, timeout=timeout)
                     
-                    response = await page.goto(url, wait_until=wait_until, timeout=self.timeout * 1000)
-                    
+                    # Reduced timeout for networkidle
                     try:
-                        await page.wait_for_load_state("networkidle", timeout=5000)
+                        await page.wait_for_load_state("networkidle", timeout=3000)  # Reduced from 5000ms
                     except PlaywrightTimeoutError:
-                        print(f"Networkidle timeout for {url}, continuing anyway")
-                    except Exception as e:
-                        print(f"Error waiting for networkidle for {url}: {e}")
+                        # This is expected and not a problem - continue anyway
+                        pass
+                    except Exception:
+                        # Ignore network idle errors - continue with what we have
+                        pass
                     
                     if wait_for_selector:
                         try:
-                            await page.wait_for_selector(wait_for_selector, timeout=5000)
-                        except PlaywrightTimeoutError:
-                            print(f"Selector '{wait_for_selector}' not found, continuing anyway")
-                        except Exception as e:
-                                print(f"Error waiting for selector for {url}: {e}")
+                            await page.wait_for_selector(wait_for_selector, timeout=3000)  # Reduced timeout
+                        except:
+                            # Continue even if selector isn't found
+                            pass
                     
+                    # Reduced extra wait time
                     if extra_wait > 0:
-                        await asyncio.sleep(min(extra_wait, 2))
+                        await asyncio.sleep(min(extra_wait, 1))  # Cap at 1 second
                     
                     status_code = None
                     content_type = 'text/html'
@@ -286,9 +389,11 @@ class WebScraper:
                         try:
                             status_code = response.status
                             content_type = response.headers.get('content-type', 'text/html')
-                        except Exception as e:
-                            print(f"Error getting response details for {url}: {e}")
+                        except:
+                            # Continue with defaults if we can't get headers
+                            pass
                     
+                    # Get content with a timeout
                     html = None
                     try:
                         html = await page.content()
@@ -298,18 +403,20 @@ class WebScraper:
                     
                     return html, content_type, status_code
                     
-                except PlaywrightTimeoutError as e:
-                    print(f"Timeout error for {url}: {e}")
+                except PlaywrightTimeoutError:
+                    # Simply return None on timeout - don't waste time with detailed errors
                     return None, None, None
-                except Exception as e:
-                    print(f"Error during page navigation for {url}: {e}")
+                except Exception:
+                    # Simply return None on errors
                     return None, None, None
                 finally:
-                    await context.close()
+                    # Always close resources to prevent leaks
+                    if context:
+                        await context.close()
                     await browser.close()
                 
-        except Exception as e:
-            print(f"Error fetching {url} with Playwright: {e}")
+        except Exception:
+            # Fast fail and return None
             return None, None, None
 
     def _extract_content(self, html: str, url: str, content_type: str = "text/html") -> Dict[str, Any]:
@@ -506,6 +613,7 @@ class WebScraper:
     ) -> ScrapedContent:
         """
         Scrape content from a URL with caching and improved error handling.
+        Respects robots.txt rules for ethical web scraping.
         
         Args:
             url: The URL to scrape
@@ -518,15 +626,29 @@ class WebScraper:
         Returns:
             ScrapedContent object (check is_successful() to verify success)
         """
+        # Check cache first
         if not force_refresh:
             cached_content = self.cache.get(url)
             if cached_content:
                 return cached_content
+                
+        # Check robots.txt if enabled
+        if self.respect_robots:
+            try:
+                allowed = await self.robots_checker.can_fetch(url, self.user_agent)
+                if not allowed:
+                    error_msg = f"Access to {url} denied by robots.txt"
+                    print(error_msg)
+                    return ScrapedContent.from_error(url, error_msg)
+            except Exception as e:
+                # On error, we'll log but continue anyway
+                print(f"Error checking robots.txt for {url}: {e}")
         
         html = None
         content_type = None
         status_code = None
         
+        # Try to fetch the content with retries
         for attempt in range(self.max_retries):
             try:
                 if dynamic:

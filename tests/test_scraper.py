@@ -93,27 +93,11 @@ class TestWebScraper(unittest.TestCase):
         """Set up test environment."""
         self.scraper = WebScraper()
     
-    @patch("shandu.scraper.scraper.BeautifulSoup")
-    def test_extract_links(self, mock_bs):
+    def test_extract_links(self):
         """Test extract_links method."""
-        # Mock BeautifulSoup
-        mock_soup = MagicMock()
-        mock_bs.return_value = mock_soup
-        
-        # Mock find_all for links
-        mock_a1 = MagicMock()
-        mock_a1.__getitem__.return_value = "https://example.com/page1"
-        mock_a2 = MagicMock()
-        mock_a2.__getitem__.return_value = "https://example.com/page2"
-        mock_a3 = MagicMock()
-        mock_a3.__getitem__.return_value = "/relative/path"
-        mock_a4 = MagicMock()
-        mock_a4.__getitem__.return_value = "javascript:void(0)"
-        
-        mock_soup.find_all.return_value = [mock_a1, mock_a2, mock_a3, mock_a4]
-        
-        # Test with absolute URLs
-        links = WebScraper.extract_links("<html><body><a href='https://example.com/page1'>Link 1</a><a href='https://example.com/page2'>Link 2</a></body></html>")
+        # Test with absolute URLs - no need to mock, let's use the actual implementation
+        html = "<html><body><a href='https://example.com/page1'>Link 1</a><a href='https://example.com/page2'>Link 2</a><a href='javascript:void(0)'>Link 3</a></body></html>"
+        links = WebScraper.extract_links(html)
         self.assertEqual(links, ["https://example.com/page1", "https://example.com/page2"])
         
         # Test with base URL for relative paths

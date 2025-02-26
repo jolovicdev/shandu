@@ -1,6 +1,9 @@
 # Shandu Deep Research System
 
-An AI-driven research system that performs comprehensive, iterative research on any topic using multiple search engines and LLMs.
+An AI-driven research system that performs comprehensive, iterative research on any topic using multiple search engines and LLMs to generate detailed, long-form reports.
+
+[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 ## Algorithm
 
@@ -120,11 +123,11 @@ shandu research "Your research query" \
     --include-chain-of-thought # Include research process details
 ```
 ```bash
-shandu research "What are the latest innovations in 3D bioprinting of human tissues, and how do they impact organ transplant viability as of early 2025?" --depth 4 --breadth 4 -o "report3.md"
+shandu research "What are the technological advancements in renewable energy storage (e.g., batteries, hydrogen) between 2020 and 2025, and how have they impacted energy grid reliability?" --depth 3 --breadth 3 -o "qwen72b-instruct-batteries.md"
 
-This took about 30 minutes to run, you can see results in examples/3D_bioprinting.md
-Model used was Qwen/Qwen2.5-72B-Instruct-fast - from studio.nebius.ai
-Use o3-mini for better results!
+This took about ~16 minutes to run, you can see results in examples/qwen72b-instruct-batteries.md
+#Model used was Qwen/Qwen2.5-72B-Instruct-fast - from studio.nebius.ai
+#Use o3-mini for better results!
 
 ```
 

@@ -64,7 +64,7 @@ class ResearchGraph:
             api_key=api_key,
             model=model,
             temperature=temperature,
-            max_tokens=4096
+            max_tokens=8192  # Increased max tokens to support more comprehensive responses
         )
         self.searcher = searcher or UnifiedSearcher()
         self.scraper = scraper or WebScraper()
@@ -207,34 +207,27 @@ Each query should be on a separate line and should be specific enough to return 
         recent_queries = state["subqueries"][-state["breadth"]:]
         processed_queries = set()
         
-        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
-            for i, subquery in enumerate(recent_queries):
-                if subquery in processed_queries:
-                    continue
-                
-                processed_queries.add(subquery)
-                query_task = progress.add_task(f"[yellow]Searching: {subquery}", total=1)
-                
-                try:
-                    self.log_chain_of_thought(state, f"Searching for: {subquery}")
-                    console.print(f"[dim]Executing search for: {subquery}[/dim]")
-                    search_results = await self.searcher.search(subquery)
-                    progress.update(query_task, advance=0.3, description=f"[yellow]Found {len(search_results)} results for: {subquery}")
-                    
-                    urls = []
-                    seen = set()
-                    
-                    async def is_relevant_url(url, title, snippet, query):
-                        irrelevant_domains = ["pinterest", "instagram", "facebook", "twitter", "youtube", "tiktok",
-                                             "reddit", "quora", "linkedin", "amazon.com", "ebay.com", "etsy.com",
-                                             "walmart.com", "target.com"]
-                        if any(domain in url.lower() for domain in irrelevant_domains):
-                            return False
-                        
-                        prompt = ChatPromptTemplate.from_messages([
-                            ("system", """You are evaluating if a search result is relevant to a query.
+        # Create a simple LRU cache for URL relevance checks to reduce redundant LLM calls
+        url_relevance_cache = {}
+        max_cache_size = 100
+        
+        async def is_relevant_url(url, title, snippet, query):
+            # First use simple heuristics to avoid LLM calls for obviously irrelevant domains
+            irrelevant_domains = ["pinterest", "instagram", "facebook", "twitter", "youtube", "tiktok",
+                                "reddit", "quora", "linkedin", "amazon.com", "ebay.com", "etsy.com",
+                                "walmart.com", "target.com"]
+            if any(domain in url.lower() for domain in irrelevant_domains):
+                return False
+            
+            # Check cache before making LLM call
+            cache_key = f"{url}:{query}"
+            if cache_key in url_relevance_cache:
+                return url_relevance_cache[cache_key]
+            
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are evaluating if a search result is relevant to a query.
 Respond with a single word: either "RELEVANT" or "IRRELEVANT"."""),
-                            ("user", """Query: {query}
+                ("user", """Query: {query}
 Search Result:
 Title: {title}
 URL: {url}
@@ -244,123 +237,230 @@ Is this result relevant to the query? Consider:
 2. Does the source seem authoritative for this type of information?
 3. Is the content likely to provide factual information rather than opinion or marketing?
 IMPORTANT: Respond with only one word: RELEVANT or IRRELEVANT""")
-                        ])
-                        chain = prompt | self.llm | StrOutputParser()
-                        result = await chain.ainvoke({"query": query, "title": title, "url": url, "snippet": snippet})
-                        return "RELEVANT" in result.upper()
+            ])
+            chain = prompt | self.llm | StrOutputParser()
+            result = await chain.ainvoke({"query": query, "title": title, "url": url, "snippet": snippet})
+            is_relevant = "RELEVANT" in result.upper()
+            
+            # Update cache with result
+            if len(url_relevance_cache) >= max_cache_size:
+                # Remove a random item if cache is full
+                url_relevance_cache.pop(next(iter(url_relevance_cache)))
+            url_relevance_cache[cache_key] = is_relevant
+            
+            return is_relevant
+        
+        # Process multiple queries in parallel
+        async def process_query(subquery, query_task, progress):
+            if subquery in processed_queries:
+                return
+            
+            processed_queries.add(subquery)
+            
+            try:
+                self.log_chain_of_thought(state, f"Searching for: {subquery}")
+                console.print(f"[dim]Executing search for: {subquery}[/dim]")
+                search_results = await self.searcher.search(subquery)
+                progress.update(query_task, advance=0.3, description=f"[yellow]Found {len(search_results)} results for: {subquery}")
+                
+                urls = []
+                seen = set()
+                
+                # Batch URL relevance checks with asyncio.gather
+                relevance_tasks = []
+                for i, result in enumerate(search_results):
+                    if len(urls) >= 5:  # Maximum number of URLs to analyze
+                        break
+                    if (result.url and isinstance(result.url, str) and result.url not in seen and 
+                        result.url.startswith('http')):
+                        relevance_tasks.append((i, result, is_relevant_url(result.url, result.title, result.snippet, subquery)))
+                
+                # Wait for all relevance checks to complete
+                for i, result, relevance_task in relevance_tasks:
+                    is_relevant = await relevance_task
+                    if is_relevant and len(urls) < 5:
+                        urls.append(result.url)
+                        seen.add(result.url)
+                        self.log_chain_of_thought(state, f"Selected relevant URL: {result.url}")
+                        console.print(f"[green]Selected for analysis:[/green] {result.title}")
+                        console.print(f"[blue]URL:[/blue] {result.url}")
+                        if result.snippet:
+                            console.print(f"[dim]{result.snippet[:150]}{'...' if len(result.snippet) > 150 else ''}[/dim]")
+                        console.print("")
+                
+                if urls:
+                    progress.update(query_task, advance=0.2, description=f"[yellow]Scraping {len(urls)} pages for: {subquery}")
+                    scraped = await self.scraper.scrape_urls(urls, dynamic=True)
+                    successful_scraped = [s for s in scraped if s.is_successful()]
                     
-                    for result in search_results:
-                        if len(urls) >= 3:
-                            break
-                        if (result.url and isinstance(result.url, str) and result.url not in seen and 
-                            result.url.startswith('http') and await is_relevant_url(result.url, result.title, result.snippet, subquery)):
-                            urls.append(result.url)
-                            seen.add(result.url)
-                            self.log_chain_of_thought(state, f"Selected relevant URL: {result.url}")
-                            console.print(f"[green]Selected for analysis:[/green] {result.title}")
-                            console.print(f"[blue]URL:[/blue] {result.url}")
-                            if result.snippet:
-                                console.print(f"[dim]{result.snippet[:150]}{'...' if len(result.snippet) > 150 else ''}[/dim]")
-                            console.print("")
-                    
-                    if urls:
-                        progress.update(query_task, advance=0.2, description=f"[yellow]Scraping {len(urls)} pages for: {subquery}")
-                        scraped = await self.scraper.scrape_urls(urls, dynamic=True)
-                        successful_scraped = [s for s in scraped if s.is_successful()]
+                    if successful_scraped:
+                        progress.update(query_task, advance=0.2, description=f"[yellow]Analyzing content for: {subquery}")
+                        content_text = ""
                         
-                        if successful_scraped:
-                            progress.update(query_task, advance=0.2, description=f"[yellow]Analyzing content for: {subquery}")
-                            content_text = ""
+                        # Process content extraction and reliability evaluation in parallel
+                        async def process_scraped_item(item):
+                            main_content = await self.scraper.extract_main_content(item)
                             
-                            async def evaluate_source_reliability(url, title, content):
-                                prompt = ChatPromptTemplate.from_messages([
-                                    ("system", """Evaluate the reliability of this source based on the following criteria:
-- Domain reputation (e.g., known news outlets, academic institutions, government websites)
-- Author expertise (if identifiable)
-- Presence of citations or references
-- Objectivity and lack of bias
-- Recency and relevance to the query
-Respond with a reliability rating: HIGH, MEDIUM, or LOW, followed by a brief justification."""),
-                                    ("user", """Source URL: {url}
+                            # Combined reliability evaluation and content extraction
+                            prompt = ChatPromptTemplate.from_messages([
+                                ("system", """Analyze this source in two parts:
+PART 1: Evaluate the reliability of this source based on domain reputation, author expertise, citations, objectivity, and recency.
+PART 2: Extract comprehensive detailed information relevant to the query."""),
+                                ("user", """Source URL: {url}
 Title: {title}
-Content excerpt: {{content[:1000]}}...
-Provide a reliability rating and justification.""")
-                                ])
-                                chain = prompt | self.llm | StrOutputParser()
-                                result = await chain.ainvoke({"url": url, "title": title, "content": content})
-                                rating, justification = result.split("\n", 1)
-                                return rating.strip().upper(), justification.strip()
-                            
-                            async def extract_relevant_content(content, query):
-                                prompt = ChatPromptTemplate.from_messages([
-                                    ("system", """Summarize the provided content, focusing on information relevant to the query.
-Extract key points, facts, and data that directly address the query.
-Omit irrelevant details, advertisements, or tangential information."""),
-                                    ("user", """Query: {query}
+Query: {query}
 Content: {content}
-Provide a concise summary highlighting the most relevant information for the query.""")
-                                ])
-                                chain = prompt | self.llm | StrOutputParser()
-                                return await chain.ainvoke({"query": query, "content": content})
+
+Provide your response in two clearly separated sections:
+RELIABILITY: [HIGH/MEDIUM/LOW] followed by a brief justification (1-2 sentences)
+EXTRACTED_CONTENT: Detailed facts, statistics, data points, examples, and key information relevant to the query.""")
+                            ])
+                            chain = prompt | self.llm
+                            result = await chain.ainvoke({
+                                "url": item.url, 
+                                "title": item.title, 
+                                "query": subquery,
+                                "content": main_content[:8000]  # Reduced from 10000 to 8000 for faster processing
+                            })
                             
-                            for item in successful_scraped:
-                                main_content = await self.scraper.extract_main_content(item)
-                                reliability_rating, justification = await evaluate_source_reliability(item.url, item.title, main_content)
-                                self.log_chain_of_thought(state, f"Source {item.url} reliability: {reliability_rating} - {justification}")
-                                
-                                if reliability_rating == "LOW":
-                                    console.print(f"[yellow]Skipping low-reliability source: {item.url}[/yellow]")
-                                    continue
-                                
-                                relevant_content = await extract_relevant_content(main_content[:5000], subquery)
-                                content_text += f"\nSource: {item.url}\nTitle: {item.title}\nReliability: {reliability_rating}\nRelevant Content:\n{relevant_content}\n"
-                                console.print(f"\n[bold cyan]Analyzing page:[/bold cyan] {item.title}")
-                                console.print(f"[blue]URL:[/blue] {item.url}")
-                                console.print(f"[dim]Relevant Summary: {relevant_content[:150]}{'...' if len(relevant_content) > 150 else ''}[/dim]")
+                            # Parse the combined response
+                            response_text = result.content
+                            reliability_section = ""
+                            content_section = ""
                             
+                            if "RELIABILITY:" in response_text and "EXTRACTED_CONTENT:" in response_text:
+                                parts = response_text.split("EXTRACTED_CONTENT:")
+                                reliability_section = parts[0].replace("RELIABILITY:", "").strip()
+                                content_section = parts[1].strip()
+                            else:
+                                # Fallback if format wasn't followed
+                                reliability_section = "MEDIUM (Unable to parse reliability assessment)"
+                                content_section = response_text
+                            
+                            # Extract rating
+                            rating = "MEDIUM"
+                            if "HIGH" in reliability_section.upper():
+                                rating = "HIGH"
+                            elif "LOW" in reliability_section.upper():
+                                rating = "LOW"
+                            
+                            justification = reliability_section.replace("HIGH", "").replace("MEDIUM", "").replace("LOW", "").strip()
+                            if justification.startswith("(") and justification.endswith(")"):
+                                justification = justification[1:-1].strip()
+                            
+                            return {
+                                "item": item,
+                                "rating": rating,
+                                "justification": justification,
+                                "content": content_section
+                            }
+                        
+                        # Process all items in parallel
+                        processing_tasks = [process_scraped_item(item) for item in successful_scraped]
+                        processed_items = await asyncio.gather(*processing_tasks)
+                        
+                        # Build content text from processed items
+                        relevant_items = []
+                        for processed in processed_items:
+                            if processed["rating"] == "LOW":
+                                console.print(f"[yellow]Skipping low-reliability source: {processed['item'].url}[/yellow]")
+                                continue
+                            
+                            relevant_items.append(processed)
+                            content_text += f"\nSource: {processed['item'].url}\nTitle: {processed['item'].title}\nReliability: {processed['rating']}\nRelevant Content:\n{processed['content']}\n\n"
+                            console.print(f"\n[bold cyan]Analyzing page:[/bold cyan] {processed['item'].title}")
+                            console.print(f"[blue]URL:[/blue] {processed['item'].url}")
+                            console.print(f"[dim]Extracted Content: {processed['content'][:150]}{'...' if len(processed['content']) > 150 else ''}[/dim]")
+                        
+                        if relevant_items:
+                            # Improved content analysis prompt for more cohesive organization
                             analysis_prompt = ChatPromptTemplate.from_messages([
-                                ("system", """You are analyzing web content to extract key information and assess reliability.
-Your analysis should be thorough, balanced, and critical.
-Focus on extracting factual information while noting potential biases.
-Consider the reliability ratings provided for each source.
-Identify any contradictions between sources or within a source."""),
+                                ("system", """You are analyzing web content to extract comprehensive information and organize it thematically.
+Your analysis should be thorough and well-structured, focusing on evidence assessment and in-depth exploration.
+Group information by themes and integrate data from different sources into unified sections.
+Avoid contradictions or redundancy in your analysis.
+
+For evidence assessment:
+- Be concise when evaluating source reliability - focus on the highest and lowest credibility sources only
+- Briefly note bias or conflicts of interest in sources
+- Prioritize original research, peer-reviewed content, and official publications 
+
+For in-depth analysis:
+- Provide extensive exploration of key concepts and technologies
+- Highlight current trends, challenges and future directions
+- Present technical details when relevant to understanding the topic
+- Include comparative analysis of different methodologies or approaches"""),
                                 ("user", """Analyze the following content related to: "{query}"
 Content:
 {content}
-Provide a detailed analysis including:
-1. Key findings and facts, weighted by source reliability
-2. Any contradictions or discrepancies between sources
-3. Overall assessment of the information's credibility
-4. Suggested areas for deeper investigation
-5. If you have something to add, do so in a neutral, balanced way without bias
-Be specific and cite the sources when referring to information.""")
+
+Provide a comprehensive analysis including:
+1. Key themes and concepts identified across sources
+2. Detailed evidence and statistics organized by theme
+3. Patterns and trends evident across the sources
+4. Detailed exploration of important concepts
+
+IMPORTANT:
+Each piece of information must only appear ONCE in your analysis.
+If two sources mention the same fact, present it once with multiple citations.
+Avoid stating the same information multiple times in different sections.
+Ensure each paragraph has unique content not repeated elsewhere.
+
+Guidelines:
+- Group information by themes rather than by source
+- Integrate related information into cohesive sections
+- Include specific facts and technical details
+- Ensure proper citation of sources using [n] notation
+- Use markdown formatting to organize content effectively
+- Cite multiple sources for the same information where appropriate""")
                             ])
-                            analysis_chain = analysis_prompt | self.llm
+                            
+                            # Use more tokens but with a timeout to avoid hanging
+                            analysis_llm = self.llm.with_config({"max_tokens": 4096, "timeout": 120})
+                            analysis_chain = analysis_prompt | analysis_llm
                             analysis = analysis_chain.invoke({"query": subquery, "content": content_text})
                             
                             state["content_analysis"].append({
                                 "subquery": subquery,
                                 "analysis": analysis.content,
-                                "sources": [s.url for s in successful_scraped]
+                                "sources": [item["item"].url for item in relevant_items]
                             })
-                            state["findings"] += f"\n\n## Findings for '{subquery}':\n{analysis.content}\n"
+                            
+                            # Store findings with thematic headers
+                            state["findings"] += f"\n\n## Research on '{subquery}':\n{analysis.content}\n"
                             self.log_chain_of_thought(state, f"Analyzed content for query: {subquery}")
-                    
-                    for r in search_results:
-                        if isinstance(r, SearchResult):
-                            state["sources"].append(r.to_dict())
-                        elif isinstance(r, dict):
-                            state["sources"].append(r)
-                        else:
-                            console.print(f"[dim]Warning: Skipping non-serializable search result: {type(r)}[/dim]")
-                    
-                    progress.update(query_task, completed=True, description=f"[green]Completed: {subquery}")
-                    
-                except Exception as e:
-                    progress.update(query_task, completed=True, description=f"[red]Error: {subquery} - {str(e)}")
-                    state["messages"].append(HumanMessage(content=f"Failed to process subquery: {subquery}"))
-                    self.log_chain_of_thought(state, f"Error processing query '{subquery}': {str(e)}")
-                    console.print(f"[dim red]Error processing {subquery}: {str(e)}[/dim red]")
+                
+                for r in search_results:
+                    if isinstance(r, SearchResult):
+                        state["sources"].append(r.to_dict())
+                    elif isinstance(r, dict):
+                        state["sources"].append(r)
+                
+                progress.update(query_task, completed=True, description=f"[green]Completed: {subquery}")
+                return True
+                
+            except Exception as e:
+                progress.update(query_task, completed=True, description=f"[red]Error: {subquery} - {str(e)}")
+                state["messages"].append(HumanMessage(content=f"Failed to process subquery: {subquery}"))
+                self.log_chain_of_thought(state, f"Error processing query '{subquery}': {str(e)}")
+                console.print(f"[dim red]Error processing {subquery}: {str(e)}[/dim red]")
+                return False
+        
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+            # Create all tasks first
+            tasks = {}
+            for i, subquery in enumerate(recent_queries):
+                if subquery not in processed_queries:
+                    task_id = progress.add_task(f"[yellow]Searching: {subquery}", total=1)
+                    tasks[subquery] = task_id
+            
+            # Process queries in parallel batches to avoid overwhelming the system
+            batch_size = min(3, len(tasks))  # Process up to 3 queries at once
+            
+            for i in range(0, len(tasks), batch_size):
+                batch_queries = list(tasks.keys())[i:i+batch_size]
+                batch_tasks = [process_query(query, tasks[query], progress) for query in batch_queries]
+                await asyncio.gather(*batch_tasks)
         
         state["current_depth"] += 1
         elapsed_time = time.time() - state["start_time"]
@@ -377,27 +477,44 @@ Be specific and cite the sources when referring to information.""")
 
         current_date = state["current_date"]
 
-        # Updated system prompt for detailed, Grok-like reports
+        # Improved system prompt for detailed, cohesive reports
         system_prompt = f"""You are synthesizing research findings into a comprehensive, detailed, and insightful report.
 Today's date is {current_date}.
 
 Your report should be:
 - Well-structured with clear sections and logical flow
-- You should not contradict yourself or provide irrelevant information in any section
-- Extremely comprehensive and detailed, providing in-depth analysis of all relevant aspects
+- Extremely comprehensive and detailed (minimum 7000+ words), providing in-depth analysis
+- Written with long, cohesive paragraphs that thoroughly explore each topic (avoid one-paragraph-per-finding structure)
+- Rich in detail, with extensive elaboration on each point rather than brief summaries
 - Balanced and objective, presenting multiple perspectives when relevant
-- Evidence-based, with numbered citations to sources [1], [2], etc.
-- Free of repetition or irrelevant content, but thorough and extensive in covering the topic
-- Substantially longer than a typical report, delving deep into the subject matter (>= 2000 words if possible)
+- Evidence-based, with proper citations to sources using [n] format, consistently linked to the reference section
+- Free of repetition while being thorough and extensive in covering the topic
 - Tailored to the user's desired detail level: {state['detail_level']}
 
-Use markdown formatting to organize the content effectively.
-IMPORTANT: Use numbered references in square brackets [1], [2], etc. when citing information from sources.
-These will be linked to the References section that will be automatically generated.
+IMPORTANT REGARDING REPETITION AND CONTRADICTIONS:
+- Each key fact, statistic, or piece of information must appear only ONCE in your report
+- If you need to refer to the same information in different sections, reference it without repeating all the details
+- Check each paragraph to ensure it contains unique information not stated elsewhere
+- Ensure consistent treatment of facts across the entire report
+- If sources present contradictory information, acknowledge this explicitly rather than presenting both as fact
+- Do not repeat the same example, statistic, or explanation in different sections
+
+Use advanced markdown formatting to organize content effectively:
+- Create tables for comparing data or options
+- Use bullet points for listings where appropriate
+- Include section headers (# and ##) to organize content
+- Use blockquotes for important quotations
+- Add horizontal rules (---) to separate major sections
+- Consider including a table of contents for longer reports
+
+IMPORTANT: For citations, use numbered references in square brackets [1], [2], etc. when citing information.
+Always ensure each citation corresponds to the correct entry in the References section.
+Verify that every source cited in the text appears in the References section with matching numbers.
 
 Ensure the report includes:
 - All relevant statistics, trends, and data points with detailed analysis
-- Thorough exploration of the topic from multiple angles
+- Multiple paragraphs of exploration for each major topic (rather than one paragraph per source)
+- Long-form content that deeply explores each topic with proper transitions between related ideas
 - Detailed assessment of source reliability and evidence strength
 - Comprehensive discussion of any contradictions or discrepancies in the findings"""
 
@@ -406,7 +523,7 @@ Ensure the report includes:
 
 IMPORTANT: DO NOT include an "Objective" section at the beginning of the report. Start directly with an Executive Summary section."""
 
-        # Generate a comprehensive report in a single step to ensure consistency
+        # Improved prompt for cohesive, long-form report generation
         report_prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("user", """Create a comprehensive research report for the query: {query}
@@ -416,25 +533,37 @@ Number of sources: {num_sources}
 
 Your report should include the following sections:
 1. Executive Summary - A concise overview of key findings (300-500 words)
-2. In-Depth Analysis - Detailed examination of all relevant aspects
-3. Evidence Assessment - Evaluation of source reliability and evidence strength
+2. In-Depth Analysis - Detailed, long-form examination of all relevant aspects
+   - Write multiple paragraphs for each subtopic (not just one paragraph per finding)
+   - Integrate information from multiple sources within cohesive sections
+   - Ensure thorough exploration of each aspect (minimum 3000+ words for this section)
+3. Evidence Assessment - CONCISE evaluation of source reliability
+   - Focus only on the most and least reliable sources
+   - Briefly note any potential biases or conflicts of interest
+   - Keep this section focused and brief (maximum 500 words)
 4. Uncertainties and Open Questions - Gaps in knowledge that remain
 5. Recommendations for Further Research - Based on identified gaps
-7. Anything you think the user should know - Additional insights or perspectives, if any
+6. Additional Insights - Any other relevant perspectives
 
 Important guidelines:
-- Do NOT include generic, templated recommendations like "Further research is necessary to identify specific organizations"
-- All recommendations must be specific to the research findings and directly relevant to the query
-- Do NOT include phrases like "Recommendations:" or "Based on the findings of this report" in your recommendations section
-- Ensure all sections flow naturally and avoid repetitive language
-- Use numbered citations [1], [2], etc. when referencing sources
-- Maintain a neutral, analytical tone throughout
-- Ensure the report is comprehensive (5000+ words) but focused on relevant information and your analysis
-- Use markdown formatting for headings, subheadings, and lists, utilize markdown to the fullets , example would be making a table if there is comparison to be made
+- GENERATE A LONG REPORT (minimum 7000+ words) with extensive exploration of each topic
+- Write in a cohesive, flowing narrative style rather than disconnected paragraphs
+- Group related information into substantive sections even if from different sources
+- Integrate information from different sources into unified, thematic sections
+- AVOID one-paragraph-per-finding structure - instead, develop rich, multi-paragraph explorations
+- Use proper transitions between related topics to ensure smooth reading
+- EXTRACT AND INCLUDE extensive data from websites - don't summarize when detail is available
+- Allocate most content to the In-Depth Analysis section
+- Use numbered citations [1], [2], etc. consistently when referencing sources
+- Each source citation should correspond exactly to the numbered entry in the references
+- Utilize advanced markdown features (tables, blockquotes, etc.) to enhance readability
+- Create tables for comparing data points or options when appropriate
 """)
         ])
         
-        report_chain = report_prompt | self.llm
+        # Use a higher token limit for the report generation
+        report_llm = self.llm.with_config({"max_tokens": 8192})
+        report_chain = report_prompt | report_llm
         final_report = report_chain.invoke({
             "query": state["query"],
             "analyzed_findings": state["findings"],

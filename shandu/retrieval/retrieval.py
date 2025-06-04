@@ -1,7 +1,8 @@
 import os
 from typing import List, Optional
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_core.documents import Document
 from langchain.chains import RetrievalQA
 
@@ -10,7 +11,7 @@ VECTOR_DIR = os.path.expanduser("~/.shandu/vectorstore")
 class RAGRetriever:
     """Simple retrieval wrapper around a persistent Chroma vector store."""
     def __init__(self, llm: Optional[ChatOpenAI] = None, vector_dir: str = VECTOR_DIR):
-        self.embeddings = OpenAIEmbeddings()
+        self.embeddings = FastEmbedEmbeddings()
         os.makedirs(vector_dir, exist_ok=True)
         self.vectorstore = Chroma(persist_directory=vector_dir, embedding_function=self.embeddings)
         self.vectorstore.persist()

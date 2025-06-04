@@ -120,11 +120,21 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
     # Prepare all citation data
     citation_manager, citation_registry, citation_stats = await prepare_report_data(state)
 
-    # Retrieve additional context from indexed documents
+    # Retrieve additional context from indexed documents and register citations
     retriever = get_retriever(llm)
     retrieved_docs = retriever.retrieve(state["query"], k=5)
-    retrieved_passages = "\n\n".join(doc.page_content for doc in retrieved_docs)
-    state["retrieved_passages"] = retrieved_passages
+    retrieved_passages_list = []
+    for doc in retrieved_docs:
+        url = doc.metadata.get("url", "")
+        if url:
+            cid = citation_registry.register_citation(
+                url, context=f"retrieval:{state['query']}"
+            )
+            retrieved_passages_list.append(f"{doc.page_content}\n[{cid}]")
+        else:
+            retrieved_passages_list.append(doc.page_content)
+
+    state["retrieved_passages"] = "\n\n".join(retrieved_passages_list)
 
     # Step 1: Generate report title (with retries)
     report_title = None
@@ -418,15 +428,16 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
         console=console
     ) as progress:
         task = progress.add_task("Expanding", total=len(important_sections))
-        
+
         # Prepare citation information for expansion
         citation_registry = state.get("citation_registry")
         current_date = state.get("current_date", "")
-        
+        retriever = get_retriever(llm)
+
         # Process each important section
         for i, section_header, section_content in important_sections:
             section_title = section_header.replace('#', '').strip()
-            
+
             for attempt in range(MAX_RETRIES):
                 try:
                     # Generate available sources text for this section
@@ -442,13 +453,34 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
                         if available_sources:
                             available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
                     
+                    # Retrieve additional context for this section
+                    retrieved_docs = retriever.retrieve(section_title, k=2)
+                    retrieved_context_list = []
+                    if citation_registry:
+                        for doc in retrieved_docs:
+                            url = doc.metadata.get("url", "")
+                            if url:
+                                cid = citation_registry.register_citation(
+                                    url,
+                                    context=f"section:{section_title}",
+                                )
+                                retrieved_context_list.append(f"{doc.page_content}\n[{cid}]")
+                            else:
+                                retrieved_context_list.append(doc.page_content)
+                    else:
+                        retrieved_context_list = [doc.page_content for doc in retrieved_docs]
+
+                    retrieved_context = "\n\n".join(retrieved_context_list)
+
                     # Configure LLM for this section expansion
                     expand_llm = llm.with_config({"max_tokens": 6144, "temperature": 0.2})
-                    
+
                     # Create section-specific expansion prompt
                     section_prompt = f"""Expand this section of a research report with much greater depth and detail:
 
-{section_header}{section_content}{available_sources_text}
+{section_header}{section_content}
+{available_sources_text}
+ADDITIONAL CONTEXT:\n{retrieved_context}
 
 EXPANSION REQUIREMENTS:
 1. Triple the length and detail of the section while maintaining accuracy

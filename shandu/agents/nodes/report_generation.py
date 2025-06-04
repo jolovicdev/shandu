@@ -11,13 +11,14 @@ from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 from ..processors.content_processor import AgentState
 from ..processors.report_generator import (
-    generate_title, 
-    extract_themes, 
+    generate_title,
+    extract_themes,
     generate_initial_report,
     enhance_report,
     expand_key_sections,
     format_citations
 )
+from ...retrieval import get_retriever
 from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback, is_shutdown_requested
 from ..utils.citation_registry import CitationRegistry
 from ..utils.citation_manager import CitationManager, SourceInfo, Learning
@@ -119,6 +120,12 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
     # Prepare all citation data
     citation_manager, citation_registry, citation_stats = await prepare_report_data(state)
 
+    # Retrieve additional context from indexed documents
+    retriever = get_retriever(llm)
+    retrieved_docs = retriever.retrieve(state["query"], k=5)
+    retrieved_passages = "\n\n".join(doc.page_content for doc in retrieved_docs)
+    state["retrieved_passages"] = retrieved_passages
+
     # Step 1: Generate report title (with retries)
     report_title = None
     for attempt in range(MAX_RETRIES):
@@ -178,6 +185,7 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
                     llm,
                     state['query'],
                     state['findings'],
+                    state.get('retrieved_passages', ''),
                     extracted_themes,
                     report_title,
                     state['selected_sources'],
@@ -534,6 +542,7 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
             llm,
             state['query'],
             state['findings'],
+            state.get('retrieved_passages', ''),
             extracted_themes,
             report_title,
             state['selected_sources'],

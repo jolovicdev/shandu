@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from ..search.search import UnifiedSearcher, SearchResult
 from ..scraper import WebScraper, ScrapedContent
+from ..retrieval import get_retriever
 from ..research.researcher import ResearchResult
 from ..config import config, get_current_date
 from .processors import AgentState
@@ -58,7 +59,7 @@ class ResearchGraph:
             max_tokens=16384  # Significantly increased max tokens to support much more comprehensive responses
         )
         self.searcher = searcher or UnifiedSearcher()
-        self.scraper = scraper or WebScraper()
+        self.scraper = scraper or WebScraper(retriever=get_retriever(self.llm))
         self.date = date or get_current_date()
         self.progress_callback = None
         self.include_objective = False

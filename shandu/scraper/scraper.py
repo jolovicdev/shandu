@@ -16,6 +16,8 @@ from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import WebBaseLoader
+from langchain_core.documents import Document
+from ..retrieval import get_retriever, RAGRetriever
 from pydantic import BaseModel, Field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -113,9 +115,16 @@ class ScrapedContent:
 
 class WebScraper:
     """Web scraper for extracting content from web pages using WebBaseLoader."""
-    
-    def __init__(self, proxy: Optional[str] = None, timeout: int = 10, max_concurrent: int = 5,
-                 cache_enabled: bool = CACHE_ENABLED, cache_ttl: int = CACHE_TTL):
+
+    def __init__(
+        self,
+        proxy: Optional[str] = None,
+        timeout: int = 10,
+        max_concurrent: int = 5,
+        cache_enabled: bool = CACHE_ENABLED,
+        cache_ttl: int = CACHE_TTL,
+        retriever: Optional[RAGRetriever] = None,
+    ):
         """
         Initialize the web scraper.
         
@@ -125,6 +134,7 @@ class WebScraper:
             max_concurrent: Maximum number of concurrent scraping operations
             cache_enabled: Whether to use caching for scraped content
             cache_ttl: Time-to-live for cached content in seconds
+            retriever: Optional RAG retriever for indexing scraped content
         """
         self.proxy = proxy
         self.timeout = timeout
@@ -135,6 +145,7 @@ class WebScraper:
         self.in_progress_urls: Set[str] = set()  # Track URLs being scraped to prevent duplicates
         self._semaphores = {}  # Dictionary to store semaphores for each event loop
         self._semaphore_lock = asyncio.Lock()  # Lock for thread-safe access to semaphores
+        self.retriever = retriever or get_retriever()
         
         # Try to use fake_useragent if available
         try:
@@ -257,6 +268,12 @@ class WebScraper:
                 cached_content = await self._check_cache(url)
                 if cached_content:
                     logger.info(f"Using cached content for {url}")
+                    if self.retriever and cached_content.text:
+                        doc = Document(
+                            page_content=cached_content.text,
+                            metadata={"url": cached_content.url, "title": cached_content.title},
+                        )
+                        self.retriever.add_documents([doc])
                     self.in_progress_urls.remove(url)
                     return cached_content
 
@@ -332,10 +349,18 @@ class WebScraper:
                                 
                                 # Cache the successful result
                                 await self._save_to_cache(result)
-                                
+
+                                # Index into vector store for retrieval
+                                if self.retriever and result.text:
+                                    doc = Document(
+                                        page_content=result.text,
+                                        metadata={"url": result.url, "title": result.title},
+                                    )
+                                    self.retriever.add_documents([doc])
+
                                 # Remove from in-progress set
                                 self.in_progress_urls.remove(url)
-                                
+
                                 return result
                                 
                             except asyncio.TimeoutError:
@@ -457,10 +482,18 @@ class WebScraper:
                     
                     # Cache the successful result
                     await self._save_to_cache(result)
-                    
+
+                    # Index into vector store for retrieval
+                    if self.retriever and result.text:
+                        doc = Document(
+                            page_content=result.text,
+                            metadata={"url": result.url, "title": result.title},
+                        )
+                        self.retriever.add_documents([doc])
+
                     # Remove from in-progress set
                     self.in_progress_urls.remove(url)
-                    
+
                     return result
                     
                 except Exception as e:

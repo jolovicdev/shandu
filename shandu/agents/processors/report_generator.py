@@ -301,6 +301,7 @@ async def generate_initial_report(
     llm: ChatOpenAI,
     query: str,
     findings: str,
+    retrieved_passages: str,
     extracted_themes: str,
     report_title: str,
     selected_sources: List[str],
@@ -310,7 +311,10 @@ async def generate_initial_report(
     include_objective: bool,
     citation_registry: Optional[CitationRegistry] = None
 ) -> str:
-    """Generate the initial report draft using structured output."""
+    """Generate the initial report draft using structured output.
+
+    retrieved_passages provides additional context retrieved from the vector store.
+    """
     # Use structured output for initial report generation
     structured_llm = llm.with_structured_output(InitialReport, method="function_calling")
 
@@ -353,7 +357,7 @@ async def generate_initial_report(
     user_message = f"""Create an extensive, in-depth research report on this topic.
 
 Title: {report_title}
-Analyzed Findings: {findings[:5000]}
+Analyzed Findings: {augmented_findings[:5000]}
 Number of sources: {len(selected_sources)}
 Key themes identified in the research: 
 {extracted_themes}{available_sources_text}
@@ -380,7 +384,10 @@ IMPORTANT: Begin your report with the exact title provided: "{report_title}" - d
             sources_text += f"{i}. {url}\n"
     
     # Augment findings with selected source information
-    augmented_findings = findings + sources_text
+    retrieval_section = ""
+    if retrieved_passages:
+        retrieval_section = "\n\nRETRIEVED CONTEXT:\n" + retrieved_passages
+    augmented_findings = findings + retrieval_section + sources_text
 
     try:
         # Direct non-structured approach to avoid errors
@@ -388,7 +395,7 @@ IMPORTANT: Begin your report with the exact title provided: "{report_title}" - d
         direct_prompt = f"""Create an extremely comprehensive, detailed research report that is AT LEAST 5,000 words long.
 
 Title: {report_title}
-Analyzed Findings: {findings[:5000]}
+Analyzed Findings: {augmented_findings[:5000]}
 Number of sources: {len(selected_sources)}
 Key themes identified in the research: 
 {extracted_themes}{available_sources_text}

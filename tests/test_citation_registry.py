@@ -71,7 +71,9 @@ class TestCitationRegistry(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertIn(3, result["invalid_citations"])
         self.assertIn(5, result["invalid_citations"])
-        self.assertEqual(len(result["used_citations"]), 2)
+        # used_citations should include all citation IDs found in the text,
+        # regardless of whether they are valid or invalid
+        self.assertEqual(len(result["used_citations"]), 4)
         self.assertIn(1, result["used_citations"])
         self.assertIn(2, result["used_citations"])
 

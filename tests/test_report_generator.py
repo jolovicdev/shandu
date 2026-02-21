@@ -1,66 +1,89 @@
-import unittest
-from unittest.mock import AsyncMock, patch
-import asyncio
-from shandu.agents.processors.report_generator import format_citations
-from shandu.agents.utils.citation_registry import CitationRegistry
+from __future__ import annotations
 
-class TestReportGenerator(unittest.TestCase):
-    """Basic tests for report generation functions."""
-    
-    def setUp(self):
-        """Set up test cases."""
-        self.mock_llm = AsyncMock()
-        self.mock_llm.ainvoke = AsyncMock()
-        
-        # Sample citation data
-        self.sample_sources = [
-            {"url": "https://example.com/article1", "title": "Test Article 1", "date": "2023-01-01"},
-            {"url": "https://github.com/user/repo", "title": "Sample Repository", "date": "2024-02-15"}
-        ]
-        
-        # Create a citation registry
-        self.registry = CitationRegistry()
-        self.registry.register_citation("https://example.com/article1")
-        self.registry.register_citation("https://github.com/user/repo")
-        
-        # Add metadata to the citations
-        self.registry.update_citation_metadata(1, {
-            "title": "Test Article 1",
-            "date": "2023-01-01"
-        })
-        self.registry.update_citation_metadata(2, {
-            "title": "Sample Repository",
-            "date": "2024-02-15"
-        })
-    
-    def test_format_citations_sync(self):
-        """Test format_citations function synchronously by running the async function."""
-        # Set up the mock to return properly formatted citations
-        self.mock_llm.ainvoke.return_value.content = """
-        [1] *example.com*, "Test Article 1", https://example.com/article1
-        [2] *github.com*, "Sample Repository", https://github.com/user/repo
-        """
-        
-        # Run the async function in a synchronous context
-        formatted_citations = asyncio.run(format_citations(
-            self.mock_llm,
-            ["https://example.com/article1", "https://github.com/user/repo"],
-            self.sample_sources,
-            self.registry
-        ))
-        
-        # Check the results
-        self.assertIn("*example.com*", formatted_citations)
-        self.assertIn("\"Test Article 1\"", formatted_citations)
-        self.assertIn("https://example.com/article1", formatted_citations)
-        
-        # Verify the correct format (no date in citations)
-        self.assertNotIn("2023-01-01", formatted_citations)
-        self.assertNotIn("2024-02-15", formatted_citations)
-        
-        # Ensure citation numbers are properly formatted
-        self.assertIn("[1]", formatted_citations)
-        self.assertIn("[2]", formatted_citations)
+from shandu.contracts import CitationEntry, FinalReportDraft, ReportSection, ResearchRequest
+from shandu.services.report import ReportService
 
-if __name__ == '__main__':
-    unittest.main()
+
+def test_report_service_renders_expected_sections() -> None:
+    service = ReportService()
+    request = ResearchRequest(query="Test query")
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[ReportSection(heading="Analysis", content="Body")],
+    )
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=["e1"],
+            url="https://example.com",
+            title="Example",
+            publisher="example.com",
+            accessed_at="2026-02-21",
+        )
+    ]
+
+    rendered = service.render(request, draft, citations)
+    assert "# Report" in rendered
+    assert "## Analysis" in rendered
+    assert "## References" in rendered
+
+
+def test_report_service_respects_prebuilt_markdown() -> None:
+    service = ReportService()
+    request = ResearchRequest(query="Test query")
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown="# Report\n\n## Executive Summary\n\nText",
+    )
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=["e1"],
+            url="https://example.com",
+            title="Example",
+            publisher="example.com",
+            accessed_at="2026-02-21",
+        )
+    ]
+
+    rendered = service.render(request, draft, citations)
+    assert rendered.startswith("# Report")
+    assert "## References" in rendered
+
+
+def test_report_service_normalizes_evidence_id_markers_to_numeric_citations() -> None:
+    service = ReportService()
+    request = ResearchRequest(query="Predict top jobs")
+    evidence_id = "a93a4e1b65ff42009c95f52329c5179e"
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown=(
+            "# Report\n\n"
+            "## Executive Summary\n\n"
+            f"Energy demand is rising [{evidence_id}][{evidence_id}] and market salaries are rising [1][99].\n\n"
+            "## References\n\n"
+            f"[{evidence_id}] random"
+        ),
+    )
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=[evidence_id],
+            url="https://energy.example/analysis",
+            title="Energy Analysis",
+            publisher="energy.example",
+            accessed_at="2026-02-21",
+        )
+    ]
+
+    rendered = service.render(request, draft, citations)
+
+    assert f"[{evidence_id}]" not in rendered
+    assert "rising [1]" in rendered
+    assert rendered.count("[1]") >= 2
+    assert "[1] energy.example. \"Energy Analysis\". https://energy.example/analysis" in rendered

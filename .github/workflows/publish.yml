@@ -1,0 +1,198 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Publish target index
+        required: false
+        default: pypi
+        type: choice
+        options:
+          - pypi
+          - testpypi
+      dry_run:
+        description: Build and validate without uploading
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dev dependencies
+        run: uv sync --dev
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Pytest
+        run: uv run pytest -q
+
+      - name: Version consistency
+        run: |
+          TOML_VERSION=$(python - <<'PY'
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          PY
+          )
+          INIT_VERSION=$(python - <<'PY'
+          import re
+          from pathlib import Path
+          content = Path("shandu/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', content)
+          if not match:
+              raise SystemExit("Missing __version__ in shandu/__init__.py")
+          print(match.group(1))
+          PY
+          )
+          echo "pyproject.toml version: $TOML_VERSION"
+          echo "__init__.py version:   $INIT_VERSION"
+          if [ "$TOML_VERSION" != "$INIT_VERSION" ]; then
+            echo "Error: pyproject and __init__ versions differ"
+            exit 1
+          fi
+
+      - name: Tag version validation
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          TOML_VERSION=$(python - <<'PY'
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          PY
+          )
+          echo "Tag version: $TAG_VERSION"
+          echo "TOML version: $TOML_VERSION"
+          if [ "$TAG_VERSION" != "$TOML_VERSION" ]; then
+            echo "Error: tag version ($TAG_VERSION) does not match pyproject.toml version ($TOML_VERSION)"
+            exit 1
+          fi
+
+      - name: Tag branch protection
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git branch -a --contains "${{ github.sha }}" | grep -q "origin/main" || {
+            echo "Error: release tags must point to a commit on main"
+            exit 1
+          }
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          cache-dependency-glob: "uv.lock"
+
+      - name: Resolve publish target
+        id: target
+        env:
+          INPUT_TARGET: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target || 'pypi' }}
+        run: |
+          if [ "$INPUT_TARGET" = "testpypi" ]; then
+            echo "target=testpypi" >> "$GITHUB_OUTPUT"
+            echo "publish_url=https://test.pypi.org/legacy/" >> "$GITHUB_OUTPUT"
+            echo "check_url=https://test.pypi.org/simple/" >> "$GITHUB_OUTPUT"
+          else
+            echo "target=pypi" >> "$GITHUB_OUTPUT"
+            echo "publish_url=https://upload.pypi.org/legacy/" >> "$GITHUB_OUTPUT"
+            echo "check_url=https://pypi.org/simple/" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build distributions
+        run: uv build --clear
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+      - name: Publish distributions
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+          PUBLISH_URL: ${{ steps.target.outputs.publish_url }}
+          CHECK_URL: ${{ steps.target.outputs.check_url }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+          TESTPYPI_TOKEN: ${{ secrets.TESTPYPI_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            uv publish --dry-run --publish-url "$PUBLISH_URL" --check-url "$CHECK_URL"
+            exit 0
+          fi
+
+          if [ "$TARGET" = "testpypi" ] && [ -n "${TESTPYPI_TOKEN:-}" ]; then
+            uv publish --publish-url "$PUBLISH_URL" --check-url "$CHECK_URL" --token "$TESTPYPI_TOKEN"
+            exit 0
+          fi
+
+          if [ "$TARGET" = "pypi" ] && [ -n "${PYPI_TOKEN:-}" ]; then
+            uv publish --publish-url "$PUBLISH_URL" --check-url "$CHECK_URL" --token "$PYPI_TOKEN"
+            exit 0
+          fi
+
+          uv publish --publish-url "$PUBLISH_URL" --check-url "$CHECK_URL" --trusted-publishing always
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true') && steps.target.outputs.target == 'pypi'
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build summary
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "## Dry run completed (no publish)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Publish completed to $TARGET" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Files" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -lah dist/ >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### SHA256" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          (cd dist && sha256sum *) >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

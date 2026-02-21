@@ -1,20 +1,6 @@
-"""
-Shandu Deep Research System
-A powerful research tool combining multiple search engines with LangChain integration.
+from .contracts import AISearchResult, ResearchRequest, ResearchRunResult, RunEvent
+from .engine import ShanduEngine
 
-Copyright (c) 2025 Dušan Jolović
-Licensed under the MIT License. See LICENSE file for details.
-"""
+__version__ = "3.0.0"
 
-from .search.search import UnifiedSearcher, SearchResult
-from .research.researcher import DeepResearcher, ResearchResult
-from .agents.agent import ResearchAgent
-
-__version__ = "2.0.0"
-__all__ = [
-    "UnifiedSearcher",
-    "SearchResult",
-    "DeepResearcher",
-    "ResearchResult",
-    "ResearchAgent"
-]
+__all__ = ["AISearchResult", "ResearchRequest", "ResearchRunResult", "RunEvent", "ShanduEngine"]

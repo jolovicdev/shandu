@@ -11,6 +11,7 @@ from .config import config, infer_api_key_env_name
 from .contracts import ResearchRequest, RunEvent
 from .engine import ShanduEngine
 from .interfaces import DepthPolicy, DetailLevel
+from .runtime import reset_bootstrap
 from .ui import ShanduUI
 
 ui = ShanduUI()
@@ -109,8 +110,30 @@ def configure() -> None:
     config.set("orchestration", "max_iterations", max_iterations)
     config.set("orchestration", "parallelism", parallelism)
     config.save()
+    reset_bootstrap()
     config.apply_provider_api_key()
     console.print(ui.success("Configuration saved."))
+
+
+@cli.command("gui")
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=7860, type=int, show_default=True)
+@click.option("--share", is_flag=True, help="Create a public gradio share URL.")
+@click.option("--browser/--no-browser", default=False, show_default=True)
+def gui_command(host: str, port: int, share: bool, browser: bool) -> None:
+    try:
+        from .ui.gradio_app import launch_gui
+    except Exception as exc:
+        console.print(ui.error(f"Failed to initialize GUI: {exc}"))
+        return
+
+    console.print(f"[brand]Launching Shandu GUI[/] [muted]http://{host}:{port}[/]")
+    try:
+        launch_gui(host=host, port=port, share=share, inbrowser=browser)
+    except RuntimeError as exc:
+        console.print(ui.error(str(exc)))
+    except Exception as exc:
+        console.print(ui.error(f"GUI runtime error: {exc}"))
 
 
 @cli.command("run")

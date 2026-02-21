@@ -62,8 +62,8 @@ class FakeLeadAgent:
 
 
 class FakeSearchSubagent:
-    async def execute_task(self, run_scope, task, request):
-        del run_scope, request
+    async def execute_task(self, run_scope, task, request, progress_callback=None):
+        del run_scope, request, progress_callback
         return [
             EvidenceRecord(
                 evidence_id=f"e-{task.task_id}",
@@ -153,8 +153,8 @@ class ParallelLeadAgent(FakeLeadAgent):
 
 
 class SlowSearchSubagent(FakeSearchSubagent):
-    async def execute_task(self, run_scope, task, request):
-        del run_scope, request
+    async def execute_task(self, run_scope, task, request, progress_callback=None):
+        del run_scope, request, progress_callback
         await asyncio.sleep(0.2)
         return [
             EvidenceRecord(
@@ -219,3 +219,78 @@ def test_orchestrator_emits_task_level_search_progress_events() -> None:
     search_messages = [event.message for event in events if event.stage == "search"]
     assert any(message == "Task task-1 started" for message in search_messages)
     assert any(message == "Task task-4 completed" for message in search_messages)
+
+
+class TraceSearchSubagent(FakeSearchSubagent):
+    async def execute_task(self, run_scope, task, request, progress_callback=None):
+        del run_scope
+        if progress_callback is not None:
+            await progress_callback(
+                "query_started",
+                {"task_id": task.task_id, "query": "q", "max_results": 5},
+            )
+            await progress_callback(
+                "query_completed",
+                {"task_id": task.task_id, "query": "q", "hits": 2},
+            )
+            await progress_callback(
+                "scrape_completed",
+                {"task_id": task.task_id, "scraped": 1, "missed": 1},
+            )
+        return await super().execute_task("x", task, request, progress_callback=None)
+
+
+def test_orchestrator_forwards_subagent_trace_events() -> None:
+    orchestrator = LeadOrchestrator(
+        lead_agent=ParallelLeadAgent(),
+        search_subagent=TraceSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        memory_service=MemoryService(InMemoryMemoryStore()),
+        report_service=FakeReportService(),
+    )
+    request = ResearchRequest(query="parallel-test", max_iterations=1, parallelism=2)
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    asyncio.run(orchestrator.run(request, progress_callback=on_event))
+
+    trace_events = [
+        event for event in events if event.stage == "search" and event.metrics.get("trace_type")
+    ]
+    assert any(event.metrics.get("trace_type") == "query_started" for event in trace_events)
+    assert any(event.metrics.get("trace_type") == "query_completed" for event in trace_events)
+    assert any(event.metrics.get("trace_type") == "scrape_completed" for event in trace_events)
+
+
+class FakeCostTracker:
+    def snapshot(self):
+        from shandu.runtime.cost_tracker import CostSnapshot
+
+        return CostSnapshot()
+
+    def delta_since(self, baseline):
+        del baseline
+        from shandu.runtime.cost_tracker import CostSnapshot
+
+        return CostSnapshot(llm_calls=5, cost_events=2, total_cost_usd=0.045, total_tokens=3200)
+
+
+def test_orchestrator_adds_cost_stats_when_available() -> None:
+    orchestrator = LeadOrchestrator(
+        lead_agent=FakeLeadAgent(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        memory_service=MemoryService(InMemoryMemoryStore()),
+        report_service=FakeReportService(),
+        cost_tracker=FakeCostTracker(),
+    )
+    request = ResearchRequest(query="cost-test", max_iterations=1, parallelism=1)
+    result = asyncio.run(orchestrator.run(request))
+
+    assert result.run_stats["agent_model_calls"] == 4
+    assert result.run_stats["metered_calls"] == 5
+    assert result.run_stats["cost_coverage"] == "full"
+    assert result.run_stats["llm_tokens"] == 3200
+    assert result.run_stats["usd_spent"] == 0.045

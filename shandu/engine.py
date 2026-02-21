@@ -48,6 +48,7 @@ class ShanduEngine:
             citation_agent=citation,
             memory_service=memory_service,
             report_service=report_service,
+            cost_tracker=runtime.cost_tracker,
         )
         ai_search_service = AISearchService(runtime, search_service, scrape_service)
         return cls(

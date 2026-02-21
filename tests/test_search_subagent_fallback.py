@@ -58,3 +58,31 @@ def test_search_subagent_uses_search_hit_fallback_when_scrape_fails() -> None:
     assert len(evidence) == 2
     assert {item.url for item in evidence} == {"https://example.com/a", "https://example.com/b"}
     assert all(item.confidence == 0.33 for item in evidence)
+
+
+def test_search_subagent_emits_search_and_scrape_traces() -> None:
+    subagent = SearchSubagent(
+        runtime=FakeRuntime(),
+        search_service=FakeSearchService(),
+        scrape_service=EmptyScrapeService(),
+    )
+    task = SubagentTask(
+        task_id="task-1",
+        focus="focus",
+        search_queries=["query"],
+        expected_output="out",
+    )
+    request = ResearchRequest(query="q", max_pages_per_task=2, max_results_per_query=2)
+    traces: list[str] = []
+
+    async def on_trace(trace_type: str, payload: dict[str, object]) -> None:
+        traces.append(trace_type)
+        assert payload.get("task_id") == "task-1"
+
+    asyncio.run(subagent.execute_task("run:1", task, request, progress_callback=on_trace))
+
+    assert "query_started" in traces
+    assert "query_completed" in traces
+    assert "scrape_started" in traces
+    assert "scrape_completed" in traces
+    assert "fallback_evidence" in traces

@@ -9,6 +9,7 @@ from blackgeorge.memory.sqlite import SQLiteMemoryStore
 import litellm
 
 from ..config import config
+from .cost_tracker import CostTracker
 
 
 @dataclass(slots=True)
@@ -25,6 +26,7 @@ class RuntimeSettings:
 class RuntimeBootstrap:
     def __init__(self, settings: RuntimeSettings) -> None:
         self.settings = settings
+        self.cost_tracker = CostTracker()
         config.apply_provider_api_key()
         api_key_env = config.get_api_key_env_name(settings.model)
         api_key_value = str(config.get("api", "api_key", "")).strip()
@@ -47,6 +49,10 @@ class RuntimeBootstrap:
             respect_context_window=True,
             memory_store=self.memory_store,
         )
+        try:
+            self.desk.event_bus.subscribe("llm.completed", self.cost_tracker.handle_event)
+        except Exception:
+            pass
 
     @classmethod
     def from_config(cls) -> "RuntimeBootstrap":
@@ -119,3 +125,8 @@ def get_bootstrap() -> RuntimeBootstrap:
     if _bootstrap is None:
         _bootstrap = RuntimeBootstrap.from_config()
     return _bootstrap
+
+
+def reset_bootstrap() -> None:
+    global _bootstrap
+    _bootstrap = None

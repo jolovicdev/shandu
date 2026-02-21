@@ -63,7 +63,9 @@ class LeadAgent:
                 "and evidence coverage. "
                 "Avoid overlapping tasks unless the query is narrow. "
                 "Each task must have a clear focus, practical search queries, and explicit expected evidence. "
-                "Prefer primary sources, recent data, and high-authority publications."
+                "Prefer primary sources, recent data, and high-authority publications. "
+                "Write search_queries for web search engines, not prose. "
+                "Each query must be concise, keyword-rich, and independently searchable."
             ),
         )
         job = Job(
@@ -75,6 +77,9 @@ class LeadAgent:
                 "- Target at least requested parallelism unless the query is provably narrow.\n"
                 "- Task IDs must be unique and stable strings.\n"
                 "- search_queries must be high-signal and specific enough to retrieve factual evidence.\n"
+                "- Each search query must be <= 120 characters and usually 4-14 words.\n"
+                "- Do not copy full user paragraphs into search_queries.\n"
+                "- Decompose broad prompts into multiple focused queries.\n"
                 "- continue_loop=false only when enough evidence already exists to answer query well.\n"
                 f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
             ),
@@ -190,7 +195,10 @@ class LeadAgent:
                 "Write a publication-grade long-form report that is rigorous, coherent, and source-grounded. "
                 "Do not fabricate facts, numbers, or citations. "
                 "Every concrete claim should be supported by provided citations when available. "
-                "Use clear argument flow, explicit caveats, and balanced counterpoints."
+                "Use clear argument flow, explicit caveats, and balanced counterpoints. "
+                "Select structure dynamically: use concise markdown tables when they improve comparison clarity "
+                "(rankings, options, timelines, trade-offs, metrics), and use narrative prose for causal or "
+                "interpretive analysis."
             ),
         )
         job = Job(
@@ -207,6 +215,8 @@ class LeadAgent:
                 "## References\n"
                 "Use citation markers like [1], [2], ... and only cite sources provided in payload.\n"
                 "Prefer coherent paragraphs over bullets in Detailed Analysis.\n"
+                "Use markdown tables only when they materially improve comprehension for comparison-heavy sections.\n"
+                "Do not force tables in sections where narrative explanation is stronger.\n"
                 "Do not include internal IDs in citations.\n"
                 "Keep claims calibrated: state uncertainty when evidence is limited or conflicting.\n"
                 f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"

@@ -89,6 +89,7 @@ class SearchSubagentLike(Protocol):
         run_scope: str,
         task: SubagentTask,
         request: ResearchRequest,
+        progress_callback: Callable[[str, dict[str, Any]], Any] | None = None,
     ) -> list[EvidenceRecord]: ...
 
 

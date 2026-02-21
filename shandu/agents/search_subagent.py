@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from blackgeorge import Job, Worker
 from blackgeorge.utils import new_id
@@ -8,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from ..contracts import EvidenceRecord, ResearchRequest, SubagentTask
 from ..interfaces import RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
+
+SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 
 class _ExtractionPayload(BaseModel):
@@ -32,13 +36,34 @@ class SearchSubagent:
         run_scope: str,
         task: SubagentTask,
         request: ResearchRequest,
+        progress_callback: SearchTraceCallback | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
         all_hits: list[dict[str, str]] = []
         seen: set[str] = set()
 
         for query in task.search_queries or [task.focus]:
+            await self._emit_trace(
+                progress_callback,
+                "query_started",
+                {
+                    "task_id": task.task_id,
+                    "focus": task.focus,
+                    "query": query,
+                    "max_results": request.max_results_per_query,
+                },
+            )
             hits = await self._search.search(query, request.max_results_per_query)
+            await self._emit_trace(
+                progress_callback,
+                "query_completed",
+                {
+                    "task_id": task.task_id,
+                    "query": query,
+                    "hits": len(hits),
+                    "urls": [hit.url for hit in hits[:8]],
+                },
+            )
             for hit in hits:
                 if hit.url in seen:
                     continue
@@ -52,13 +77,51 @@ class SearchSubagent:
                 )
 
         urls = [entry["url"] for entry in all_hits[: request.max_pages_per_task]]
+        await self._emit_trace(
+            progress_callback,
+            "scrape_started",
+            {
+                "task_id": task.task_id,
+                "url_count": len(urls),
+                "urls": urls,
+            },
+        )
         pages = await self._scrape.scrape_many(urls)
+        await self._emit_trace(
+            progress_callback,
+            "scrape_completed",
+            {
+                "task_id": task.task_id,
+                "scraped": len(pages),
+                "missed": max(0, len(urls) - len(pages)),
+                "urls": [page.url for page in pages],
+            },
+        )
         pages_by_url = {page.url: page for page in pages}
         hits_by_url = {entry["url"]: entry for entry in all_hits}
 
         evidence: list[EvidenceRecord] = []
         for page in pages:
+            await self._emit_trace(
+                progress_callback,
+                "extract_started",
+                {
+                    "task_id": task.task_id,
+                    "url": page.url,
+                    "title": page.title,
+                },
+            )
             extraction = await self._extract(task, page.url, page.title, page.text)
+            await self._emit_trace(
+                progress_callback,
+                "extract_completed",
+                {
+                    "task_id": task.task_id,
+                    "url": page.url,
+                    "title": page.title,
+                    "confidence": extraction.confidence,
+                },
+            )
             evidence.append(
                 EvidenceRecord(
                     evidence_id=new_id(),
@@ -93,8 +156,30 @@ class SearchSubagent:
                     confidence=0.33,
                 )
             )
+            await self._emit_trace(
+                progress_callback,
+                "fallback_evidence",
+                {
+                    "task_id": task.task_id,
+                    "url": url,
+                    "title": title,
+                    "confidence": 0.33,
+                },
+            )
 
         return evidence
+
+    async def _emit_trace(
+        self,
+        callback: SearchTraceCallback | None,
+        trace_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if callback is None:
+            return
+        result = callback(trace_type, payload)
+        if isinstance(result, Awaitable):
+            await result
 
     async def _extract(
         self,

@@ -36,3 +36,23 @@ def test_event_line_renders_stage_and_task() -> None:
     line = ui.event_line(event)
     assert "SEARCH" in line.plain
     assert "iter_1_task_1" in line.plain
+
+
+def test_event_line_renders_trace_query_and_url() -> None:
+    ui = ShanduUI(console=Console(record=True, width=160))
+    event = RunEvent(
+        stage="search",
+        message="Task iter_1_task_1 query completed",
+        iteration=0,
+        metrics={"trace_type": "query_completed", "hits": 3},
+        payload={
+            "task_id": "iter_1_task_1",
+            "query": "future of multimodal agents",
+            "url": "https://example.com/article",
+            "urls": ["https://example.com/article"],
+        },
+    )
+    line = ui.event_line(event)
+    assert "query_completed" in line.plain
+    assert "future of multimodal agents" in line.plain
+    assert "https://example.com/article" in line.plain

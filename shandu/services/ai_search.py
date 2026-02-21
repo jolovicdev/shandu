@@ -72,7 +72,9 @@ class AISearchService:
                 "You are AISearchAnalyst. "
                 "Answer directly with technical rigor and coherent long-form reasoning. "
                 "Use only provided sources, avoid fabrication, and include clear caveats for uncertainty. "
-                "Citations must map to source order."
+                "Citations must map to source order. "
+                "Choose output structure based on query shape: use markdown tables when comparing options, "
+                "rankings, costs, timelines, or feature matrices, and otherwise prioritize concise narrative flow."
             ),
         )
         job = Job(
@@ -86,6 +88,8 @@ class AISearchService:
                 "## Supporting Evidence\n"
                 "## Caveats\n"
                 "## Sources\n"
+                "If the query is comparison-heavy, include one compact markdown table in Supporting Evidence.\n"
+                "If the query is not comparison-heavy, do not force a table.\n"
                 "Use only source material in payload.\n"
                 "Do not cite any source not present in payload.\n"
                 f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"

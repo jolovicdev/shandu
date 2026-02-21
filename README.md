@@ -1,6 +1,6 @@
-# Shandu 3.0
+# Shandu
 
-Shandu 3.0 is a Blackgeorge-powered, lead-orchestrated multi-agent research system.
+Shandu is a Blackgeorge-powered, lead-orchestrated multi-agent research system.
 
 - Architecture deep dive: [`ARCH.md`](ARCH.md)
 - Example long-form output: see the `examples` directory.
@@ -12,6 +12,7 @@ Shandu 3.0 is a Blackgeorge-powered, lead-orchestrated multi-agent research syst
 - Citation subagent builds the final reference ledger.
 - SQLite-backed memory tracks run context across steps.
 - Rich CLI control deck renders run metrics and timeline.
+- Gradio GUI control room provides live telemetry, task views, and report download.
 - Scraper pipeline normalizes URLs, strips boilerplate HTML, and favors main-content blocks.
 
 ## Installation
@@ -127,6 +128,8 @@ During `shandu run`, progress events stream live in the terminal:
 - `BOOTSTRAP` / `PLAN` / `SEARCH` / `SYNTHESIZE` / `CITE` / `REPORT` / `COMPLETE`
 - Per-task search events (`Task <id> started` and `Task <id> completed`) with metrics
 - Iteration index and task IDs for long-running model calls
+- Run summary includes model call count across lead/subagents/citation
+- Metered calls/tokens/cost appear when provider exposes billing/usage metrics
 
 ```bash
 shandu aisearch "latest state of open-source browser automation in 2026" \
@@ -148,9 +151,44 @@ Other commands:
 
 - `shandu info`
 - `shandu configure`
+- `shandu gui`
 - `shandu aisearch <query>`
 - `shandu inspect <run_id>`
 - `shandu clean`
+
+### GUI
+
+Launch the visual control room:
+
+```bash
+shandu gui --host 127.0.0.1 --port 7860
+```
+
+`gradio` ships with the default Shandu install, so `shandu gui` works out of the box.
+
+GUI features:
+
+- live run stage timeline (`BOOTSTRAP` through `COMPLETE`)
+- per-subagent task board (status, focus, last query, evidence)
+- search/scrape trace stream (query start/finish, hit counts, URLs scraped, extraction/fallback signals)
+- final report + citation ledger panels
+- one-click markdown download button after run completion
+- run cost display (`usd_spent`) when provider exposes cost metrics
+- runtime configuration editing (model, provider env var name, key, iteration/parallelism/search limits)
+
+### GUI Preview
+
+#### Main Screen
+
+![Shandu GUI Main Screen](assets/main.jpg)
+
+#### Tables View
+
+![Shandu GUI Table View](assets/table.jpg)
+
+#### Report View
+
+![Shandu GUI Report View](assets/report.jpg)
 
 ## Python API
 

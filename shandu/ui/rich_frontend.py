@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from textwrap import shorten
 
 from rich import box
 from rich.columns import Columns
@@ -80,9 +81,10 @@ class ShanduUI:
         layout.split(
             Layout(name="header", size=6),
             Layout(name="body"),
-            Layout(name="footer", size=8),
+            Layout(name="footer", size=10),
         )
         layout["body"].split_row(Layout(name="left", ratio=2), Layout(name="right", ratio=3))
+        layout["footer"].split_row(Layout(name="footer_left", ratio=2), Layout(name="footer_right", ratio=3))
 
         header_table = Table.grid(padding=(0, 1))
         header_table.add_column(style="label", no_wrap=True)
@@ -100,11 +102,22 @@ class ShanduUI:
         task_table = Table(box=box.SIMPLE_HEAVY, border_style="panel")
         task_table.add_column("#", style="muted", width=4)
         task_table.add_column("Stage", style="title", width=12)
+        task_table.add_column("Task", style="label", width=16)
+        task_table.add_column("Trace", style="muted", width=16)
         task_table.add_column("Message", style="accent")
         for idx, event in enumerate(snapshot.events[-10:], start=1):
-            task_table.add_row(str(idx), event.stage, event.message)
+            task_id = str(event.payload.get("task_id", "")).strip()
+            trace_type = str(event.metrics.get("trace_type", "")).strip()
+            message = event.message
+            query = str(event.payload.get("query", "") or event.metrics.get("query", "")).strip()
+            if query:
+                message = f"{message} | q={shorten(query, width=42, placeholder='...')}"
+            url = str(event.payload.get("url", "")).strip()
+            if url:
+                message = f"{message} | {shorten(url, width=52, placeholder='...')}"
+            task_table.add_row(str(idx), event.stage, task_id, trace_type, message)
         if task_table.row_count == 0:
-            task_table.add_row("-", "bootstrap", "No events yet")
+            task_table.add_row("-", "bootstrap", "-", "-", "No events yet")
 
         layout["left"].update(
             Panel(task_table, title="Execution Timeline", border_style="panel", box=box.ROUNDED)
@@ -127,13 +140,34 @@ class ShanduUI:
         footer_notes = Table(box=box.SIMPLE)
         footer_notes.add_column(style="muted")
         footer_notes.add_row("1. User query enters LeadResearcher.")
-        footer_notes.add_row("2. LeadResearcher stores plan and retrieves memory context.")
-        footer_notes.add_row("3. Parallel subagents run web search + evaluate evidence.")
-        footer_notes.add_row("4. LeadResearcher decides continue loop vs exit.")
-        footer_notes.add_row("5. CitationAgent inserts references into final report.")
+        footer_notes.add_row("2. LeadResearcher plans and fans out subagent tasks.")
+        footer_notes.add_row("3. Subagents emit query/scrape/extract traces.")
+        footer_notes.add_row("4. Lead synthesizes loop and decides continue/exit.")
+        footer_notes.add_row("5. CitationAgent normalizes references.")
 
-        layout["footer"].update(
+        trace_table = Table(box=box.SIMPLE_HEAVY, border_style="panel")
+        trace_table.add_column("Task", style="label", width=16)
+        trace_table.add_column("Trace", style="muted", width=16)
+        trace_table.add_column("Details", style="accent")
+        for event in reversed(snapshot.events):
+            trace_type = str(event.metrics.get("trace_type", "")).strip()
+            if not trace_type:
+                continue
+            task_id = str(event.payload.get("task_id", "")).strip()
+            query = str(event.payload.get("query", "") or event.metrics.get("query", "")).strip()
+            url = str(event.payload.get("url", "")).strip()
+            details = query or url or event.message
+            trace_table.add_row(task_id, trace_type, shorten(details, width=70, placeholder="..."))
+            if trace_table.row_count >= 6:
+                break
+        if trace_table.row_count == 0:
+            trace_table.add_row("-", "-", "No trace events yet")
+
+        layout["footer_left"].update(
             Panel(footer_notes, title="System Topology", border_style="panel", box=box.ROUNDED)
+        )
+        layout["footer_right"].update(
+            Panel(trace_table, title="Subagent Trace Feed", border_style="panel", box=box.ROUNDED)
         )
 
         return layout
@@ -147,6 +181,31 @@ class ShanduUI:
         summary.add_row("Evidence", str(result.run_stats.get("evidence_count", 0)))
         summary.add_row("Citations", str(result.run_stats.get("citation_count", 0)))
         summary.add_row("Elapsed", f"{result.run_stats.get('elapsed_seconds', 0)}s")
+        model_calls = result.run_stats.get("agent_model_calls")
+        if isinstance(model_calls, int) and model_calls > 0:
+            summary.add_row("Model Calls", str(model_calls))
+        metered_calls = result.run_stats.get("metered_calls", result.run_stats.get("llm_calls"))
+        coverage = str(result.run_stats.get("cost_coverage", "")).strip()
+        if coverage not in {"partial", "full"}:
+            if isinstance(metered_calls, int) and metered_calls > 0 and isinstance(model_calls, int) and model_calls > 0:
+                coverage = "partial" if metered_calls < model_calls else "full"
+        if isinstance(metered_calls, int) and metered_calls > 0:
+            if isinstance(model_calls, int) and model_calls > 0:
+                if coverage == "partial":
+                    summary.add_row("Cost Coverage", f"partial ({metered_calls}/{model_calls})")
+                else:
+                    summary.add_row("Cost Coverage", f"full ({metered_calls}/{model_calls})")
+            else:
+                summary.add_row("Metered Calls", str(metered_calls))
+        llm_tokens = result.run_stats.get("llm_tokens")
+        if isinstance(llm_tokens, int) and llm_tokens > 0:
+            summary.add_row("LLM Tokens", str(llm_tokens))
+        usd_spent = result.run_stats.get("usd_spent")
+        if isinstance(usd_spent, (int, float)) and float(usd_spent) > 0:
+            if coverage == "partial":
+                summary.add_row("Metered Cost", f"${float(usd_spent):.6f}")
+            else:
+                summary.add_row("USD Spent", f"${float(usd_spent):.6f}")
 
         citations = Table(box=box.SIMPLE, border_style="panel")
         citations.add_column("#", style="muted", width=4)
@@ -201,7 +260,19 @@ class ShanduUI:
         task_id = str(event.payload.get("task_id", "")).strip()
         if task_id:
             parts.append(f"[muted]task={task_id}[/]")
+        trace_type = str(event.metrics.get("trace_type", "")).strip()
+        if trace_type:
+            parts.append(f"[muted]trace={trace_type}[/]")
         parts.append(f"[accent]{event.message}[/]")
+        query = str(event.payload.get("query", "") or event.metrics.get("query", "")).strip()
+        if query:
+            parts.append(f"[muted]q={shorten(query, width=48, placeholder='...')}[/]")
+        url = str(event.payload.get("url", "")).strip()
+        if url:
+            parts.append(f"[muted]url={shorten(url, width=68, placeholder='...')}[/]")
+        urls = event.payload.get("urls")
+        if isinstance(urls, list) and urls:
+            parts.append(f"[muted]urls={len(urls)}[/]")
         if event.metrics:
             metrics_text = ", ".join(
                 f"{key}={value}"

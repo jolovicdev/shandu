@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shandu"
-version = "3.0.0"
+version = "3.0.1"
 description = "Multi-agent research system powered by Blackgeorge"
 readme = "README.md"
 requires-python = ">=3.12"

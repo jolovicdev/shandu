@@ -14,6 +14,26 @@ Shandu 3.0 is a Blackgeorge-powered, lead-orchestrated multi-agent research syst
 - Rich CLI control deck renders run metrics and timeline.
 - Scraper pipeline normalizes URLs, strips boilerplate HTML, and favors main-content blocks.
 
+## Installation
+
+Recommended for end users (no manual venv management):
+
+```bash
+pipx install shandu
+```
+
+Standard pip install:
+
+```bash
+pip install shandu
+```
+
+Install latest from GitHub:
+
+```bash
+pipx install "git+https://github.com/jolovicdev/shandu.git@main"
+```
+
 ## Quick Start
 
 ```bash

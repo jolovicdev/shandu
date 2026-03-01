@@ -1,4 +1,4 @@
-blackgeorge==1.1.8
+blackgeorge==1.1.9
 click>=8.1.7
 rich>=14.0.0
 aiohttp>=3.10.0

@@ -315,7 +315,7 @@ wheels = [
 
 [[package]]
 name = "blackgeorge"
-version = "1.1.8"
+version = "1.1.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "chromadb" },
@@ -324,9 +324,9 @@ dependencies = [
     { name = "mcp" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/34/51/77c01d7305e5774deadcff0db11f4e754536697823b320e57577ba08890f/blackgeorge-1.1.8.tar.gz", hash = "sha256:7eac46bb88747772cea6c9d103cc46923df45ffc98446ec2e9c7c3fff8d476a6", size = 54363, upload-time = "2026-02-20T21:00:22.114Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/43/5a/51c5dc303bd70f08c36cfb1089b3c1dac16058c352799c9b15503dc6f786/blackgeorge-1.1.9.tar.gz", hash = "sha256:d358197a66b09d8773d82e4cf0b5d4b357c0858660c81a014a613644df24824c", size = 59789, upload-time = "2026-02-25T13:02:59.738Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/f5/b7b3c41c9f1f4528c7d9b0d70bd11da93604f581ba8fca4cb00638afb938/blackgeorge-1.1.8-py3-none-any.whl", hash = "sha256:ca208f31a1d2568af81a38610f7509ed8c0886f65dafc381b7c44cd7cb7c3139", size = 78124, upload-time = "2026-02-20T21:00:20.754Z" },
+    { url = "https://files.pythonhosted.org/packages/25/83/ad72840e1bf1357e9f7bf113e0a1fa5e47ce5eb6f2519811366e7a2dc1a1/blackgeorge-1.1.9-py3-none-any.whl", hash = "sha256:49db640ffcbc408bc2fe0a1865bd73c9383397fc6e9d47a2dc482b4f4cccdd38", size = 85862, upload-time = "2026-02-25T13:02:57.159Z" },
 ]
 
 [[package]]
@@ -3125,7 +3125,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
-    { name = "blackgeorge", specifier = "==1.1.8" },
+    { name = "blackgeorge", specifier = "==1.1.9" },
     { name = "click", specifier = ">=8.1.7" },
     { name = "ddgs", specifier = ">=9.0.0" },
     { name = "gradio", specifier = ">=5.0.0" },

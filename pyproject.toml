@@ -23,7 +23,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence"
 ]
 dependencies = [
-  "blackgeorge==1.1.8",
+  "blackgeorge==1.1.9",
   "click>=8.1.7",
   "rich>=14.0.0",
   "gradio>=5.0.0",

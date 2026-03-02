@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gradio as gr
 import queue
 import threading
 from dataclasses import dataclass, field
@@ -261,155 +262,242 @@ class GuiRunState:
 
 
 _CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Source+Serif+4:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Oxanium:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg-0: #f4f1ea;
-  --bg-1: #ebe4d8;
-  --bg-2: #e4d8c3;
-  --ink: #132328;
-  --muted: #5e6f70;
-  --accent: #0f8f77;
-  --accent-2: #1f5f8c;
-  --danger: #b82639;
-  --card: rgba(255, 255, 255, 0.74);
-  --border: rgba(19, 35, 40, 0.18);
+  --bg-primary: #0a0e14;
+  --bg-secondary: #111820;
+  --bg-tertiary: #1a222d;
+  --bg-card: #141b24;
+  --text-primary: #e6edf3;
+  --text-secondary: #7d8590;
+  --text-muted: #484f58;
+  --accent-cyan: #39c5cf;
+  --accent-amber: #f0b429;
+  --accent-magenta: #db61a2;
+  --accent-green: #3fb950;
+  --border-color: #30363d;
+  --glow-cyan: 0 0 20px rgba(57, 197, 207, 0.4);
+  --glow-amber: 0 0 20px rgba(240, 180, 41, 0.4);
 }
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-primary: #f8f9fa;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #e9ecef;
+    --bg-card: #ffffff;
+    --text-primary: #212529;
+    --text-secondary: #495057;
+    --text-muted: #6c757d;
+    --accent-cyan: #0d9488;
+    --accent-amber: #d97706;
+    --accent-magenta: #be185d;
+    --accent-green: #16a34a;
+    --border-color: #dee2e6;
+    --glow-cyan: 0 0 10px rgba(13, 148, 136, 0.3);
+    --glow-amber: 0 0 10px rgba(217, 119, 6, 0.3);
+  }
+}
+
+* { box-sizing: border-box; }
 
 .gradio-container {
-  background:
-    radial-gradient(1200px 520px at 90% -10%, rgba(15, 143, 119, 0.20), transparent 70%),
-    radial-gradient(900px 520px at -5% 110%, rgba(31, 95, 140, 0.16), transparent 75%),
-    linear-gradient(140deg, var(--bg-0), var(--bg-1) 55%, var(--bg-2));
-  color: var(--ink);
-  font-family: "Source Serif 4", serif;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  font-family: 'JetBrains Mono', monospace !important;
 }
 
-.gradio-container h1,
-.gradio-container h2,
-.gradio-container h3,
-.gradio-container label,
-.gradio-container button,
-.gradio-container .tab-nav button {
-  font-family: "Chakra Petch", sans-serif !important;
-  letter-spacing: 0.03em;
+.gradio-container::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(57, 197, 207, 0.015) 2px, rgba(57, 197, 207, 0.015) 4px),
+    radial-gradient(ellipse at 20% 20%, rgba(57, 197, 207, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 80%, rgba(219, 97, 162, 0.06) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+@media (prefers-color-scheme: light) {
+  .gradio-container::before {
+    background: radial-gradient(ellipse at 20% 20%, rgba(13, 148, 136, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(190, 24, 93, 0.04) 0%, transparent 50%);
+  }
+}
+
+.gradio-container > * { position: relative; z-index: 1; }
+
+.gradio-container h1, .gradio-container h2, .gradio-container h3, .gradio-container label {
+  font-family: 'Oxanium', sans-serif !important;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.shandu-title {
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--accent-cyan);
+  padding: 1.5rem;
+  background: linear-gradient(135deg, rgba(57, 197, 207, 0.05) 0%, transparent 100%);
+  margin-bottom: 1.5rem;
 }
 
 .shandu-title h1 {
-  letter-spacing: 0.04em;
-  font-size: 3.6rem;
-  line-height: 0.9;
-  margin: 0;
-  text-transform: uppercase;
+  color: var(--accent-cyan) !important;
+  font-size: 2.8rem !important;
+  font-weight: 700 !important;
+  text-shadow: var(--glow-cyan);
+  letter-spacing: 0.15em;
+  margin: 0 !important;
+  line-height: 1.1 !important;
 }
 
 .shandu-title p {
-  margin-top: 0.45rem;
-  color: var(--muted);
-  font-size: 1rem;
+  color: var(--text-secondary) !important;
+  font-size: 0.9rem !important;
+  margin-top: 0.75rem !important;
+  letter-spacing: 0.15em;
+  font-weight: 500;
 }
 
 .shandu-subtitle {
-  border-left: 4px solid var(--accent);
-  padding-left: 0.75rem;
-  margin-top: 0.8rem;
-  color: #2d4144;
-  font-size: 0.95rem;
-  max-width: 760px;
+  color: var(--text-primary) !important;
+  font-size: 0.85rem !important;
+  font-weight: 600 !important;
+  border-left: 3px solid var(--accent-amber);
+  padding-left: 1rem;
+  margin-top: 1rem;
+  line-height: 1.5;
+}
+
+.query-shell {
+  border: 1px solid var(--border-color) !important;
+  border-radius: 4px !important;
+  background: var(--bg-secondary) !important;
+  padding: 1rem !important;
+  margin-bottom: 1rem !important;
+}
+
+.query-shell .gr-textbox textarea {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 4px !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  min-height: 100px !important;
+}
+
+.query-shell .gr-textbox textarea::placeholder { color: var(--text-muted) !important; }
+
+.run-btn button {
+  background: linear-gradient(135deg, var(--accent-cyan), #2563eb) !important;
+  color: var(--bg-primary) !important;
+  font-family: 'Oxanium', sans-serif !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.15em !important;
+  border: none !important;
+  border-radius: 4px !important;
+  min-height: 54px !important;
+  box-shadow: var(--glow-cyan) !important;
+  transition: all 0.3s ease !important;
+}
+
+.run-btn button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0 30px rgba(57, 197, 207, 0.6) !important;
 }
 
 .lane-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
-  gap: 0.85rem;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin: 1.5rem 0;
 }
 
 .lane-card {
-  border: 1px solid var(--border);
-  background: linear-gradient(170deg, rgba(255, 255, 255, 0.8), rgba(253, 251, 246, 0.8));
-  border-radius: 14px;
-  padding: 0.9rem 0.95rem;
-  box-shadow: 0 16px 28px rgba(19, 35, 40, 0.08);
+  border: 1px solid var(--border-color);
+  background: var(--bg-card) !important;
+  border-radius: 4px;
+  padding: 1rem;
+  position: relative;
+  overflow: hidden;
 }
+
+.lane-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; width: 3px; height: 100%;
+}
+
+.lane-lead::before { background: var(--accent-cyan); }
+.lane-search::before { background: var(--accent-green); }
+.lane-scrape::before { background: var(--accent-amber); }
+.lane-cite::before { background: var(--accent-magenta); }
 
 .lane-card h3 {
-  margin: 0 0 0.5rem;
-  letter-spacing: 0.05em;
-  font-size: 1.12rem;
+  font-size: 0.75rem !important;
+  color: var(--text-secondary) !important;
+  margin: 0 0 0.5rem 0.5rem !important;
+  font-weight: 500 !important;
+}
+
+.lane-card p { margin: 0.2rem 0; color: var(--text-muted) !important; font-size: 0.8rem !important; }
+.lane-card b { color: var(--text-primary) !important; font-family: 'JetBrains Mono', monospace !important; }
+
+.lane-lead h3 { color: var(--accent-cyan) !important; }
+.lane-search h3 { color: var(--accent-green) !important; }
+.lane-scrape h3 { color: var(--accent-amber) !important; }
+.lane-cite h3 { color: var(--accent-magenta) !important; }
+
+.panel-border { border: 1px solid var(--border-color) !important; border-radius: 4px !important; background: var(--bg-secondary) !important; }
+
+.gradio-container .tab-nav button {
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  border: 1px solid transparent !important;
+  border-bottom: 2px solid transparent !important;
   text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.8rem !important;
 }
 
-.lane-card p {
-  margin: 0.2rem 0;
-  color: var(--muted);
-  font-size: 0.92rem;
+.gradio-container .tab-nav button.selected {
+  color: var(--accent-cyan) !important;
+  border-bottom-color: var(--accent-cyan) !important;
+  background: transparent !important;
 }
 
-.lane-card b {
-  color: var(--ink);
-  font-family: "IBM Plex Mono", monospace;
+.gradio-container input, .gradio-container textarea, .gradio-container select {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 4px !important;
 }
 
-.lane-lead h3 { color: var(--accent); }
-.lane-search h3 { color: var(--accent-2); }
-.lane-scrape h3 { color: #7d5c2f; }
-.lane-cite h3 { color: #8d3562; }
+.gradio-container input::placeholder, .gradio-container textarea::placeholder { color: var(--text-muted) !important; }
 
-.panel-border {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
+.gradio-json { background: var(--bg-secondary) !important; border: 1px solid var(--border-color) !important; border-radius: 4px !important; }
+.gradio-dataframe, .gradio-table { background: var(--bg-secondary) !important; }
+.gradio-dataframe table, .gradio-table table { background: var(--bg-secondary) !important; color: var(--text-primary) !important; }
+.gradio-dataframe th, .gradio-table th { background: var(--bg-tertiary) !important; color: var(--text-secondary) !important; border-color: var(--border-color) !important; }
+.gradio-dataframe td, .gradio-table td { background: var(--bg-secondary) !important; color: var(--text-primary) !important; border-color: var(--border-color) !important; }
 
-.query-shell {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.58);
-  padding: 0.7rem;
-}
+.section-note { color: var(--text-muted) !important; font-size: 0.75rem !important; }
 
-.query-shell .gr-textbox textarea {
-  min-height: 108px !important;
-}
-
-.run-btn button {
-  background: linear-gradient(135deg, #0f8f77, #1f5f8c) !important;
-  color: #eef7f8 !important;
-  border: none !important;
-  border-radius: 12px !important;
-  min-height: 50px;
-}
-
-.section-note {
-  font-size: 0.9rem;
-  color: #475a5d;
-  margin-bottom: 0.45rem;
-}
+.gradio-accordion { border: 1px solid var(--border-color) !important; border-radius: 4px !important; background: var(--bg-secondary) !important; }
+.gradio-accordion .summary { background: var(--bg-tertiary) !important; color: var(--text-secondary) !important; }
 
 @media (max-width: 980px) {
-  .lane-grid {
-    grid-template-columns: repeat(2, minmax(150px, 1fr));
-  }
-  .shandu-title h1 {
-    font-size: 2.7rem;
-  }
+  .lane-grid { grid-template-columns: repeat(2, 1fr); }
+  .shandu-title h1 { font-size: 2rem !important; }
 }
 
 @media (max-width: 640px) {
-  .lane-grid {
-    grid-template-columns: 1fr;
-  }
+  .lane-grid { grid-template-columns: 1fr; }
 }
 """
-
-
-def _require_gradio() -> Any:
-    try:
-        import gradio as gr
-    except Exception as exc:
-        raise RuntimeError(
-            "Gradio dependency is missing. Reinstall with: pip install -U shandu"
-        ) from exc
-    return gr
 
 
 def _resolved_detail_level(value: str) -> DetailLevel:
@@ -499,8 +587,6 @@ def _render_bundle(state: GuiRunState, running: bool) -> tuple[Any, ...]:
 
 
 def build_gui() -> Any:
-    gr = _require_gradio()
-
     default_model = str(config.get("api", "model", "deepseek/deepseek-chat"))
     default_api_env = config.get_api_key_env_name(default_model)
     default_temperature = float(config.get("api", "temperature", 0.2))
@@ -810,4 +896,5 @@ def launch_gui(
         inbrowser=inbrowser,
         show_error=True,
         css=_CSS,
+        theme=gr.themes.Default(primary_hue="teal", neutral_hue="slate"),
     )

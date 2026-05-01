@@ -7,7 +7,7 @@ def test_runtime_settings_includes_retries_and_context():
     settings = RuntimeSettings(
         model="deepseek/deepseek-v4-flash",
         temperature=0.2,
-        max_tokens=8192,
+        max_tokens=16384,
         storage_dir=".blackgeorge",
         structured_output_retries=3,
         max_iterations=12,

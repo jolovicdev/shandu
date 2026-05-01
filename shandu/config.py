@@ -25,7 +25,7 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
     "api": {
         "model": "deepseek/deepseek-v4-flash",
         "temperature": 0.2,
-        "max_tokens": 8192,
+        "max_tokens": 16384,
         "api_key_env": "",
         "api_key": "",
     },
@@ -93,7 +93,7 @@ class Config:
         if os.getenv("SHANDU_MAX_TOKENS"):
             try:
                 self._config["api"]["max_tokens"] = int(
-                    os.getenv("SHANDU_MAX_TOKENS", "8192")
+                    os.getenv("SHANDU_MAX_TOKENS", "16384")
                 )
             except ValueError:
                 pass

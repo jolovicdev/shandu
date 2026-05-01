@@ -64,7 +64,7 @@ class RuntimeBootstrap:
             RuntimeSettings(
                 model=str(config.get("api", "model", "deepseek/deepseek-v4-flash")),
                 temperature=float(config.get("api", "temperature", 0.2)),
-                max_tokens=int(config.get("api", "max_tokens", 8192)),
+                max_tokens=int(config.get("api", "max_tokens", 16384)),
                 storage_dir=str(config.get("runtime", "storage_dir", ".blackgeorge")),
                 structured_output_retries=int(
                     config.get("runtime", "structured_output_retries", 3)

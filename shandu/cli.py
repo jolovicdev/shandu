@@ -88,7 +88,7 @@ def configure() -> None:
         "Temperature", default=float(config.get("api", "temperature", 0.2)), type=float
     )
     max_tokens = click.prompt(
-        "Max tokens", default=int(config.get("api", "max_tokens", 8192)), type=int
+        "Max tokens", default=int(config.get("api", "max_tokens", 16384)), type=int
     )
     max_iterations = click.prompt(
         "Default max iterations",

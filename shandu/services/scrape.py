@@ -128,6 +128,20 @@ class ScrapeService:
         session: aiohttp.ClientSession,
         attempt: int,
     ) -> ScrapedPage | None:
+        result = await self._fetch_one(url, session, attempt)
+        if result is not None:
+            return result
+        if attempt == 0:
+            self._retry_count += 1
+            return await self._scrape_with_retry(url, session, attempt=1)
+        return None
+
+    async def _fetch_one(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        attempt: int,
+    ) -> ScrapedPage | None:
         async with self._semaphore:
             try:
                 headers = dict(self._headers)
@@ -158,14 +172,8 @@ class ScrapeService:
             except asyncio.TimeoutError:
                 self._timeout_count += 1
                 logger.warning("Scrape timeout: %s (timeout=%ss, attempt=%s)", url, self._timeout, attempt + 1)
-                if attempt == 0:
-                    self._retry_count += 1
-                    return await self._scrape_with_retry(url, session, attempt=1)
                 return None
             except Exception:
-                if attempt == 0:
-                    self._retry_count += 1
-                    return await self._scrape_with_retry(url, session, attempt=1)
                 return None
 
         title, text = self._extract(html)

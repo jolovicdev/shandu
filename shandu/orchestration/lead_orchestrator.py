@@ -73,7 +73,8 @@ class LeadOrchestrator:
         all_evidence: list[EvidenceRecord] = []
         iteration_summaries: list[IterationSynthesis] = []
         agent_model_calls = 0
-        agent_fallbacks = 0
+        lead_fallbacks = 0
+        extraction_fallbacks = 0
 
         for iteration in range(request.max_iterations):
             memory_context = self._memory.search(scope, "iteration")
@@ -84,8 +85,8 @@ class LeadOrchestrator:
                 prior_summaries=iteration_summaries,
                 memory_context=memory_context,
             )
-            if self._lead.fallback_count > agent_fallbacks:
-                agent_fallbacks = self._lead.fallback_count
+            if self._lead.fallback_count > lead_fallbacks:
+                lead_fallbacks = self._lead.fallback_count
                 await emit(
                     RunEvent(
                         stage="error",
@@ -139,11 +140,11 @@ class LeadOrchestrator:
                     trace_type: str,
                     payload: dict[str, Any],
                 ) -> None:
-                    nonlocal agent_model_calls, agent_fallbacks
+                    nonlocal agent_model_calls, extraction_fallbacks
                     if trace_type == "extract_started":
                         agent_model_calls += 1
                     elif trace_type == "extraction_fallback":
-                        agent_fallbacks += 1
+                        extraction_fallbacks += 1
                     await emit(
                         self._build_search_trace_event(
                             iteration=iteration,
@@ -243,8 +244,8 @@ class LeadOrchestrator:
                 iteration_evidence=[item.model_dump(mode="json") for item in iteration_evidence],
                 prior_summaries=iteration_summaries,
             )
-            if self._lead.fallback_count > agent_fallbacks:
-                agent_fallbacks = self._lead.fallback_count
+            if self._lead.fallback_count > lead_fallbacks:
+                lead_fallbacks = self._lead.fallback_count
                 await emit(
                     RunEvent(
                         stage="error",
@@ -306,8 +307,8 @@ class LeadOrchestrator:
             evidence_payload=[item.model_dump(mode="json") for item in all_evidence],
             citations_payload=[entry.model_dump(mode="json") for entry in citations],
         )
-        if self._lead.fallback_count > agent_fallbacks:
-            agent_fallbacks = self._lead.fallback_count
+        if self._lead.fallback_count > lead_fallbacks:
+            lead_fallbacks = self._lead.fallback_count
             await emit(
                 RunEvent(
                     stage="error",
@@ -331,7 +332,7 @@ class LeadOrchestrator:
             "evidence_count": len(all_evidence),
             "citation_count": len(citations),
             "agent_model_calls": agent_model_calls,
-            "agent_fallbacks": agent_fallbacks,
+            "agent_fallbacks": lead_fallbacks + extraction_fallbacks,
         }
         self._append_cost_stats(run_stats, cost_start)
 

@@ -13,6 +13,21 @@ from ..config import config
 
 logger = logging.getLogger(__name__)
 
+_USER_AGENTS = [
+    (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"
+    ),
+]
+
 
 class ScrapedPage(BaseModel):
     url: str
@@ -29,11 +44,10 @@ class ScrapeService:
         self._semaphore = asyncio.Semaphore(max(1, min(self._max_concurrent, 12)))
         self._timeout_count = 0
         self._total_scrapes = 0
+        self._retry_count = 0
+        self._page_cache: dict[str, ScrapedPage] = {}
         self._headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": _USER_AGENTS[0],
             "Accept-Language": "en-US,en;q=0.9",
         }
 
@@ -67,23 +81,51 @@ class ScrapeService:
         normalized_url = self._canonicalize_url(url)
         if not normalized_url:
             return None
+
+        cached = self._page_cache.get(normalized_url)
+        if cached is not None:
+            return cached
+
         active_session = session or await self._get_session()
         owns_session = session is None
         self._total_scrapes += 1
+
+        page = await self._scrape_with_retry(
+            normalized_url, active_session, attempt=0
+        )
+
+        if owns_session and not active_session.closed:
+            await active_session.close()
+
+        if page is not None:
+            self._page_cache[self._canonicalize_url(page.url)] = page
+        return page
+
+    async def _scrape_with_retry(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        attempt: int,
+    ) -> ScrapedPage | None:
         async with self._semaphore:
             try:
+                headers = dict(self._headers)
+                if attempt > 0:
+                    ua_index = attempt % len(_USER_AGENTS)
+                    headers["User-Agent"] = _USER_AGENTS[ua_index]
+
                 if self._proxy:
-                    response_ctx = active_session.get(
-                        normalized_url,
+                    response_ctx = session.get(
+                        url,
                         allow_redirects=True,
-                        headers=self._headers,
+                        headers=headers,
                         proxy=self._proxy,
                     )
                 else:
-                    response_ctx = active_session.get(
-                        normalized_url,
+                    response_ctx = session.get(
+                        url,
                         allow_redirects=True,
-                        headers=self._headers,
+                        headers=headers,
                     )
                 async with response_ctx as response:
                     response.raise_for_status()
@@ -91,16 +133,19 @@ class ScrapeService:
                     if "text/" not in content_type and "html" not in content_type:
                         return None
                     html = await response.text(errors="ignore")
-                    final_url = self._canonicalize_url(str(response.url)) or normalized_url
+                    final_url = self._canonicalize_url(str(response.url)) or url
             except asyncio.TimeoutError:
                 self._timeout_count += 1
-                logger.warning("Scrape timeout: %s (timeout=%ss)", normalized_url, self._timeout)
+                logger.warning("Scrape timeout: %s (timeout=%ss, attempt=%s)", url, self._timeout, attempt + 1)
+                if attempt == 0:
+                    self._retry_count += 1
+                    return await self._scrape_with_retry(url, session, attempt=1)
                 return None
             except Exception:
+                if attempt == 0:
+                    self._retry_count += 1
+                    return await self._scrape_with_retry(url, session, attempt=1)
                 return None
-            finally:
-                if owns_session and not active_session.closed:
-                    await active_session.close()
 
         title, text = self._extract(html)
         if not text:

@@ -108,7 +108,9 @@ class LeadAgent:
                     stop_reason=report.data.stop_reason,
                 )
         except Exception:
-            self.fallback_count += 1
+            pass
+
+        self.fallback_count += 1
 
         return IterationPlan(
             iteration_index=iteration,
@@ -185,7 +187,9 @@ class LeadAgent:
                     ),
                 )
         except Exception:
-            self.fallback_count += 1
+            pass
+
+        self.fallback_count += 1
 
         fallback_summary = "No structured synthesis available; using deterministic fallback."
         continue_loop = iteration + 1 < request.max_iterations and bool(iteration_evidence)
@@ -261,7 +265,9 @@ class LeadAgent:
                     markdown=markdown,
                 )
         except Exception:
-            self.fallback_count += 1
+            pass
+
+        self.fallback_count += 1
 
         findings = [
             item

@@ -73,7 +73,7 @@ class LeadOrchestrator:
         all_evidence: list[EvidenceRecord] = []
         iteration_summaries: list[IterationSynthesis] = []
         agent_model_calls = 0
-        lead_fallbacks = 0
+        lead_fallbacks = self._lead.fallback_count
         extraction_fallbacks = 0
 
         for iteration in range(request.max_iterations):

@@ -119,7 +119,9 @@ class ScrapeService:
 
         if page is not None:
             self._page_cache[url] = page
-            self._page_cache[self._canonicalize_url(page.url)] = page
+            final_key = self._canonicalize_url(page.url)
+            if final_key != url:
+                self._page_cache[final_key] = page.model_copy(update={"requested_url": final_key})
         return page
 
     async def _scrape_with_retry(

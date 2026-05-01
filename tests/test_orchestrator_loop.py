@@ -19,6 +19,8 @@ from shandu.services.report import ReportService
 
 
 class FakeLeadAgent:
+    fallback_count = 0
+
     async def create_iteration_plan(self, request, iteration, prior_summaries, memory_context):
         del request, prior_summaries, memory_context
         return IterationPlan(

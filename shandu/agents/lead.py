@@ -42,6 +42,7 @@ class _SynthesisPayload(BaseModel):
 class LeadAgent:
     def __init__(self, runtime: RuntimeExecutionLike) -> None:
         self._runtime = runtime
+        self.fallback_count = 0
 
     async def create_iteration_plan(
         self,
@@ -107,7 +108,7 @@ class LeadAgent:
                     stop_reason=report.data.stop_reason,
                 )
         except Exception:
-            pass
+            self.fallback_count += 1
 
         return IterationPlan(
             iteration_index=iteration,
@@ -184,7 +185,7 @@ class LeadAgent:
                     ),
                 )
         except Exception:
-            pass
+            self.fallback_count += 1
 
         fallback_summary = "No structured synthesis available; using deterministic fallback."
         continue_loop = iteration + 1 < request.max_iterations and bool(iteration_evidence)
@@ -260,7 +261,7 @@ class LeadAgent:
                     markdown=markdown,
                 )
         except Exception:
-            pass
+            self.fallback_count += 1
 
         findings = [
             item

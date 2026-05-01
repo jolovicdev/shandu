@@ -112,7 +112,7 @@ class SearchSubagent:
                     "title": page.title,
                 },
             )
-            extraction = await self._extract(task, page.url, page.title, page.text)
+            extraction = await self._extract(task, page.url, page.title, page.text, progress_callback)
             await self._emit_trace(
                 progress_callback,
                 "extract_completed",
@@ -198,6 +198,7 @@ class SearchSubagent:
         url: str,
         title: str,
         text: str,
+        progress_callback: SearchTraceCallback | None = None,
     ) -> _ExtractionPayload:
         payload = {
             "task_focus": task.focus,
@@ -233,6 +234,12 @@ class SearchSubagent:
                 return report.data
         except Exception:
             pass
+
+        await self._emit_trace(
+            progress_callback,
+            "extraction_fallback",
+            {"task_id": task.task_id, "url": url, "title": title},
+        )
 
         fallback_snippet = text[:320].strip()
         fallback_body = text[:2200].strip()

@@ -257,6 +257,8 @@ class LeadOrchestrator:
                 break
 
             if request.depth_policy == "adaptive" and synthesis.coverage is not None:
+                if not synthesis.continue_loop:
+                    break
                 if not self._adaptive_should_continue(
                     synthesis.coverage, iteration_evidence, request.max_iterations, iteration
                 ):

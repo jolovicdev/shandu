@@ -118,6 +118,7 @@ class ScrapeService:
             await active_session.close()
 
         if page is not None:
+            self._page_cache[url] = page
             self._page_cache[self._canonicalize_url(page.url)] = page
         return page
 

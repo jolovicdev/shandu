@@ -3058,7 +3058,7 @@ wheels = [
 
 [[package]]
 name = "shandu"
-version = "3.0.6"
+version = "3.0.7"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -3067,6 +3067,7 @@ dependencies = [
     { name = "click" },
     { name = "ddgs" },
     { name = "gradio" },
+    { name = "lxml" },
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "rich" },
@@ -3094,6 +3095,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.7" },
     { name = "ddgs", specifier = ">=9.0.0" },
     { name = "gradio", specifier = ">=5.0.0" },
+    { name = "lxml", specifier = ">=5.3.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
     { name = "pydantic", specifier = ">=2.8.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },

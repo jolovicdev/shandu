@@ -242,16 +242,26 @@ class LeadOrchestrator:
                     stage="synthesize",
                     message=f"Iteration {iteration + 1} synthesized",
                     iteration=iteration,
-                    metrics={"continue_loop": synthesis.continue_loop},
+                    metrics={
+                        "continue_loop": synthesis.continue_loop,
+                        "coverage_score": synthesis.coverage.coverage_score if synthesis.coverage else None,
+                        "depth_policy": request.depth_policy,
+                    },
                     payload={"stop_reason": synthesis.stop_reason or ""},
                 ),
             )
 
             if not plan.continue_loop:
                 break
-            if not synthesis.continue_loop:
-                break
             if not iteration_evidence:
+                break
+
+            if request.depth_policy == "adaptive" and synthesis.coverage is not None:
+                if not self._adaptive_should_continue(
+                    synthesis.coverage, iteration_evidence, request.max_iterations, iteration
+                ):
+                    break
+            elif not synthesis.continue_loop:
                 break
 
         agent_model_calls += 1
@@ -341,6 +351,47 @@ class LeadOrchestrator:
         result = callback(event)
         if isinstance(result, Awaitable):
             await result
+
+    @staticmethod
+    def _adaptive_should_continue(
+        coverage: object,
+        iteration_evidence: list[Any],
+        max_iterations: int,
+        iteration: int,
+    ) -> bool:
+        if iteration + 1 >= max_iterations:
+            return False
+
+        cov = getattr(coverage, "coverage_score", 0.5)
+        severity = getattr(coverage, "open_question_severity", 0.5)
+        contradictions = getattr(coverage, "contradiction_count", 0)
+        should = getattr(coverage, "should_continue", True)
+
+        if should:
+            return True
+
+        domains: set[str] = set()
+        high_conf = 0
+        for ev in iteration_evidence:
+            d = getattr(ev, "domain", None)
+            if d and isinstance(d, str):
+                domains.add(d)
+            conf = getattr(ev, "confidence", 0.0) or 0.0
+            if conf >= 0.7:
+                high_conf += 1
+
+        if float(cov) < 0.6:
+            return True
+        if float(severity) > 0.5:
+            return True
+        if int(contradictions) > 0:
+            return True
+        if len(domains) < 3:
+            return True
+        if high_conf < 2:
+            return True
+
+        return False
 
     def _append_cost_stats(
         self,

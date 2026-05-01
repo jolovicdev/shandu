@@ -8,6 +8,7 @@ from blackgeorge import Job, Worker
 from pydantic import BaseModel, Field
 
 from ..contracts import (
+    CoverageAssessment,
     FinalReportDraft,
     IterationPlan,
     IterationSynthesis,
@@ -31,6 +32,11 @@ class _SynthesisPayload(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     continue_loop: bool = True
     stop_reason: str | None = None
+    coverage_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    open_question_severity: float = Field(default=0.5, ge=0.0, le=1.0)
+    contradiction_count: int = Field(default=0, ge=0)
+    recency_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    coverage_should_continue: bool = True
 
 
 class LeadAgent:
@@ -133,17 +139,29 @@ class LeadAgent:
                 "You are LeadSynthesizer. "
                 "Synthesize only from supplied evidence and prior summaries. "
                 "Separate validated findings from unknowns. "
-                "Avoid duplicative statements and prioritize decision-useful synthesis."
+                "Avoid duplicative statements and prioritize decision-useful synthesis. "
+                "Provide a coverage assessment: rate how completely the evidence answers "
+                "the query (coverage_score 0-1), how severely open questions undermine "
+                "confidence (open_question_severity 0-1), how many direct contradictions "
+                "exist in the evidence, how recent the body of evidence feels (recency_score 0-1), "
+                "and whether another research iteration would materially improve the answer "
+                "(coverage_should_continue). Be conservative: default to continuing when "
+                "evidence is thin, sources are few, or important claims lack support."
             ),
         )
         job = Job(
             input=(
-                "Synthesize this iteration and decide whether another research loop is needed.\n"
+                "Synthesize this iteration and assess evidence coverage.\n"
                 "Requirements:\n"
                 "- summary should state what is known now and why.\n"
                 "- key_findings should contain concrete, evidence-backed points.\n"
                 "- open_questions should capture missing evidence required for confidence.\n"
                 "- continue_loop=false if evidence is already sufficient or no productive next step remains.\n"
+                "- coverage_score: 0-1 completeness rating (0=barely started, 1=fully answered).\n"
+                "- open_question_severity: 0-1 how badly gaps undermine the answer (0=minor, 1=critical).\n"
+                "- contradiction_count: number of direct factual conflicts found in evidence.\n"
+                "- recency_score: 0-1 currency of evidence (0=stale/undated, 1=very recent).\n"
+                "- coverage_should_continue: true if another iteration would help, false if done.\n"
                 f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
             ),
             response_schema=_SynthesisPayload,
@@ -157,6 +175,13 @@ class LeadAgent:
                     open_questions=report.data.open_questions,
                     continue_loop=report.data.continue_loop,
                     stop_reason=report.data.stop_reason,
+                    coverage=CoverageAssessment(
+                        coverage_score=report.data.coverage_score,
+                        open_question_severity=report.data.open_question_severity,
+                        contradiction_count=report.data.contradiction_count,
+                        recency_score=report.data.recency_score,
+                        should_continue=report.data.coverage_should_continue,
+                    ),
                 )
         except Exception:
             pass
@@ -283,7 +308,7 @@ class LeadAgent:
                 {
                     "task_id": str(entry.get("task_id", "")),
                     "query": str(entry.get("query", "")),
-                    "url": str(entry.get("url", "")),
+                    "url": str(entry.get("requested_url", entry.get("url", ""))),
                     "title": str(entry.get("title", "")),
                     "snippet": str(entry.get("snippet", "")),
                     "extracted_text": str(entry.get("extracted_text", ""))[:2200],

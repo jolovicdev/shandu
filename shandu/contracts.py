@@ -69,12 +69,21 @@ class MemoryNote(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class CoverageAssessment(BaseModel):
+    coverage_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    open_question_severity: float = Field(default=0.5, ge=0.0, le=1.0)
+    contradiction_count: int = Field(default=0, ge=0)
+    recency_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    should_continue: bool = True
+
+
 class IterationSynthesis(BaseModel):
     summary: str
     key_findings: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     continue_loop: bool = True
     stop_reason: str | None = None
+    coverage: CoverageAssessment | None = None
 
 
 class ReportSection(BaseModel):

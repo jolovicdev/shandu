@@ -58,7 +58,7 @@ class RuntimeBootstrap:
     def from_config(cls) -> "RuntimeBootstrap":
         return cls(
             RuntimeSettings(
-                model=str(config.get("api", "model", "deepseek/deepseek-chat")),
+                model=str(config.get("api", "model", "deepseek/deepseek-v4-flash")),
                 temperature=float(config.get("api", "temperature", 0.2)),
                 max_tokens=int(config.get("api", "max_tokens", 8192)),
                 storage_dir=str(config.get("runtime", "storage_dir", ".blackgeorge")),

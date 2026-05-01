@@ -10,7 +10,7 @@ from shandu.services.search import SearchHit
 
 class FakeRuntime:
     def __init__(self) -> None:
-        self.settings = SimpleNamespace(model="deepseek/deepseek-chat")
+        self.settings = SimpleNamespace(model="deepseek/deepseek-v4-flash")
         self.desk = SimpleNamespace(arun=None)
 
 

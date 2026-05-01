@@ -23,7 +23,7 @@ def infer_api_key_env_name(model: str) -> str:
 
 DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
     "api": {
-        "model": "deepseek/deepseek-chat",
+        "model": "deepseek/deepseek-v4-flash",
         "temperature": 0.2,
         "max_tokens": 8192,
         "api_key_env": "",

@@ -11,7 +11,7 @@ def test_dashboard_renders_sections() -> None:
     ui = ShanduUI(console=console)
 
     request = ResearchRequest(query="Distributed retrieval", max_iterations=2, parallelism=2)
-    snapshot = ui.new_snapshot(request, model="deepseek/deepseek-chat")
+    snapshot = ui.new_snapshot(request, model="deepseek/deepseek-v4-flash")
     snapshot.apply(RunEvent(stage="plan", message="Plan ready", iteration=0, metrics={"tasks": 2}))
     snapshot.apply(RunEvent(stage="search", message="Search complete", iteration=0, metrics={"evidence": 4}))
 

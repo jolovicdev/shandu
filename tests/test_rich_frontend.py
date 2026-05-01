@@ -12,7 +12,7 @@ def test_result_panels_render() -> None:
     console = Console(record=True, width=140)
     ui = ShanduUI(console=console)
     request = ResearchRequest(query="q")
-    snapshot = ui.new_snapshot(request, model="deepseek/deepseek-chat")
+    snapshot = ui.new_snapshot(request, model="deepseek/deepseek-v4-flash")
     console.print(ui.dashboard(snapshot))
     output = console.export_text()
     assert "Control Plane" in output

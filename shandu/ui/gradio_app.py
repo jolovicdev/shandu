@@ -525,7 +525,7 @@ def _save_configuration(
     max_results_per_query: object,
     max_pages_per_task: object,
 ) -> str:
-    model_text = str(model or "").strip() or "deepseek/deepseek-chat"
+    model_text = str(model or "").strip() or "deepseek/deepseek-v4-flash"
     env_text = str(api_key_env or "").strip()
     key_text = str(api_key_value or "").strip()
     temperature_value = float(temperature) if temperature is not None else 0.2
@@ -587,7 +587,7 @@ def _render_bundle(state: GuiRunState, running: bool) -> tuple[Any, ...]:
 
 
 def build_gui() -> Any:
-    default_model = str(config.get("api", "model", "deepseek/deepseek-chat"))
+    default_model = str(config.get("api", "model", "deepseek/deepseek-v4-flash"))
     default_api_env = config.get_api_key_env_name(default_model)
     default_temperature = float(config.get("api", "temperature", 0.2))
     default_max_tokens = int(config.get("api", "max_tokens", 8192))

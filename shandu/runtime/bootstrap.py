@@ -21,6 +21,8 @@ class RuntimeSettings:
     structured_output_retries: int
     max_iterations: int
     max_tool_calls: int
+    num_retries: int
+    max_context_messages: int
 
 
 class RuntimeBootstrap:
@@ -46,6 +48,8 @@ class RuntimeBootstrap:
             structured_output_retries=settings.structured_output_retries,
             max_iterations=settings.max_iterations,
             max_tool_calls=settings.max_tool_calls,
+            num_retries=settings.num_retries,
+            max_context_messages=settings.max_context_messages,
             respect_context_window=True,
             memory_store=self.memory_store,
         )
@@ -67,6 +71,10 @@ class RuntimeBootstrap:
                 ),
                 max_iterations=int(config.get("runtime", "max_iterations", 12)),
                 max_tool_calls=int(config.get("runtime", "max_tool_calls", 24)),
+                num_retries=int(config.get("runtime", "num_retries", 2)),
+                max_context_messages=int(
+                    config.get("runtime", "max_context_messages", 30)
+                ),
             )
         )
 

@@ -34,6 +34,8 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "structured_output_retries": 3,
         "max_iterations": 12,
         "max_tool_calls": 24,
+        "num_retries": 2,
+        "max_context_messages": 30,
     },
     "orchestration": {
         "max_iterations": 2,

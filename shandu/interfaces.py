@@ -44,9 +44,13 @@ class SearchHitLike(Protocol):
 
 
 class ScrapedPageLike(Protocol):
+    requested_url: str
     url: str
     title: str
     text: str
+    domain: str
+    fetched_at: Any
+    published_at: str | None
 
 
 class SearchServiceLike(Protocol):

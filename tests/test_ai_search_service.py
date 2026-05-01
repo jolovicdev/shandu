@@ -52,6 +52,7 @@ class FakeScrapeService:
     async def scrape_many(self, urls: list[str]) -> list[ScrapedPage]:
         return [
             ScrapedPage(
+                requested_url=url,
                 url=url,
                 title=f"Title {idx}",
                 text=f"Long text for {url}",

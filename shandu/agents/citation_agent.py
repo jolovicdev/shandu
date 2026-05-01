@@ -76,7 +76,7 @@ class CitationAgent:
             return []
         by_url: dict[str, set[str]] = {}
         for item in evidence:
-            by_url.setdefault(item.url, set()).add(item.evidence_id)
+            by_url.setdefault(item.requested_url, set()).add(item.evidence_id)
 
         normalized: list[CitationEntry] = []
         seen: set[str] = set()
@@ -104,7 +104,7 @@ class CitationAgent:
     def _fallback(self, evidence: list[EvidenceRecord]) -> list[CitationEntry]:
         grouped: dict[str, list[EvidenceRecord]] = {}
         for item in evidence:
-            grouped.setdefault(item.url, []).append(item)
+            grouped.setdefault(item.requested_url, []).append(item)
 
         citations: list[CitationEntry] = []
         accessed = date.today().isoformat()

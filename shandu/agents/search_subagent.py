@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlparse
 
 from blackgeorge import Job, Worker
 from blackgeorge.utils import new_id
@@ -97,7 +98,7 @@ class SearchSubagent:
                 "urls": [page.url for page in pages],
             },
         )
-        pages_by_url = {page.url: page for page in pages}
+        pages_by_url = {page.requested_url: page for page in pages}
         hits_by_url = {entry["url"]: entry for entry in all_hits}
 
         evidence: list[EvidenceRecord] = []
@@ -127,11 +128,17 @@ class SearchSubagent:
                     evidence_id=new_id(),
                     task_id=task.task_id,
                     query=task.focus,
-                    url=page.url,
+                    requested_url=page.requested_url,
+                    final_url=page.url,
+                    domain=page.domain,
                     title=page.title,
                     snippet=extraction.snippet,
                     extracted_text=extraction.extracted_text,
                     confidence=extraction.confidence,
+                    fetched_at=page.fetched_at,
+                    published_at=page.published_at,
+                    source_type="webpage",
+                    extraction_method="main_html",
                 )
             )
 
@@ -149,11 +156,15 @@ class SearchSubagent:
                     evidence_id=new_id(),
                     task_id=task.task_id,
                     query=task.focus,
-                    url=url,
+                    requested_url=url,
+                    domain=urlparse(url).netloc or None,
                     title=title,
                     snippet=snippet or title,
                     extracted_text=extracted_text,
                     confidence=0.33,
+                    source_type="search_snippet",
+                    extraction_method="search_snippet_fallback",
+                    fetch_error="scrape_failed",
                 )
             )
             await self._emit_trace(

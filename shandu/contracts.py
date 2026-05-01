@@ -35,11 +35,20 @@ class EvidenceRecord(BaseModel):
     evidence_id: str
     task_id: str
     query: str
-    url: str
+    requested_url: str
+    final_url: str | None = None
+    domain: str | None = None
     title: str
     snippet: str
     extracted_text: str
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    fetched_at: datetime | None = None
+    published_at: str | None = None
+    source_type: str | None = None
+    extraction_method: str = ""
+    relevance_score: float | None = None
+    credibility_score: float | None = None
+    fetch_error: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

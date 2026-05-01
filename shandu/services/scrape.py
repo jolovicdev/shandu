@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone
 from typing import Iterable
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import aiohttp
 from bs4 import BeautifulSoup
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..config import config
 
@@ -30,10 +32,13 @@ _USER_AGENTS = [
 
 
 class ScrapedPage(BaseModel):
+    requested_url: str
     url: str
     title: str
     text: str
     domain: str
+    fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    published_at: str | None = None
 
 
 class ScrapeService:
@@ -166,11 +171,15 @@ class ScrapeService:
         if not text:
             return None
 
+        published_at = self._extract_published_at(html)
+
         return ScrapedPage(
+            requested_url=url,
             url=final_url,
             title=title or final_url,
             text=text,
             domain=urlparse(final_url).netloc,
+            published_at=published_at,
         )
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -204,6 +213,41 @@ class ScrapeService:
         if len(text) > 18000:
             text = text[:18000].rstrip()
         return title, text
+
+    @staticmethod
+    def _extract_published_at(html: str) -> str | None:
+        soup = BeautifulSoup(html, "lxml")
+
+        og_time = soup.find("meta", attrs={"property": "article:published_time"})
+        if og_time and og_time.get("content"):
+            return str(og_time["content"]).strip()
+
+        for script in soup.select("script[type='application/ld+json']"):
+            try:
+                data = json.loads(script.string or "")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(data, dict):
+                pub = data.get("datePublished") or data.get("dateCreated")
+                if pub:
+                    return str(pub).strip()
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        pub = item.get("datePublished") or item.get("dateCreated")
+                        if pub:
+                            return str(pub).strip()
+
+        for meta_name in ("date", "pubdate", "dc.date"):
+            tag = soup.find("meta", attrs={"name": meta_name})
+            if tag and tag.get("content"):
+                return str(tag["content"]).strip()
+
+        time_tag = soup.find("time", attrs={"datetime": True})
+        if time_tag:
+            return str(time_tag["datetime"]).strip()
+
+        return None
 
     @staticmethod
     def _extract_title(soup: BeautifulSoup) -> str:

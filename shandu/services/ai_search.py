@@ -29,7 +29,7 @@ class AISearchService:
         hits = await self._search.search(query, max_results=max(1, min(max_results, 20)))
         urls = [hit.url for hit in hits[: max(1, min(max_pages, 10))]]
         scraped_pages = await self._scrape.scrape_many(urls)
-        scraped_by_url = {page.url: page for page in scraped_pages}
+        scraped_by_url = {page.requested_url: page for page in scraped_pages}
 
         sources: list[AISearchSource] = []
         seen: set[str] = set()

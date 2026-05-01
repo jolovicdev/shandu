@@ -46,6 +46,7 @@ class ScrapeService:
         self._total_scrapes = 0
         self._retry_count = 0
         self._page_cache: dict[str, ScrapedPage] = {}
+        self._inflight: dict[str, asyncio.Task[ScrapedPage | None]] = {}
         self._headers = {
             "User-Agent": _USER_AGENTS[0],
             "Accept-Language": "en-US,en;q=0.9",
@@ -86,13 +87,27 @@ class ScrapeService:
         if cached is not None:
             return cached
 
+        in_flight = self._inflight.get(normalized_url)
+        if in_flight is not None:
+            return await in_flight
+
+        task = asyncio.create_task(self._do_scrape(normalized_url, session))
+        self._inflight[normalized_url] = task
+        try:
+            return await task
+        finally:
+            self._inflight.pop(normalized_url, None)
+
+    async def _do_scrape(
+        self,
+        url: str,
+        session: aiohttp.ClientSession | None = None,
+    ) -> ScrapedPage | None:
         active_session = session or await self._get_session()
         owns_session = session is None
         self._total_scrapes += 1
 
-        page = await self._scrape_with_retry(
-            normalized_url, active_session, attempt=0
-        )
+        page = await self._scrape_with_retry(url, active_session, attempt=0)
 
         if owns_session and not active_session.closed:
             await active_session.close()

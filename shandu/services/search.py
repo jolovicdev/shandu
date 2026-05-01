@@ -53,6 +53,7 @@ class SearchService:
         self._safesearch = str(config.get("search", "safesearch", "moderate"))
         self._cache: dict[str, tuple[float, list[SearchHit]]] = {}
         self._cache_ttl = 300.0
+        self._inflight: dict[str, asyncio.Task[list[SearchHit]]] = {}
 
     def _cache_key(self, query: str, max_results: int) -> str:
         return f"{query}:{max_results}:{self._region}:{self._safesearch}"
@@ -78,6 +79,18 @@ class SearchService:
         if cached is not None:
             return cached
 
+        in_flight = self._inflight.get(key)
+        if in_flight is not None:
+            return await in_flight
+
+        task = asyncio.create_task(self._do_search(key, query, max_results))
+        self._inflight[key] = task
+        try:
+            return await task
+        finally:
+            self._inflight.pop(key, None)
+
+    async def _do_search(self, key: str, query: str, max_results: int) -> list[SearchHit]:
         raw: list[Mapping[str, Any]] | None = None
         for backend in ("duckduckgo", "lite", "html", "auto"):
             try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import time
 from collections.abc import Mapping
 from types import ModuleType
 from typing import Any, Protocol, cast
@@ -50,10 +51,32 @@ class SearchService:
         self._ddgs = _resolve_ddgs()
         self._region = str(config.get("search", "region", "wt-wt"))
         self._safesearch = str(config.get("search", "safesearch", "moderate"))
+        self._cache: dict[str, tuple[float, list[SearchHit]]] = {}
+        self._cache_ttl = 300.0
+
+    def _cache_key(self, query: str, max_results: int) -> str:
+        return f"{query}:{max_results}:{self._region}:{self._safesearch}"
+
+    def _get_cached(self, key: str) -> list[SearchHit] | None:
+        if key not in self._cache:
+            return None
+        timestamp, hits = self._cache[key]
+        if time.monotonic() - timestamp > self._cache_ttl:
+            del self._cache[key]
+            return None
+        return hits
+
+    def _set_cached(self, key: str, hits: list[SearchHit]) -> None:
+        self._cache[key] = (time.monotonic(), hits)
 
     async def search(self, query: str, max_results: int) -> list[SearchHit]:
         if self._ddgs is None:
             return []
+
+        key = self._cache_key(query, max_results)
+        cached = self._get_cached(key)
+        if cached is not None:
+            return cached
 
         raw: list[Mapping[str, Any]] | None = None
         for backend in ("duckduckgo", "lite", "html", "auto"):
@@ -84,6 +107,7 @@ class SearchService:
             if len(hits) >= max_results:
                 break
 
+        self._set_cached(key, hits)
         return hits
 
     def _fetch_backend(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Iterable
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
@@ -9,6 +10,8 @@ from bs4 import BeautifulSoup
 from pydantic import BaseModel
 
 from ..config import config
+
+logger = logging.getLogger(__name__)
 
 
 class ScrapedPage(BaseModel):
@@ -24,6 +27,8 @@ class ScrapeService:
         self._max_concurrent = int(config.get("scraper", "max_concurrent", 5))
         self._proxy = config.get("scraper", "proxy")
         self._semaphore = asyncio.Semaphore(max(1, min(self._max_concurrent, 12)))
+        self._timeout_count = 0
+        self._total_scrapes = 0
         self._headers = {
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -64,6 +69,7 @@ class ScrapeService:
             return None
         active_session = session or await self._get_session()
         owns_session = session is None
+        self._total_scrapes += 1
         async with self._semaphore:
             try:
                 if self._proxy:
@@ -86,6 +92,10 @@ class ScrapeService:
                         return None
                     html = await response.text(errors="ignore")
                     final_url = self._canonicalize_url(str(response.url)) or normalized_url
+            except asyncio.TimeoutError:
+                self._timeout_count += 1
+                logger.warning("Scrape timeout: %s (timeout=%ss)", normalized_url, self._timeout)
+                return None
             except Exception:
                 return None
             finally:

@@ -10,7 +10,7 @@ from shandu.services.search import SearchHit
 
 class FakeRuntime:
     def __init__(self) -> None:
-        self.settings = SimpleNamespace(model="deepseek/deepseek-chat")
+        self.settings = SimpleNamespace(model="deepseek/deepseek-v4-flash")
         self.desk = SimpleNamespace(arun=None)
 
 
@@ -56,7 +56,7 @@ def test_search_subagent_uses_search_hit_fallback_when_scrape_fails() -> None:
     evidence = asyncio.run(subagent.execute_task("run:1", task, request))
 
     assert len(evidence) == 2
-    assert {item.url for item in evidence} == {"https://example.com/a", "https://example.com/b"}
+    assert {item.requested_url for item in evidence} == {"https://example.com/a", "https://example.com/b"}
     assert all(item.confidence == 0.33 for item in evidence)
 
 

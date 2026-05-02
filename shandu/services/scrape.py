@@ -1,21 +1,44 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+from datetime import datetime, timezone
 from typing import Iterable
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import aiohttp
 from bs4 import BeautifulSoup
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..config import config
 
+logger = logging.getLogger(__name__)
+
+_USER_AGENTS = [
+    (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"
+    ),
+]
+
 
 class ScrapedPage(BaseModel):
+    requested_url: str
     url: str
     title: str
     text: str
     domain: str
+    fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    published_at: str | None = None
 
 
 class ScrapeService:
@@ -24,11 +47,13 @@ class ScrapeService:
         self._max_concurrent = int(config.get("scraper", "max_concurrent", 5))
         self._proxy = config.get("scraper", "proxy")
         self._semaphore = asyncio.Semaphore(max(1, min(self._max_concurrent, 12)))
+        self._timeout_count = 0
+        self._total_scrapes = 0
+        self._retry_count = 0
+        self._page_cache: dict[str, ScrapedPage] = {}
+        self._inflight: dict[str, asyncio.Task[ScrapedPage | None]] = {}
         self._headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": _USER_AGENTS[0],
             "Accept-Language": "en-US,en;q=0.9",
         }
 
@@ -62,22 +87,82 @@ class ScrapeService:
         normalized_url = self._canonicalize_url(url)
         if not normalized_url:
             return None
+
+        cached = self._page_cache.get(normalized_url)
+        if cached is not None:
+            return cached
+
+        in_flight = self._inflight.get(normalized_url)
+        if in_flight is not None:
+            return await in_flight
+
+        task = asyncio.create_task(self._do_scrape(normalized_url, session))
+        self._inflight[normalized_url] = task
+        try:
+            return await task
+        finally:
+            self._inflight.pop(normalized_url, None)
+
+    async def _do_scrape(
+        self,
+        url: str,
+        session: aiohttp.ClientSession | None = None,
+    ) -> ScrapedPage | None:
         active_session = session or await self._get_session()
         owns_session = session is None
+        self._total_scrapes += 1
+
+        page = await self._scrape_with_retry(url, active_session, attempt=0)
+
+        if owns_session and not active_session.closed:
+            await active_session.close()
+
+        if page is not None:
+            self._page_cache[url] = page
+            final_key = self._canonicalize_url(page.url)
+            if final_key != url:
+                self._page_cache[final_key] = page.model_copy(update={"requested_url": final_key})
+        return page
+
+    async def _scrape_with_retry(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        attempt: int,
+    ) -> ScrapedPage | None:
+        result = await self._fetch_one(url, session, attempt)
+        if result is not None:
+            return result
+        if attempt == 0:
+            self._retry_count += 1
+            return await self._scrape_with_retry(url, session, attempt=1)
+        return None
+
+    async def _fetch_one(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        attempt: int,
+    ) -> ScrapedPage | None:
         async with self._semaphore:
             try:
+                headers = dict(self._headers)
+                if attempt > 0:
+                    ua_index = attempt % len(_USER_AGENTS)
+                    headers["User-Agent"] = _USER_AGENTS[ua_index]
+
                 if self._proxy:
-                    response_ctx = active_session.get(
-                        normalized_url,
+                    response_ctx = session.get(
+                        url,
                         allow_redirects=True,
-                        headers=self._headers,
+                        headers=headers,
                         proxy=self._proxy,
                     )
                 else:
-                    response_ctx = active_session.get(
-                        normalized_url,
+                    response_ctx = session.get(
+                        url,
                         allow_redirects=True,
-                        headers=self._headers,
+                        headers=headers,
                     )
                 async with response_ctx as response:
                     response.raise_for_status()
@@ -85,22 +170,27 @@ class ScrapeService:
                     if "text/" not in content_type and "html" not in content_type:
                         return None
                     html = await response.text(errors="ignore")
-                    final_url = self._canonicalize_url(str(response.url)) or normalized_url
+                    final_url = self._canonicalize_url(str(response.url)) or url
+            except asyncio.TimeoutError:
+                self._timeout_count += 1
+                logger.warning("Scrape timeout: %s (timeout=%ss, attempt=%s)", url, self._timeout, attempt + 1)
+                return None
             except Exception:
                 return None
-            finally:
-                if owns_session and not active_session.closed:
-                    await active_session.close()
 
         title, text = self._extract(html)
         if not text:
             return None
 
+        published_at = self._extract_published_at(html)
+
         return ScrapedPage(
+            requested_url=url,
             url=final_url,
             title=title or final_url,
             text=text,
             domain=urlparse(final_url).netloc,
+            published_at=published_at,
         )
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -134,6 +224,41 @@ class ScrapeService:
         if len(text) > 18000:
             text = text[:18000].rstrip()
         return title, text
+
+    @staticmethod
+    def _extract_published_at(html: str) -> str | None:
+        soup = BeautifulSoup(html, "lxml")
+
+        og_time = soup.find("meta", attrs={"property": "article:published_time"})
+        if og_time and og_time.get("content"):
+            return str(og_time["content"]).strip()
+
+        for script in soup.select("script[type='application/ld+json']"):
+            try:
+                data = json.loads(script.string or "")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(data, dict):
+                pub = data.get("datePublished") or data.get("dateCreated")
+                if pub:
+                    return str(pub).strip()
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        pub = item.get("datePublished") or item.get("dateCreated")
+                        if pub:
+                            return str(pub).strip()
+
+        for meta_name in ("date", "pubdate", "dc.date"):
+            tag = soup.find("meta", attrs={"name": meta_name})
+            if tag and tag.get("content"):
+                return str(tag["content"]).strip()
+
+        time_tag = soup.find("time", attrs={"datetime": True})
+        if time_tag:
+            return str(time_tag["datetime"]).strip()
+
+        return None
 
     @staticmethod
     def _extract_title(soup: BeautifulSoup) -> str:

@@ -15,7 +15,7 @@ class FailingDesk:
 
 class FakeRuntime:
     def __init__(self) -> None:
-        self.settings = SimpleNamespace(model="deepseek/deepseek-chat")
+        self.settings = SimpleNamespace(model="deepseek/deepseek-v4-flash")
         self.desk = FailingDesk()
 
 
@@ -26,7 +26,7 @@ def test_citation_agent_falls_back_to_deterministic_entries() -> None:
             evidence_id="e1",
             task_id="t1",
             query="q",
-            url="https://example.com/a",
+            requested_url="https://example.com/a",
             title="A",
             snippet="s",
             extracted_text="x",
@@ -36,7 +36,7 @@ def test_citation_agent_falls_back_to_deterministic_entries() -> None:
             evidence_id="e2",
             task_id="t2",
             query="q",
-            url="https://example.com/a",
+            requested_url="https://example.com/a",
             title="A2",
             snippet="s2",
             extracted_text="x2",
@@ -46,7 +46,7 @@ def test_citation_agent_falls_back_to_deterministic_entries() -> None:
             evidence_id="e3",
             task_id="t3",
             query="q",
-            url="https://another.net/b",
+            requested_url="https://another.net/b",
             title="B",
             snippet="s3",
             extracted_text="x3",

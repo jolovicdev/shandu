@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
-
 from blackgeorge import Job, Worker
 
 from ..contracts import AISearchResult, AISearchSource
 from ..interfaces import DetailLevel, RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
+from ..prompts import aisearch_expected_output, aisearch_instructions, aisearch_job
 
 
 class AISearchService:
@@ -29,7 +28,7 @@ class AISearchService:
         hits = await self._search.search(query, max_results=max(1, min(max_results, 20)))
         urls = [hit.url for hit in hits[: max(1, min(max_pages, 10))]]
         scraped_pages = await self._scrape.scrape_many(urls)
-        scraped_by_url = {page.url: page for page in scraped_pages}
+        scraped_by_url = {page.requested_url: page for page in scraped_pages}
 
         sources: list[AISearchSource] = []
         seen: set[str] = set()
@@ -68,33 +67,11 @@ class AISearchService:
         worker = Worker(
             name="AISearchAnalyst",
             model=self._runtime.settings.model,
-            instructions=(
-                "You are AISearchAnalyst. "
-                "Answer directly with technical rigor and coherent long-form reasoning. "
-                "Use only provided sources, avoid fabrication, and include clear caveats for uncertainty. "
-                "Citations must map to source order. "
-                "Choose output structure based on query shape: use markdown tables when comparing options, "
-                "rankings, costs, timelines, or feature matrices, and otherwise prioritize concise narrative flow."
-            ),
+            instructions=aisearch_instructions(),
         )
         job = Job(
-            input=(
-                "Write a markdown response that answers the query directly.\n"
-                f"Minimum body length: {min_words} words.\n"
-                "Use citation markers [1], [2], ... that map to source order.\n"
-                "Required sections:\n"
-                "# <Title>\n"
-                "## Answer\n"
-                "## Supporting Evidence\n"
-                "## Caveats\n"
-                "## Sources\n"
-                "If the query is comparison-heavy, include one compact markdown table in Supporting Evidence.\n"
-                "If the query is not comparison-heavy, do not force a table.\n"
-                "Use only source material in payload.\n"
-                "Do not cite any source not present in payload.\n"
-                f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-            ),
-            expected_output="Long markdown answer with source-linked citations.",
+            input=aisearch_job(payload, min_words),
+            expected_output=aisearch_expected_output(),
         )
         try:
             report = await self._runtime.desk.arun(worker, job)

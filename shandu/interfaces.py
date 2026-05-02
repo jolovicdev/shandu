@@ -44,9 +44,13 @@ class SearchHitLike(Protocol):
 
 
 class ScrapedPageLike(Protocol):
+    requested_url: str
     url: str
     title: str
     text: str
+    domain: str
+    fetched_at: Any
+    published_at: str | None
 
 
 class SearchServiceLike(Protocol):
@@ -58,6 +62,8 @@ class ScrapeServiceLike(Protocol):
 
 
 class LeadAgentLike(Protocol):
+    fallback_count: int
+
     async def create_iteration_plan(
         self,
         request: ResearchRequest,

@@ -73,6 +73,8 @@ class LeadOrchestrator:
         all_evidence: list[EvidenceRecord] = []
         iteration_summaries: list[IterationSynthesis] = []
         agent_model_calls = 0
+        lead_fallbacks = self._lead.fallback_count
+        extraction_fallbacks = 0
 
         for iteration in range(request.max_iterations):
             memory_context = self._memory.search(scope, "iteration")
@@ -83,6 +85,16 @@ class LeadOrchestrator:
                 prior_summaries=iteration_summaries,
                 memory_context=memory_context,
             )
+            if self._lead.fallback_count > lead_fallbacks:
+                lead_fallbacks = self._lead.fallback_count
+                await emit(
+                    RunEvent(
+                        stage="error",
+                        message="Lead planner fell back to deterministic plan",
+                        iteration=iteration,
+                        payload={"method": "create_iteration_plan"},
+                    ),
+                )
             self._memory.write(
                 scope,
                 f"iteration:{iteration}:plan",
@@ -128,9 +140,11 @@ class LeadOrchestrator:
                     trace_type: str,
                     payload: dict[str, Any],
                 ) -> None:
-                    nonlocal agent_model_calls
+                    nonlocal agent_model_calls, extraction_fallbacks
                     if trace_type == "extract_started":
                         agent_model_calls += 1
+                    elif trace_type == "extraction_fallback":
+                        extraction_fallbacks += 1
                     await emit(
                         self._build_search_trace_event(
                             iteration=iteration,
@@ -230,6 +244,16 @@ class LeadOrchestrator:
                 iteration_evidence=[item.model_dump(mode="json") for item in iteration_evidence],
                 prior_summaries=iteration_summaries,
             )
+            if self._lead.fallback_count > lead_fallbacks:
+                lead_fallbacks = self._lead.fallback_count
+                await emit(
+                    RunEvent(
+                        stage="error",
+                        message="Lead synthesizer fell back to deterministic synthesis",
+                        iteration=iteration,
+                        payload={"method": "synthesize_iteration"},
+                    ),
+                )
             iteration_summaries.append(synthesis)
             self._memory.write(
                 scope,
@@ -242,16 +266,28 @@ class LeadOrchestrator:
                     stage="synthesize",
                     message=f"Iteration {iteration + 1} synthesized",
                     iteration=iteration,
-                    metrics={"continue_loop": synthesis.continue_loop},
+                    metrics={
+                        "continue_loop": synthesis.continue_loop,
+                        "coverage_score": synthesis.coverage.coverage_score if synthesis.coverage else None,
+                        "depth_policy": request.depth_policy,
+                    },
                     payload={"stop_reason": synthesis.stop_reason or ""},
                 ),
             )
 
             if not plan.continue_loop:
                 break
-            if not synthesis.continue_loop:
-                break
             if not iteration_evidence:
+                break
+
+            if request.depth_policy == "adaptive" and synthesis.coverage is not None:
+                if not synthesis.continue_loop:
+                    break
+                if not self._adaptive_should_continue(
+                    synthesis.coverage, all_evidence, request.max_iterations, iteration
+                ):
+                    break
+            elif not synthesis.continue_loop:
                 break
 
         agent_model_calls += 1
@@ -271,6 +307,15 @@ class LeadOrchestrator:
             evidence_payload=[item.model_dump(mode="json") for item in all_evidence],
             citations_payload=[entry.model_dump(mode="json") for entry in citations],
         )
+        if self._lead.fallback_count > lead_fallbacks:
+            lead_fallbacks = self._lead.fallback_count
+            await emit(
+                RunEvent(
+                    stage="error",
+                    message="Lead reporter fell back to deterministic report",
+                    payload={"method": "build_final_report"},
+                ),
+            )
         report_markdown = self._report.render(request, draft, citations)
         await emit(
             RunEvent(
@@ -287,6 +332,7 @@ class LeadOrchestrator:
             "evidence_count": len(all_evidence),
             "citation_count": len(citations),
             "agent_model_calls": agent_model_calls,
+            "agent_fallbacks": lead_fallbacks + extraction_fallbacks,
         }
         self._append_cost_stats(run_stats, cost_start)
 
@@ -341,6 +387,47 @@ class LeadOrchestrator:
         result = callback(event)
         if isinstance(result, Awaitable):
             await result
+
+    @staticmethod
+    def _adaptive_should_continue(
+        coverage: object,
+        cumulative_evidence: list[Any],
+        max_iterations: int,
+        iteration: int,
+    ) -> bool:
+        if iteration + 1 >= max_iterations:
+            return False
+
+        cov = getattr(coverage, "coverage_score", 0.5)
+        severity = getattr(coverage, "open_question_severity", 0.5)
+        contradictions = getattr(coverage, "contradiction_count", 0)
+        should = getattr(coverage, "should_continue", True)
+
+        if should:
+            return True
+
+        domains: set[str] = set()
+        high_conf = 0
+        for ev in cumulative_evidence:
+            d = getattr(ev, "domain", None)
+            if d and isinstance(d, str):
+                domains.add(d)
+            conf = getattr(ev, "confidence", 0.0) or 0.0
+            if conf >= 0.7:
+                high_conf += 1
+
+        if float(cov) < 0.6:
+            return True
+        if float(severity) > 0.5:
+            return True
+        if int(contradictions) > 0:
+            return True
+        if len(domains) < 3:
+            return True
+        if high_conf < 2:
+            return True
+
+        return False
 
     def _append_cost_stats(
         self,
@@ -408,6 +495,10 @@ class LeadOrchestrator:
             message = f"Task {task_id} fallback evidence added" if task_id else "Fallback evidence added"
             if "confidence" in payload:
                 metrics["confidence"] = payload["confidence"]
+        elif trace_type == "extraction_fallback":
+            message = f"Task {task_id} extraction fell back to deterministic" if task_id else "Extraction fell back"
+            if "url" in payload:
+                metrics["url"] = payload["url"]
 
         return RunEvent(
             stage="search",

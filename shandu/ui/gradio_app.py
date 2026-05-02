@@ -525,11 +525,11 @@ def _save_configuration(
     max_results_per_query: object,
     max_pages_per_task: object,
 ) -> str:
-    model_text = str(model or "").strip() or "deepseek/deepseek-chat"
+    model_text = str(model or "").strip() or "deepseek/deepseek-v4-flash"
     env_text = str(api_key_env or "").strip()
     key_text = str(api_key_value or "").strip()
     temperature_value = float(temperature) if temperature is not None else 0.2
-    max_tokens_value = int(max_tokens) if max_tokens is not None else 8192
+    max_tokens_value = int(max_tokens) if max_tokens is not None else 16384
     max_iterations_value = int(max_iterations) if max_iterations is not None else 2
     parallelism_value = int(parallelism) if parallelism is not None else 3
     max_results_value = int(max_results_per_query) if max_results_per_query is not None else 5
@@ -587,10 +587,10 @@ def _render_bundle(state: GuiRunState, running: bool) -> tuple[Any, ...]:
 
 
 def build_gui() -> Any:
-    default_model = str(config.get("api", "model", "deepseek/deepseek-chat"))
+    default_model = str(config.get("api", "model", "deepseek/deepseek-v4-flash"))
     default_api_env = config.get_api_key_env_name(default_model)
     default_temperature = float(config.get("api", "temperature", 0.2))
-    default_max_tokens = int(config.get("api", "max_tokens", 8192))
+    default_max_tokens = int(config.get("api", "max_tokens", 16384))
     default_iterations = int(config.get("orchestration", "max_iterations", 2))
     default_parallelism = int(config.get("orchestration", "parallelism", 3))
     default_detail = str(config.get("orchestration", "detail_level", "high"))

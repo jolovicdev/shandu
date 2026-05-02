@@ -35,11 +35,20 @@ class EvidenceRecord(BaseModel):
     evidence_id: str
     task_id: str
     query: str
-    url: str
+    requested_url: str
+    final_url: str | None = None
+    domain: str | None = None
     title: str
     snippet: str
     extracted_text: str
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    fetched_at: datetime | None = None
+    published_at: str | None = None
+    source_type: str | None = None
+    extraction_method: str = ""
+    relevance_score: float | None = None
+    credibility_score: float | None = None
+    fetch_error: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -60,12 +69,21 @@ class MemoryNote(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class CoverageAssessment(BaseModel):
+    coverage_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    open_question_severity: float = Field(default=0.5, ge=0.0, le=1.0)
+    contradiction_count: int = Field(default=0, ge=0)
+    recency_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    should_continue: bool = True
+
+
 class IterationSynthesis(BaseModel):
     summary: str
     key_findings: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     continue_loop: bool = True
     stop_reason: str | None = None
+    coverage: CoverageAssessment | None = None
 
 
 class ReportSection(BaseModel):

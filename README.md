@@ -48,7 +48,7 @@ cp .env.example .env
 
 `shandu configure` now asks for:
 
-- `Default model` (example: `deepseek/deepseek-chat`, `openrouter/minimax/minimax-m2.5`)
+- `Default model` (example: `deepseek/deepseek-v4-flash`, `openrouter/minimax/minimax-m2.5`)
 - `API key env var name` (example: `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `ANYSUPPORTED_API_KEY`)
 - `API key value` (hidden input)
 
@@ -59,7 +59,7 @@ Examples:
 ```bash
 # DeepSeek
 shandu configure
-# model: deepseek/deepseek-chat
+# model: deepseek/deepseek-v4-flash
 # env var name: DEEPSEEK_API_KEY
 # key value: <your key>
 
@@ -82,7 +82,7 @@ If you prefer not to use interactive configuration, set env vars directly.
 
 Provider/model:
 
-- `SHANDU_MODEL` (primary model selector, example `deepseek/deepseek-chat`)
+- `SHANDU_MODEL` (primary model selector, example `deepseek/deepseek-v4-flash`)
 - `OPENAI_MODEL_NAME` (compatibility fallback if `SHANDU_MODEL` is not set)
 
 Provider API key routing:
@@ -101,7 +101,7 @@ Direct LiteLLM-style provider key env vars (examples):
 Generation/runtime controls:
 
 - `SHANDU_TEMPERATURE` (default `0.2`)
-- `SHANDU_MAX_TOKENS` (default `8192`)
+- `SHANDU_MAX_TOKENS` (default `16384`)
 - `SHANDU_STORAGE_DIR` (default `.blackgeorge`)
 - `SHANDU_PROXY` (optional proxy for scraping)
 

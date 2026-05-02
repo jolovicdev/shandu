@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlparse
 
 from blackgeorge import Job, Worker
 from blackgeorge.utils import new_id
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from ..contracts import EvidenceRecord, ResearchRequest, SubagentTask
 from ..interfaces import RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
+from ..prompts import extractor_instructions, extractor_job
 
 SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
@@ -97,7 +98,7 @@ class SearchSubagent:
                 "urls": [page.url for page in pages],
             },
         )
-        pages_by_url = {page.url: page for page in pages}
+        pages_by_url = {page.requested_url: page for page in pages}
         hits_by_url = {entry["url"]: entry for entry in all_hits}
 
         evidence: list[EvidenceRecord] = []
@@ -111,7 +112,7 @@ class SearchSubagent:
                     "title": page.title,
                 },
             )
-            extraction = await self._extract(task, page.url, page.title, page.text)
+            extraction = await self._extract(task, page.url, page.title, page.text, progress_callback)
             await self._emit_trace(
                 progress_callback,
                 "extract_completed",
@@ -127,11 +128,17 @@ class SearchSubagent:
                     evidence_id=new_id(),
                     task_id=task.task_id,
                     query=task.focus,
-                    url=page.url,
+                    requested_url=page.requested_url,
+                    final_url=page.url,
+                    domain=page.domain,
                     title=page.title,
                     snippet=extraction.snippet,
                     extracted_text=extraction.extracted_text,
                     confidence=extraction.confidence,
+                    fetched_at=page.fetched_at,
+                    published_at=page.published_at,
+                    source_type="webpage",
+                    extraction_method="main_html",
                 )
             )
 
@@ -149,11 +156,15 @@ class SearchSubagent:
                     evidence_id=new_id(),
                     task_id=task.task_id,
                     query=task.focus,
-                    url=url,
+                    requested_url=url,
+                    domain=urlparse(url).netloc or None,
                     title=title,
                     snippet=snippet or title,
                     extracted_text=extracted_text,
                     confidence=0.33,
+                    source_type="search_snippet",
+                    extraction_method="search_snippet_fallback",
+                    fetch_error="scrape_failed",
                 )
             )
             await self._emit_trace(
@@ -187,6 +198,7 @@ class SearchSubagent:
         url: str,
         title: str,
         text: str,
+        progress_callback: SearchTraceCallback | None = None,
     ) -> _ExtractionPayload:
         payload = {
             "task_focus": task.focus,
@@ -198,22 +210,10 @@ class SearchSubagent:
         worker = Worker(
             name=f"SubagentExtractor_{task.task_id}",
             model=self._runtime.settings.model,
-            instructions=(
-                "You are EvidenceExtractor for a research subagent. "
-                "Produce a concise, factual snippet and a richer extracted evidence body. "
-                "Prioritize relevance to task focus, preserve dates/numbers/names, and avoid generic filler. "
-                "Confidence should reflect specificity, factual density, and match to task intent."
-            ),
+            instructions=extractor_instructions(),
         )
         job = Job(
-            input=(
-                "Extract a concise snippet and evidence body from this scraped page.\n"
-                "Requirements:\n"
-                "- snippet: 1-3 sentences with strongest relevant claim(s).\n"
-                "- extracted_text: focused, source-grounded body for downstream synthesis.\n"
-                "- Do not include fabricated information.\n"
-                f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-            ),
+            input=extractor_job(payload),
             response_schema=_ExtractionPayload,
         )
         try:
@@ -222,6 +222,12 @@ class SearchSubagent:
                 return report.data
         except Exception:
             pass
+
+        await self._emit_trace(
+            progress_callback,
+            "extraction_fallback",
+            {"task_id": task.task_id, "url": url, "title": title},
+        )
 
         fallback_snippet = text[:320].strip()
         fallback_body = text[:2200].strip()

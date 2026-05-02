@@ -19,6 +19,8 @@ from shandu.services.report import ReportService
 
 
 class FakeLeadAgent:
+    fallback_count = 0
+
     async def create_iteration_plan(self, request, iteration, prior_summaries, memory_context):
         del request, prior_summaries, memory_context
         return IterationPlan(
@@ -69,7 +71,7 @@ class FakeSearchSubagent:
                 evidence_id=f"e-{task.task_id}",
                 task_id=task.task_id,
                 query=task.focus,
-                url=f"https://example.com/{task.task_id}",
+                requested_url=f"https://example.com/{task.task_id}",
                 title=f"Title {task.task_id}",
                 snippet="snippet",
                 extracted_text="text",
@@ -161,7 +163,7 @@ class SlowSearchSubagent(FakeSearchSubagent):
                 evidence_id=f"e-{task.task_id}",
                 task_id=task.task_id,
                 query=task.focus,
-                url=f"https://example.com/{task.task_id}",
+                requested_url=f"https://example.com/{task.task_id}",
                 title=f"Title {task.task_id}",
                 snippet="snippet",
                 extracted_text="text",

@@ -19,7 +19,7 @@ class FakeDesk:
 
 class FakeRuntime:
     def __init__(self, content: str) -> None:
-        self.settings = SimpleNamespace(model="deepseek/deepseek-chat")
+        self.settings = SimpleNamespace(model="deepseek/deepseek-v4-flash")
         self.desk = FakeDesk(content)
 
 
@@ -52,6 +52,7 @@ class FakeScrapeService:
     async def scrape_many(self, urls: list[str]) -> list[ScrapedPage]:
         return [
             ScrapedPage(
+                requested_url=url,
                 url=url,
                 title=f"Title {idx}",
                 text=f"Long text for {url}",

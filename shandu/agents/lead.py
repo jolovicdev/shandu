@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import date
 from typing import Any
 
@@ -17,6 +16,15 @@ from ..contracts import (
     SubagentTask,
 )
 from ..interfaces import RuntimeExecutionLike
+from ..prompts import (
+    planner_instructions,
+    planner_job,
+    reporter_expected_output,
+    reporter_instructions,
+    reporter_job,
+    synthesizer_instructions,
+    synthesizer_job,
+)
 
 
 class _PlanPayload(BaseModel):
@@ -63,33 +71,10 @@ class LeadAgent:
         worker = Worker(
             name="LeadPlanner",
             model=self._runtime.settings.model,
-            instructions=(
-                "You are LeadPlanner for a multi-agent research system. "
-                "Return only valid structured output. "
-                "Design independent subagent tasks that maximize source diversity, source quality, "
-                "and evidence coverage. "
-                "Avoid overlapping tasks unless the query is narrow. "
-                "Each task must have a clear focus, practical search queries, and explicit expected evidence. "
-                "Prefer primary sources, recent data, and high-authority publications. "
-                "Write search_queries for web search engines, not prose. "
-                "Each query must be concise, keyword-rich, and independently searchable."
-            ),
+            instructions=planner_instructions(),
         )
         job = Job(
-            input=(
-                "Create the next iteration plan as structured data.\n"
-                "Requirements:\n"
-                "- Use prior_summaries and memory_context to avoid duplicated research.\n"
-                "- Return tasks that can run in parallel with distinct evidence goals.\n"
-                "- Target at least requested parallelism unless the query is provably narrow.\n"
-                "- Task IDs must be unique and stable strings.\n"
-                "- search_queries must be high-signal and specific enough to retrieve factual evidence.\n"
-                "- Each search query must be <= 120 characters and usually 4-14 words.\n"
-                "- Do not copy full user paragraphs into search_queries.\n"
-                "- Decompose broad prompts into multiple focused queries.\n"
-                "- continue_loop=false only when enough evidence already exists to answer query well.\n"
-                f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-            ),
+            input=planner_job(payload),
             response_schema=_PlanPayload,
         )
         try:
@@ -138,35 +123,10 @@ class LeadAgent:
         worker = Worker(
             name="LeadSynthesizer",
             model=self._runtime.settings.model,
-            instructions=(
-                "You are LeadSynthesizer. "
-                "Synthesize only from supplied evidence and prior summaries. "
-                "Separate validated findings from unknowns. "
-                "Avoid duplicative statements and prioritize decision-useful synthesis. "
-                "Provide a coverage assessment: rate how completely the evidence answers "
-                "the query (coverage_score 0-1), how severely open questions undermine "
-                "confidence (open_question_severity 0-1), how many direct contradictions "
-                "exist in the evidence, how recent the body of evidence feels (recency_score 0-1), "
-                "and whether another research iteration would materially improve the answer "
-                "(coverage_should_continue). Be conservative: default to continuing when "
-                "evidence is thin, sources are few, or important claims lack support."
-            ),
+            instructions=synthesizer_instructions(),
         )
         job = Job(
-            input=(
-                "Synthesize this iteration and assess evidence coverage.\n"
-                "Requirements:\n"
-                "- summary should state what is known now and why.\n"
-                "- key_findings should contain concrete, evidence-backed points.\n"
-                "- open_questions should capture missing evidence required for confidence.\n"
-                "- continue_loop=false if evidence is already sufficient or no productive next step remains.\n"
-                "- coverage_score: 0-1 completeness rating (0=barely started, 1=fully answered).\n"
-                "- open_question_severity: 0-1 how badly gaps undermine the answer (0=minor, 1=critical).\n"
-                "- contradiction_count: number of direct factual conflicts found in evidence.\n"
-                "- recency_score: 0-1 currency of evidence (0=stale/undated, 1=very recent).\n"
-                "- coverage_should_continue: true if another iteration would help, false if done.\n"
-                f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-            ),
+            input=synthesizer_job(payload),
             response_schema=_SynthesisPayload,
         )
         try:
@@ -220,38 +180,11 @@ class LeadAgent:
         worker = Worker(
             name="LeadReporter",
             model=self._runtime.settings.model,
-            instructions=(
-                "You are LeadReporter. "
-                "Write a publication-grade long-form report that is rigorous, coherent, and source-grounded. "
-                "Do not fabricate facts, numbers, or citations. "
-                "Every concrete claim should be supported by provided citations when available. "
-                "Use clear argument flow, explicit caveats, and balanced counterpoints. "
-                "Select structure dynamically: use concise markdown tables when they improve comparison clarity "
-                "(rankings, options, timelines, trade-offs, metrics), and use narrative prose for causal or "
-                "interpretive analysis."
-            ),
+            instructions=reporter_instructions(),
         )
         job = Job(
-            input=(
-                "Write the final report directly in markdown.\n"
-                f"Minimum body length: {target_words} words before References.\n"
-                "Use this structure exactly:\n"
-                "# <Title>\n"
-                "## Executive Summary\n"
-                "## Key Findings\n"
-                "## Detailed Analysis\n"
-                "## Risks and Counterpoints\n"
-                "## Open Questions\n"
-                "## References\n"
-                "Use citation markers like [1], [2], ... and only cite sources provided in payload.\n"
-                "Prefer coherent paragraphs over bullets in Detailed Analysis.\n"
-                "Use markdown tables only when they materially improve comprehension for comparison-heavy sections.\n"
-                "Do not force tables in sections where narrative explanation is stronger.\n"
-                "Do not include internal IDs in citations.\n"
-                "Keep claims calibrated: state uncertainty when evidence is limited or conflicting.\n"
-                f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-            ),
-            expected_output="A very long markdown report with explicit citations and references.",
+            input=reporter_job(payload, target_words),
+            expected_output=reporter_expected_output(),
         )
         try:
             report = await self._runtime.desk.arun(worker, job)

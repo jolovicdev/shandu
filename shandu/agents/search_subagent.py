@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlparse
@@ -11,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from ..contracts import EvidenceRecord, ResearchRequest, SubagentTask
 from ..interfaces import RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
+from ..prompts import extractor_instructions, extractor_job
 
 SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
@@ -210,22 +210,10 @@ class SearchSubagent:
         worker = Worker(
             name=f"SubagentExtractor_{task.task_id}",
             model=self._runtime.settings.model,
-            instructions=(
-                "You are EvidenceExtractor for a research subagent. "
-                "Produce a concise, factual snippet and a richer extracted evidence body. "
-                "Prioritize relevance to task focus, preserve dates/numbers/names, and avoid generic filler. "
-                "Confidence should reflect specificity, factual density, and match to task intent."
-            ),
+            instructions=extractor_instructions(),
         )
         job = Job(
-            input=(
-                "Extract a concise snippet and evidence body from this scraped page.\n"
-                "Requirements:\n"
-                "- snippet: 1-3 sentences with strongest relevant claim(s).\n"
-                "- extracted_text: focused, source-grounded body for downstream synthesis.\n"
-                "- Do not include fabricated information.\n"
-                f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-            ),
+            input=extractor_job(payload),
             response_schema=_ExtractionPayload,
         )
         try:

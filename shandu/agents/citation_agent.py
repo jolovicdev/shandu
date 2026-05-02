@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from ..contracts import CitationEntry, EvidenceRecord
 from ..interfaces import RuntimeExecutionLike
+from ..prompts import citation_instructions, citation_job
 
 
 class _CitationCandidate(BaseModel):
@@ -34,26 +35,16 @@ class CitationAgent:
         if not evidence:
             return []
 
+        evidence_json = json.dumps(
+            [item.model_dump(mode="json") for item in evidence], ensure_ascii=False
+        )
         worker = Worker(
             name="CitationSubagent",
             model=self._runtime.settings.model,
-            instructions=(
-                "You are CitationSubagent. "
-                "Generate a clean bibliography from evidence without inventing fields. "
-                "Deduplicate sources by URL, preserve evidence linkage, and normalize publisher/title text. "
-                "If metadata is weak, use safe fallbacks from URL/domain."
-            ),
+            instructions=citation_instructions(),
         )
         job = Job(
-            input=(
-                "Build citation entries from evidence as structured output.\n"
-                "Requirements:\n"
-                "- Return one citation candidate per unique URL whenever possible.\n"
-                "- evidence_ids must reference provided evidence only.\n"
-                "- Do not invent URLs, titles, publishers, or evidence IDs.\n"
-                f"Query: {query}\n"
-                f"Evidence JSON:\n{json.dumps([item.model_dump(mode='json') for item in evidence], ensure_ascii=False)}"
-            ),
+            input=citation_job(query, evidence_json),
             response_schema=_CitationBundle,
         )
         try:

@@ -49,8 +49,8 @@ class EmptySearchService:
 
 
 class FakeScrapeService:
-    async def scrape_many(self, urls: list[str]) -> list[ScrapedPage]:
-        return [
+    async def scrape_many(self, urls: list[str]) -> tuple[list[ScrapedPage], int]:
+        pages = [
             ScrapedPage(
                 requested_url=url,
                 url=url,
@@ -60,6 +60,7 @@ class FakeScrapeService:
             )
             for idx, url in enumerate(urls, start=1)
         ]
+        return pages, 0
 
 
 def test_ai_search_returns_model_answer_when_available() -> None:

@@ -27,7 +27,7 @@ class AISearchService:
     ) -> AISearchResult:
         hits = await self._search.search(query, max_results=max(1, min(max_results, 20)))
         urls = [hit.url for hit in hits[: max(1, min(max_pages, 10))]]
-        scraped_pages = await self._scrape.scrape_many(urls)
+        scraped_pages, scrape_missed = await self._scrape.scrape_many(urls)
         scraped_by_url = {page.requested_url: page for page in scraped_pages}
 
         sources: list[AISearchSource] = []
@@ -81,7 +81,11 @@ class AISearchService:
                     query=query,
                     answer_markdown=content.strip(),
                     sources=sources,
-                    run_stats={"sources": len(sources), "scraped_pages": len(scraped_pages)},
+                    run_stats={
+                        "sources": len(sources),
+                        "scraped_pages": len(scraped_pages),
+                        "scrape_missed": scrape_missed,
+                    },
                 )
         except Exception:
             pass
@@ -100,7 +104,11 @@ class AISearchService:
             query=query,
             answer_markdown="\n".join(fallback_lines).strip(),
             sources=sources,
-            run_stats={"sources": len(sources), "scraped_pages": len(scraped_pages)},
+            run_stats={
+                "sources": len(sources),
+                "scraped_pages": len(scraped_pages),
+                "scrape_missed": scrape_missed,
+            },
         )
 
     @staticmethod

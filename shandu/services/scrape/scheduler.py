@@ -17,17 +17,17 @@ class _DomainScheduler:
         async with self._lock:
             sem = self._semaphores.setdefault(domain, asyncio.Semaphore(self._max_concurrent))
         await sem.acquire()
-        async with self._lock:
-            last = self._last_fetch.get(domain, 0)
-            back = self._backoff.get(domain, 0)
-            now = time.monotonic()
-            wait = max(0.0, last + back + self._base_delay - now)
-        if wait > 0:
-            try:
+        try:
+            async with self._lock:
+                last = self._last_fetch.get(domain, 0)
+                back = self._backoff.get(domain, 0)
+                now = time.monotonic()
+                wait = max(0.0, last + back + self._base_delay - now)
+            if wait > 0:
                 await asyncio.sleep(wait)
-            except asyncio.CancelledError:
-                sem.release()
-                raise
+        except asyncio.CancelledError:
+            sem.release()
+            raise
 
     async def release(self, domain: str) -> None:
         async with self._lock:

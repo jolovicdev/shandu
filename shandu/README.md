@@ -1,4 +1,4 @@
-# Shandu Package Architecture (3.0)
+# Shandu Package Architecture (3.0.8)
 
 ## Component Map
 
@@ -6,11 +6,11 @@
 - Engine: stable facade for run, stream, inspect, and AI-search flows.
 - Orchestrator: controls iterative research loop and concurrency.
 - Lead agent: builds plans, synthesizes findings, drafts final reports.
-- Search subagents: gather evidence through search, scrape, and extraction.
+- Search subagents: gather evidence through search, layered scraping, document parsing, and extraction.
 - Citation agent: builds and normalizes citation ledger.
 - Services layer: search backend, scraping pipeline, memory access, report rendering, one-shot AI search.
 - Runtime layer: model setup, desk/memory wiring, and async runner bridge.
-- UI layer: rich terminal rendering for events, summaries, and final outputs.
+- UI layer: rich terminal and Gradio rendering for events, traces, summaries, and final outputs.
 
 ## Runtime Boundaries
 

@@ -48,9 +48,13 @@ class ScrapedPageLike(Protocol):
     url: str
     title: str
     text: str
+    blocks: Any
     domain: str
     fetched_at: Any
     published_at: str | None
+    fetch_error: str | None
+    content_type: str | None
+    http_status: int | None
 
 
 class SearchServiceLike(Protocol):
@@ -58,7 +62,7 @@ class SearchServiceLike(Protocol):
 
 
 class ScrapeServiceLike(Protocol):
-    async def scrape_many(self, urls: list[str]) -> Sequence[ScrapedPageLike]: ...
+    async def scrape_many(self, urls: list[str]) -> tuple[Sequence[ScrapedPageLike], int]: ...
 
 
 class LeadAgentLike(Protocol):

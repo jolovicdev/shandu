@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shandu"
-version = "3.0.7"
+version = "3.0.8"
 description = "Multi-agent research system powered by Blackgeorge"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -33,7 +33,17 @@ dependencies = [
   "ddgs>=9.0.0",
   "pydantic>=2.8.0",
   "python-dotenv>=1.0.1",
+  "trafilatura>=2.0.0",
+  "readability-lxml>=0.8.4.1",
+  "pymupdf>=1.27.0",
+  "python-docx>=1.2.0",
+  "openpyxl>=3.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jolovicdev/shandu"
+Repository = "https://github.com/jolovicdev/shandu"
+Issues = "https://github.com/jolovicdev/shandu/issues"
 
 [project.scripts]
 shandu = "shandu.cli:cli"

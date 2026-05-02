@@ -14,6 +14,7 @@ def test_scrape_timeout_increments_counter():
             pass
         def get(self, *args, **kwargs):
             class FakeResponse:
+                status = 200
                 async def __aenter__(self):
                     raise asyncio.TimeoutError()
                 async def __aexit__(self, *args):
@@ -22,10 +23,11 @@ def test_scrape_timeout_increments_counter():
 
     fake_session = FakeSession()
     result = asyncio.run(service.scrape("https://example.com", session=fake_session))
-    assert result is None
-    # Initial attempt + 1 retry = 2 timeouts
-    assert service._timeout_count == 2
-    assert service._retry_count == 1
+    assert result is not None
+    assert result.fetch_error == "timeout"
+    # Initial attempt + 2 retries = 3 timeouts
+    assert service._timeout_count == 3
+    assert service._retry_count == 2
     assert service._total_scrapes == 1
 
 
@@ -45,6 +47,7 @@ def test_scrape_success_after_retry():
             class FakeResponse:
                 url = "https://example.com"
                 headers = {"content-type": "text/html"}
+                status = 200
                 async def __aenter__(self):
                     nonlocal call_count
                     if call_count == 1:
@@ -61,6 +64,7 @@ def test_scrape_success_after_retry():
     fake_session = FakeSession()
     result = asyncio.run(service.scrape("https://example.com", session=fake_session))
     assert result is not None
+    assert result.fetch_error is None
     assert result.text == "Hello world this is a test paragraph with enough words to pass filter"
     assert service._timeout_count == 1
     assert service._retry_count == 1
@@ -80,6 +84,7 @@ def test_scrape_success_does_not_increment_timeout():
             class FakeResponse:
                 url = "https://example.com"
                 headers = {"content-type": "text/html"}
+                status = 200
                 async def __aenter__(self):
                     return self
                 async def __aexit__(self, *args):
@@ -93,6 +98,7 @@ def test_scrape_success_does_not_increment_timeout():
     fake_session = FakeSession()
     result = asyncio.run(service.scrape("https://example.com", session=fake_session))
     assert result is not None
+    assert result.fetch_error is None
     assert result.text == "Hello world this is a test paragraph with enough words to pass filter"
     assert service._timeout_count == 0
     assert service._retry_count == 0
@@ -115,6 +121,7 @@ def test_scrape_cross_task_deduplication():
             class FakeResponse:
                 url = "https://example.com"
                 headers = {"content-type": "text/html"}
+                status = 200
                 async def __aenter__(self):
                     return self
                 async def __aexit__(self, *args):

@@ -111,7 +111,13 @@ flowchart TD
 - Search subagents: evidence retrieval and extraction for each planned task.
 - Citation agent: citation ledger generation and normalization.
 - Search service: web search backend abstraction.
-- Scrape service: URL canonicalization, page fetch, and content extraction.
+- Scrape service: layered HTML extraction pipeline (trafilatura → readability-lxml → BS4),
+  document-format parsers (PDF/DOCX/XLSX/CSV/plaintext/markdown), structured content blocks
+  (headings, paragraphs, tables, code, blockquotes), fetch-error classification (paywall,
+  captcha, empty JS shell, blocked), per-domain rate limiting with exponential backoff,
+  retry policy (3 attempts, jitter, status-aware), in-flight request deduplication,
+  cross-task URL caching, publication-date extraction from OpenGraph/JSON-LD/meta/time tags,
+  redirect-aware provenance tracking, and search-snippet fallback evidence when scraping fails.
 - Memory service: persistent run memory and retrieval.
 - Report service: citation normalization and final markdown rendering.
 - AI search service: one-shot search + explanation workflow.

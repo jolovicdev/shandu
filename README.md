@@ -1,9 +1,12 @@
-# Shandu
+# Shandu - Multi-Agent AI Research CLI and GUI
 
-Shandu is a Blackgeorge-powered, lead-orchestrated multi-agent research system.
+Shandu is a Python deep-research agent that plans research loops, searches the web,
+scrapes webpages and documents, extracts evidence, and writes citation-backed reports.
+It is powered by Blackgeorge and works from both a terminal CLI and a Gradio control room.
 
 - Architecture deep dive: [`ARCH.md`](ARCH.md)
 - Example long-form output: see the `examples` directory.
+- DeepSeek Flash example: [`examples/deepseek-flash.md`](examples/deepseek-flash.md)
 
 ## Architecture
 
@@ -215,9 +218,16 @@ uv run pytest -q
 
 ## Scraper Notes
 
-- Requests use a browser-like user agent and language headers.
-- URLs are canonicalized and deduplicated before fetch.
-- Extraction prioritizes `article` / `main` / `role=main` content, then falls back to body text.
-- Repeated or very short blocks are filtered to reduce navigation/cookie noise.
+- Three-layer HTML extraction: trafilatura → readability-lxml → BS4.
+- Document-format support: PDF, DOCX, XLSX, CSV, plaintext, markdown.
+- Structured blocks preserve headings, tables, code, blockquotes, and list items.
+- Per-domain rate limiting with exponential backoff; 3 retry attempts with jitter.
+- Fetch-error detection: paywall, captcha, empty JS shell, blocked, login-required.
+- Publication-date extraction from OpenGraph, JSON-LD, DC, prism, sailthru, parsely meta tags.
+- In-flight deduplication prevents concurrent duplicate fetches of the same URL.
+- Redirect-aware: pages tracked by requested URL so redirects don't cause false misses.
+
+> Upcoming: EVEN STRONGER source-quality enforcement will flag weak/undated/advocacy sources (blog posts, linkedin etc.) so the
+> synthesizer can distinguish strong primary evidence from low-signal pages.
 
 MIT license.

@@ -57,7 +57,9 @@ class LeadOrchestrator:
         started = time.perf_counter()
         started_at = datetime.now(timezone.utc).isoformat()
         event_log: list[dict[str, Any]] = []
-        cost_start = self._cost_tracker.snapshot() if self._cost_tracker is not None else None
+        cost_start = (
+            self._cost_tracker.snapshot() if self._cost_tracker is not None else None
+        )
 
         async def emit(event: RunEvent) -> None:
             event_log.append(event.model_dump(mode="json"))
@@ -66,9 +68,15 @@ class LeadOrchestrator:
         self._memory.write(scope, "created_at", started_at, author="orchestrator")
         self._memory.write(scope, "status", "running", author="orchestrator")
         await emit(
-            RunEvent(stage="bootstrap", message="Initializing run", metrics={"run_id": run_id}),
+            RunEvent(
+                stage="bootstrap",
+                message="Initializing run",
+                metrics={"run_id": run_id},
+            ),
         )
-        self._memory.write(scope, "request", request.model_dump(mode="json"), author="lead")
+        self._memory.write(
+            scope, "request", request.model_dump(mode="json"), author="lead"
+        )
 
         all_evidence: list[EvidenceRecord] = []
         iteration_summaries: list[IterationSynthesis] = []
@@ -118,7 +126,9 @@ class LeadOrchestrator:
             completed_tasks = 0
             completed_lock = asyncio.Lock()
 
-            async def run_task(task_index: int, task: SubagentTask) -> list[EvidenceRecord]:
+            async def run_task(
+                task_index: int, task: SubagentTask
+            ) -> list[EvidenceRecord]:
                 nonlocal completed_tasks
                 await emit(
                     RunEvent(
@@ -158,7 +168,10 @@ class LeadOrchestrator:
                         self._channel.send(
                             sender="lead",
                             recipient=task.task_id,
-                            content={"focus": task.focus, "queries": task.search_queries},
+                            content={
+                                "focus": task.focus,
+                                "queries": task.search_queries,
+                            },
                         )
                         evidence = await self._search_subagent.execute_task(
                             scope,
@@ -241,7 +254,9 @@ class LeadOrchestrator:
             synthesis = await self._lead.synthesize_iteration(
                 request=request,
                 iteration=iteration,
-                iteration_evidence=[item.model_dump(mode="json") for item in iteration_evidence],
+                iteration_evidence=[
+                    item.model_dump(mode="json") for item in iteration_evidence
+                ],
                 prior_summaries=iteration_summaries,
             )
             if self._lead.fallback_count > lead_fallbacks:
@@ -268,7 +283,9 @@ class LeadOrchestrator:
                     iteration=iteration,
                     metrics={
                         "continue_loop": synthesis.continue_loop,
-                        "coverage_score": synthesis.coverage.coverage_score if synthesis.coverage else None,
+                        "coverage_score": synthesis.coverage.coverage_score
+                        if synthesis.coverage
+                        else None,
                         "depth_policy": request.depth_policy,
                     },
                     payload={"stop_reason": synthesis.stop_reason or ""},
@@ -316,7 +333,9 @@ class LeadOrchestrator:
                     payload={"method": "build_final_report"},
                 ),
             )
-        report_markdown = self._report.render(request, draft, citations)
+        rendered_report = self._report.render_result(request, draft, citations)
+        report_markdown = rendered_report.markdown
+        report_citations = rendered_report.citations
         await emit(
             RunEvent(
                 stage="report",
@@ -330,7 +349,8 @@ class LeadOrchestrator:
             "elapsed_seconds": round(elapsed, 2),
             "iterations": len(iteration_summaries),
             "evidence_count": len(all_evidence),
-            "citation_count": len(citations),
+            "candidate_citation_count": len(citations),
+            "citation_count": len(report_citations),
             "agent_model_calls": agent_model_calls,
             "agent_fallbacks": lead_fallbacks + extraction_fallbacks,
         }
@@ -340,7 +360,7 @@ class LeadOrchestrator:
             run_id=run_id,
             request=request,
             report_markdown=report_markdown,
-            citations=citations,
+            citations=report_citations,
             evidence=all_evidence,
             iteration_summaries=iteration_summaries,
             run_stats=run_stats,
@@ -463,14 +483,18 @@ class LeadOrchestrator:
 
         if trace_type == "query_started":
             query = str(payload.get("query", "")).strip()
-            message = f"Task {task_id} searching query" if task_id else "Searching query"
+            message = (
+                f"Task {task_id} searching query" if task_id else "Searching query"
+            )
             if query:
                 metrics["query"] = query
             if "max_results" in payload:
                 metrics["max_results"] = payload["max_results"]
         elif trace_type == "query_completed":
             query = str(payload.get("query", "")).strip()
-            message = f"Task {task_id} query completed" if task_id else "Query completed"
+            message = (
+                f"Task {task_id} query completed" if task_id else "Query completed"
+            )
             if query:
                 metrics["query"] = query
             if "hits" in payload:
@@ -480,7 +504,9 @@ class LeadOrchestrator:
             if "url_count" in payload:
                 metrics["url_count"] = payload["url_count"]
         elif trace_type == "scrape_completed":
-            message = f"Task {task_id} scrape completed" if task_id else "Scrape completed"
+            message = (
+                f"Task {task_id} scrape completed" if task_id else "Scrape completed"
+            )
             if "scraped" in payload:
                 metrics["scraped"] = payload["scraped"]
             if "missed" in payload:
@@ -490,13 +516,23 @@ class LeadOrchestrator:
             if "confidence" in payload:
                 metrics["confidence"] = payload["confidence"]
         elif trace_type == "extract_started":
-            message = f"Task {task_id} extracting page" if task_id else "Extracting page"
+            message = (
+                f"Task {task_id} extracting page" if task_id else "Extracting page"
+            )
         elif trace_type == "fallback_evidence":
-            message = f"Task {task_id} fallback evidence added" if task_id else "Fallback evidence added"
+            message = (
+                f"Task {task_id} fallback evidence added"
+                if task_id
+                else "Fallback evidence added"
+            )
             if "confidence" in payload:
                 metrics["confidence"] = payload["confidence"]
         elif trace_type == "extraction_fallback":
-            message = f"Task {task_id} extraction fell back to deterministic" if task_id else "Extraction fell back"
+            message = (
+                f"Task {task_id} extraction fell back to deterministic"
+                if task_id
+                else "Extraction fell back"
+            )
             if "url" in payload:
                 metrics["url"] = payload["url"]
 

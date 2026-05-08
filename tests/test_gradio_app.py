@@ -4,6 +4,7 @@ from pathlib import Path
 
 from shandu.contracts import RunEvent
 from shandu.ui.gradio_app import GuiRunState, _persist_report_markdown
+from shandu.ui.gradio.layout import _outputs
 
 
 def test_gradio_task_status_not_completed_on_trace_completed_message() -> None:
@@ -55,3 +56,9 @@ def test_persist_report_markdown_writes_export_file() -> None:
     file_path = Path(path)
     assert file_path.exists()
     assert file_path.read_text(encoding="utf-8").startswith("# Title")
+
+
+def test_gradio_run_output_contract_stays_aligned() -> None:
+    state = GuiRunState(query="q")
+    assert len(state.render(running=False).as_tuple()) == 10
+    assert len(_outputs(state=state, running=False, download_path=None)) == 11

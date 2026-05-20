@@ -315,6 +315,32 @@ def test_orchestrator_emits_task_level_search_progress_events() -> None:
     assert any(message == "Task task-4 completed" for message in search_messages)
 
 
+def test_orchestrator_emits_live_model_call_count() -> None:
+    orchestrator = LeadOrchestrator(
+        lead_agent=FakeLeadAgent(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        memory_service=MemoryService(InMemoryMemoryStore()),
+        report_service=FakeReportService(),
+    )
+    request = ResearchRequest(query="model-call-test", max_iterations=1, parallelism=1)
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    result = asyncio.run(orchestrator.run(request, progress_callback=on_event))
+
+    live_counts = [
+        event.metrics["agent_model_calls"]
+        for event in events
+        if "agent_model_calls" in event.metrics
+    ]
+    assert live_counts
+    assert live_counts[0] == 1
+    assert live_counts[-1] == result.run_stats["agent_model_calls"]
+
+
 class TraceSearchSubagent(FakeSearchSubagent):
     async def execute_task(self, run_scope, task, request, progress_callback=None):
         del run_scope

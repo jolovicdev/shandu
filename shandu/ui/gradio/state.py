@@ -74,6 +74,9 @@ class GuiRunState:
             self.iteration = event.iteration + 1
         if event.metrics:
             self.metrics.update(event.metrics)
+            model_calls = event.metrics.get("agent_model_calls")
+            if isinstance(model_calls, int) and model_calls > 0:
+                self.run_stats["agent_model_calls"] = model_calls
         if event.payload.get("run_id"):
             self.run_id = str(event.payload["run_id"])
 
@@ -126,7 +129,7 @@ class GuiRunState:
             f"- Events: **{self.event_count}**",
             f"- Query: `{self.query}`",
         ]
-        model_calls = self.run_stats.get("agent_model_calls")
+        model_calls = self._model_calls()
         if isinstance(model_calls, int) and model_calls > 0:
             lines.append(f"- Model Calls: **{model_calls}**")
         metered_calls = self.run_stats.get(
@@ -192,7 +195,7 @@ class GuiRunState:
             if str(task.get("Scraped") or "").isdigit()
         )
         citations = self.run_stats.get("citation_count", len(self.citations))
-        model_calls = self.run_stats.get("agent_model_calls")
+        model_calls = self._model_calls()
         metered_calls = self.run_stats.get(
             "metered_calls", self.run_stats.get("llm_calls")
         )
@@ -456,6 +459,14 @@ class GuiRunState:
         ):
             return "partial" if metered_calls < model_calls else "full"
         return ""
+
+    def _model_calls(self) -> int | None:
+        value = self.run_stats.get(
+            "agent_model_calls", self.metrics.get("agent_model_calls")
+        )
+        if isinstance(value, int) and value > 0:
+            return value
+        return None
 
     def _cost_summary(self) -> str:
         cost = self.run_stats.get("usd_spent")

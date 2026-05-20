@@ -78,11 +78,19 @@ class LeadOrchestrator:
             scope, "request", request.model_dump(mode="json"), author="lead"
         )
 
+        agent_model_calls = 0
         all_evidence: list[EvidenceRecord] = []
         iteration_summaries: list[IterationSynthesis] = []
-        agent_model_calls = 0
         lead_fallbacks = self._lead.fallback_count
         extraction_fallbacks = 0
+
+        def with_model_call_count(
+            metrics: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            updated = dict(metrics or {})
+            if agent_model_calls > 0:
+                updated["agent_model_calls"] = agent_model_calls
+            return updated
 
         for iteration in range(request.max_iterations):
             memory_context = self._memory.search(scope, "iteration")
@@ -114,7 +122,7 @@ class LeadOrchestrator:
                     stage="plan",
                     message=f"Iteration {iteration + 1} plan ready",
                     iteration=iteration,
-                    metrics={"tasks": len(plan.subagent_tasks)},
+                    metrics=with_model_call_count({"tasks": len(plan.subagent_tasks)}),
                 ),
             )
 
@@ -155,13 +163,13 @@ class LeadOrchestrator:
                         agent_model_calls += 1
                     elif trace_type == "extraction_fallback":
                         extraction_fallbacks += 1
-                    await emit(
-                        self._build_search_trace_event(
-                            iteration=iteration,
-                            trace_type=trace_type,
-                            payload=payload,
-                        )
+                    trace_event = self._build_search_trace_event(
+                        iteration=iteration,
+                        trace_type=trace_type,
+                        payload=payload,
                     )
+                    trace_event.metrics = with_model_call_count(trace_event.metrics)
+                    await emit(trace_event)
 
                 try:
                     async with semaphore:
@@ -281,13 +289,15 @@ class LeadOrchestrator:
                     stage="synthesize",
                     message=f"Iteration {iteration + 1} synthesized",
                     iteration=iteration,
-                    metrics={
-                        "continue_loop": synthesis.continue_loop,
-                        "coverage_score": synthesis.coverage.coverage_score
-                        if synthesis.coverage
-                        else None,
-                        "depth_policy": request.depth_policy,
-                    },
+                    metrics=with_model_call_count(
+                        {
+                            "continue_loop": synthesis.continue_loop,
+                            "coverage_score": synthesis.coverage.coverage_score
+                            if synthesis.coverage
+                            else None,
+                            "depth_policy": request.depth_policy,
+                        }
+                    ),
                     payload={"stop_reason": synthesis.stop_reason or ""},
                 ),
             )
@@ -313,7 +323,7 @@ class LeadOrchestrator:
             RunEvent(
                 stage="cite",
                 message="Citation subagent completed",
-                metrics={"citations": len(citations)},
+                metrics=with_model_call_count({"citations": len(citations)}),
             ),
         )
 
@@ -340,7 +350,9 @@ class LeadOrchestrator:
             RunEvent(
                 stage="report",
                 message="Lead researcher completed final report draft",
-                metrics={"report_words": len(report_markdown.split())},
+                metrics=with_model_call_count(
+                    {"report_words": len(report_markdown.split())}
+                ),
             ),
         )
 

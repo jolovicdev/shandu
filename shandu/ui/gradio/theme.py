@@ -37,7 +37,7 @@ def build_theme() -> gr.Theme:
         block_label_background_fill_dark="#151D17",
         block_label_text_color="#C9D4CB",
         block_label_text_color_dark="#C9D4CB",
-        block_padding="16px",
+        block_padding="12px",
         block_radius="8px",
         block_shadow="none",
         block_shadow_dark="none",
@@ -100,9 +100,9 @@ CSS = """
   --shandu-teal: #2dd4bf;
   --shandu-amber: #f5b74f;
   --shandu-red: #f66a6a;
-  --shandu-section-gap: 14px;
-  --shandu-panel-gap: 12px;
-  --shandu-panel-padding: 14px;
+  --shandu-section-gap: 12px;
+  --shandu-panel-gap: 10px;
+  --shandu-panel-padding: 12px;
 }
 
 * {
@@ -120,9 +120,17 @@ body {
 }
 
 .gradio-container main.contain {
-  width: min(calc(100% - 72px), 1500px) !important;
-  max-width: 1500px !important;
+  width: min(calc(100% - 112px), 1320px) !important;
+  max-width: 1320px !important;
   margin: 0 auto !important;
+}
+
+.gradio-container label,
+.gradio-container input,
+.gradio-container select,
+.gradio-container textarea,
+.gradio-container button {
+  font-size: 0.95rem !important;
 }
 
 .shandu-shell,
@@ -139,9 +147,9 @@ body {
 .shandu-topbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 18px;
+  gap: 16px;
   align-items: end;
-  padding: 20px 0 14px;
+  padding: 16px 0 12px;
   border-bottom: 1px solid var(--shandu-border);
 }
 
@@ -158,7 +166,7 @@ body {
 .shandu-brand h1 {
   margin: 0;
   color: var(--shandu-text);
-  font-size: 2.55rem;
+  font-size: 2.32rem;
   line-height: 0.95;
   letter-spacing: 0;
   font-weight: 800;
@@ -166,9 +174,9 @@ body {
 
 .shandu-brand p {
   max-width: 720px;
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   color: var(--shandu-muted);
-  font-size: 0.92rem;
+  font-size: 0.94rem;
   line-height: 1.55;
 }
 
@@ -176,7 +184,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 9px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   color: var(--shandu-teal);
   font-size: 0.72rem;
   font-weight: 600;
@@ -193,15 +201,15 @@ body {
 
 .shandu-header-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(86px, 1fr));
-  gap: 10px;
-  min-width: 330px;
+  grid-template-columns: repeat(3, minmax(80px, 1fr));
+  gap: 8px;
+  min-width: 300px;
 }
 
 .shandu-header-metrics div {
   border: 1px solid var(--shandu-border);
   border-radius: 8px;
-  padding: 10px;
+  padding: 8px;
   background: var(--shandu-rail);
 }
 
@@ -222,7 +230,7 @@ body {
 
 .shandu-runner,
 .shandu-run-panel {
-  margin-top: 14px;
+  margin-top: 12px;
 }
 
 .shandu-run-panel,
@@ -236,8 +244,8 @@ body {
 }
 
 .shandu-run-panel textarea {
-  min-height: 112px !important;
-  font-size: 0.92rem !important;
+  min-height: 96px !important;
+  font-size: 0.95rem !important;
   line-height: 1.48 !important;
 }
 
@@ -246,13 +254,13 @@ body {
 }
 
 .shandu-run-actions button {
-  min-height: 42px !important;
+  min-height: 38px !important;
   font-weight: 800 !important;
   cursor: pointer !important;
 }
 
 .shandu-config-panel {
-  margin-top: 12px;
+  margin-top: 10px;
   background: var(--shandu-rail);
 }
 
@@ -262,7 +270,7 @@ body {
 }
 
 .shandu-config-panel .wrap {
-  gap: 10px !important;
+  gap: 8px !important;
 }
 
 .shandu-html-reset,
@@ -325,9 +333,9 @@ body {
 }
 
 .shandu-status-panel h2 {
-  margin: 10px 0 6px;
+  margin: 8px 0 5px;
   color: var(--shandu-text);
-  font-size: 1.18rem;
+  font-size: 1.16rem;
   letter-spacing: 0;
 }
 
@@ -340,7 +348,7 @@ body {
 .shandu-status-panel dl,
 .shandu-lane-card dl {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   margin: 0;
 }
 
@@ -366,7 +374,7 @@ body {
 .shandu-status-pill {
   display: inline-flex;
   width: fit-content;
-  padding: 5px 9px;
+  padding: 4px 8px;
   border-radius: 999px;
   color: #07100b;
   background: var(--shandu-green);
@@ -385,7 +393,7 @@ body {
 .shandu-status-errors {
   grid-column: 1 / -1;
   margin: 0;
-  padding: 12px 16px 12px 30px;
+  padding: 10px 14px 10px 28px;
   border: 1px solid rgba(246, 106, 106, 0.35);
   border-radius: 8px;
   color: #ffd8d8;
@@ -394,30 +402,30 @@ body {
 
 .shandu-lane-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
   margin: var(--shandu-section-gap) 0 0;
 }
 
 .shandu-lane-card {
-  min-height: 132px;
+  min-height: 116px;
   min-width: 0;
   border: 1px solid var(--shandu-border);
   border-radius: 8px;
   background: var(--shandu-panel);
-  padding: 12px;
+  padding: 10px;
 }
 
 .shandu-lane-card header {
   display: flex;
   align-items: center;
   gap: 9px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .shandu-lane-card header span {
   width: 8px;
-  height: 28px;
+  height: 24px;
   border-radius: 999px;
   background: var(--shandu-green);
 }
@@ -489,7 +497,7 @@ body {
 
 .shandu-report-copy .markdown h2,
 .shandu-report-copy .prose h2 {
-  margin: 22px 0 10px !important;
+  margin: 18px 0 8px !important;
   color: var(--shandu-text) !important;
   font-size: 1.1rem !important;
 }
@@ -497,8 +505,8 @@ body {
 .shandu-report-copy .markdown ul,
 .shandu-report-copy .prose ul {
   display: grid;
-  gap: 8px;
-  margin: 10px 0 0 !important;
+  gap: 7px;
+  margin: 8px 0 0 !important;
   padding: 0 !important;
   list-style: none;
 }
@@ -506,7 +514,7 @@ body {
 .shandu-report-copy .markdown li,
 .shandu-report-copy .prose li {
   margin: 0 !important;
-  padding: 9px 11px;
+  padding: 8px 10px;
   border: 1px solid var(--shandu-border);
   border-radius: 8px;
   background: var(--shandu-rail);
@@ -534,30 +542,39 @@ body {
 
 .shandu-citations-panel > .label-wrap,
 .shandu-citations-panel button.label-wrap {
-  min-height: 38px !important;
-  padding: 8px 14px !important;
-  border-bottom: 1px solid var(--shandu-border) !important;
+  min-height: 34px !important;
+  padding: 7px 12px !important;
+  border-bottom: 0 !important;
   background: rgba(16, 22, 17, 0.96) !important;
   color: var(--shandu-text) !important;
-  font-size: 0.92rem !important;
+  font-size: 0.94rem !important;
   font-weight: 700 !important;
 }
 
 .shandu-citations-panel > .wrap {
-  padding: 12px 14px 14px !important;
+  padding: 10px 12px 12px !important;
+  border-top: 1px solid var(--shandu-border) !important;
 }
 
 .shandu-citations-panel > .wrap > .block {
   margin: 0 !important;
 }
 
+.shandu-citations-panel .table-wrap {
+  margin: 0 !important;
+}
+
 .shandu-telemetry-grid {
-  align-items: stretch;
+  align-items: flex-start;
+}
+
+.shandu-telemetry-grid > .column {
+  align-self: flex-start !important;
 }
 
 .shandu-task-panel {
   min-width: 0;
-  min-height: 210px;
+  min-height: 184px;
   border: 1px solid var(--shandu-border);
   border-radius: 8px;
   background: var(--shandu-rail);
@@ -569,11 +586,11 @@ body {
   content: 'Tasks';
   display: block;
   margin: 0;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--shandu-border);
   background: rgba(16, 22, 17, 0.96);
   color: var(--shandu-text);
-  font-size: 0.92rem;
+  font-size: 0.94rem;
   font-weight: 700;
 }
 
@@ -582,13 +599,13 @@ body {
 }
 
 .shandu-task-board {
-  max-height: 360px;
+  max-height: 320px;
   overflow: auto;
 }
 
 .shandu-task-board.empty p {
   margin: 0;
-  padding: 18px 14px;
+  padding: 14px 12px;
   color: var(--shandu-muted);
 }
 
@@ -602,8 +619,8 @@ body {
 
 .shandu-task-board li {
   display: grid;
-  gap: 9px;
-  padding: 12px 14px;
+  gap: 8px;
+  padding: 10px 12px;
   border-bottom: 1px solid rgba(38, 49, 43, 0.72);
 }
 
@@ -643,7 +660,7 @@ body {
 .shandu-task-board p {
   margin: 0;
   color: var(--shandu-text);
-  font-size: 0.92rem;
+  font-size: 0.94rem;
   line-height: 1.42;
 }
 
@@ -656,7 +673,7 @@ body {
 
 .shandu-task-board dt {
   color: var(--shandu-dim);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
 }
 
 .shandu-task-board dd {
@@ -675,7 +692,7 @@ body {
   border-radius: 999px;
   color: #07100b;
   background: var(--shandu-green);
-  font-size: 0.66rem;
+  font-size: 0.7rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -696,8 +713,8 @@ body {
 }
 
 .shandu-feed {
-  min-height: 210px;
-  max-height: 360px;
+  min-height: 184px;
+  max-height: 320px;
   overflow: auto;
   border: 1px solid var(--shandu-border);
   border-radius: 8px;
@@ -711,7 +728,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--shandu-border);
   background: rgba(16, 22, 17, 0.96);
 }
@@ -719,16 +736,16 @@ body {
 .shandu-feed h3 {
   margin: 0;
   color: var(--shandu-text);
-  font-size: 0.92rem;
+  font-size: 0.94rem;
 }
 
 .shandu-feed header span {
   color: var(--shandu-dim);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
 }
 
 .shandu-feed.empty p {
-  margin: 18px 14px;
+  margin: 14px 12px;
   color: var(--shandu-muted);
 }
 
@@ -742,9 +759,9 @@ body {
 
 .shandu-feed li {
   display: grid;
-  grid-template-columns: 66px 86px minmax(0, 1fr);
+  grid-template-columns: 60px 78px minmax(0, 1fr);
   gap: 8px 10px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-bottom: 1px solid rgba(38, 49, 43, 0.72);
 }
 
@@ -796,6 +813,19 @@ body {
   overflow-x: auto !important;
 }
 
+.shandu-report-panel table,
+.shandu-tabs table {
+  font-size: 0.9rem !important;
+}
+
+.shandu-report-panel th,
+.shandu-report-panel td,
+.shandu-tabs th,
+.shandu-tabs td {
+  padding: 8px 10px !important;
+  line-height: 1.35 !important;
+}
+
 button,
 .gr-button {
   transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease !important;
@@ -810,6 +840,10 @@ select:focus-visible {
 }
 
 @media (max-width: 980px) {
+  .gradio-container main.contain {
+    width: calc(100% - 40px) !important;
+  }
+
   .shandu-topbar,
   .shandu-status-panel {
     grid-template-columns: 1fr;
@@ -838,11 +872,11 @@ select:focus-visible {
   }
 
   .shandu-topbar {
-    padding-top: 18px;
+    padding-top: 16px;
   }
 
   .shandu-brand h1 {
-    font-size: 2.2rem;
+    font-size: 2.05rem;
   }
 
   .shandu-header-metrics,
@@ -860,7 +894,7 @@ select:focus-visible {
   }
 
   .shandu-run-panel textarea {
-    min-height: 112px !important;
+    min-height: 96px !important;
   }
 
   .shandu-status-panel {

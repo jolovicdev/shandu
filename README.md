@@ -183,15 +183,15 @@ GUI features:
 
 #### Main Screen
 
-![Shandu GUI Main Screen](assets/main.jpg)
-
-#### Tables View
-
-![Shandu GUI Table View](assets/table.jpg)
+![Shandu GUI Main Screen](assets/main.png)
 
 #### Report View
 
-![Shandu GUI Report View](assets/report.jpg)
+![Shandu GUI Report View](assets/report.png)
+
+#### Citation Ledger
+
+![Shandu GUI Citation Ledger](assets/citations.png)
 
 ## Python API
 

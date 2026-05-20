@@ -189,3 +189,69 @@ def test_report_service_strips_plain_reference_sections_and_returns_used_citatio
     )
     assert len(result.citations) == 1
     assert result.citations[0].title == "Used"
+
+
+def test_report_service_preserves_narrative_sources_section() -> None:
+    service = ReportService()
+    request = ResearchRequest(query="Evaluate source quality")
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown=(
+            "# Report\n\n"
+            "## Sources\n\n"
+            "Source quality is mixed, with stronger peer-reviewed evidence "
+            "for one claim [1].\n\n"
+            "## Implications\n\n"
+            "This section should not be truncated [1]."
+        ),
+    )
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=["e1"],
+            url="https://example.com/source-quality",
+            title="Source Quality",
+            publisher="example.com",
+            accessed_at="2026-02-21",
+        )
+    ]
+
+    rendered = service.render(request, draft, citations)
+
+    assert "## Sources" in rendered
+    assert "Source quality is mixed" in rendered
+    assert "## Implications" in rendered
+    assert "This section should not be truncated" in rendered
+
+
+def test_report_service_strips_sources_heading_with_reference_entries() -> None:
+    service = ReportService()
+    request = ResearchRequest(query="Compare X vs Y")
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown=(
+            "# Report\n\n"
+            "Finding A is supported [1].\n\n"
+            "## Sources\n\n"
+            "[1] model-authored bibliography entry that should be stripped"
+        ),
+    )
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=["e1"],
+            url="https://example.com/used",
+            title="Used",
+            publisher="example.com",
+            accessed_at="2026-02-21",
+        )
+    ]
+
+    rendered = service.render(request, draft, citations)
+
+    assert "model-authored bibliography" not in rendered
+    assert '- **[1] example.com** - "Used". [Source](https://example.com/used)' in rendered

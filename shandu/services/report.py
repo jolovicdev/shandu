@@ -92,12 +92,30 @@ class ReportService:
             r"(?:references?|sources?|bibliography|citations?)\s*:?\s*$",
             re.IGNORECASE,
         )
-        lines: list[str] = []
-        for line in markdown.splitlines():
-            if heading_pattern.match(line):
-                break
-            lines.append(line)
-        return "\n".join(lines).strip()
+        lines = markdown.splitlines()
+        for index, line in enumerate(lines):
+            if heading_pattern.match(line) and self._looks_like_reference_block(
+                lines[index + 1 :]
+            ):
+                return "\n".join(lines[:index]).strip()
+        return markdown.strip()
+
+    def _looks_like_reference_block(self, lines: list[str]) -> bool:
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if re.match(r"^\s{0,3}#{1,6}\s+\S+", line):
+                return False
+            return self._looks_like_reference_entry(stripped)
+        return True
+
+    def _looks_like_reference_entry(self, line: str) -> bool:
+        return bool(
+            re.match(r"^(?:[-*+]\s*)?(?:\[\d+\]|\d+[\.)])\s+", line)
+            or re.search(r"https?://|www\.", line, re.IGNORECASE)
+            or re.search(r"\[[^\]]+\]\(https?://", line, re.IGNORECASE)
+        )
 
     def _normalize_citation_markers(
         self,

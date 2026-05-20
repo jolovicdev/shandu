@@ -21,7 +21,9 @@ from shandu.services.report import ReportService
 class FakeLeadAgent:
     fallback_count = 0
 
-    async def create_iteration_plan(self, request, iteration, prior_summaries, memory_context):
+    async def create_iteration_plan(
+        self, request, iteration, prior_summaries, memory_context
+    ):
         del request, prior_summaries, memory_context
         return IterationPlan(
             iteration_index=iteration,
@@ -37,7 +39,9 @@ class FakeLeadAgent:
             continue_loop=True,
         )
 
-    async def synthesize_iteration(self, request, iteration, iteration_evidence, prior_summaries):
+    async def synthesize_iteration(
+        self, request, iteration, iteration_evidence, prior_summaries
+    ):
         del request, iteration_evidence, prior_summaries
         return IterationSynthesis(
             summary=f"summary-{iteration}",
@@ -47,7 +51,9 @@ class FakeLeadAgent:
             stop_reason="enough evidence" if iteration > 0 else None,
         )
 
-    async def build_final_report(self, request, iteration_summaries, evidence_payload, citations_payload):
+    async def build_final_report(
+        self, request, iteration_summaries, evidence_payload, citations_payload
+    ):
         del request, evidence_payload, citations_payload
         from shandu.contracts import FinalReportDraft, ReportSection
 
@@ -95,10 +101,49 @@ class FakeCitationAgent:
         ]
 
 
+class ExtraCitationAgent:
+    async def build_citations(self, query, evidence):
+        del query, evidence
+        return [
+            CitationEntry(
+                citation_id=1,
+                evidence_ids=["unused"],
+                url="https://example.com/unused",
+                title="Unused",
+                publisher="example.com",
+                accessed_at="2026-02-21",
+            ),
+            CitationEntry(
+                citation_id=2,
+                evidence_ids=["used"],
+                url="https://example.com/used",
+                title="Used",
+                publisher="example.com",
+                accessed_at="2026-02-21",
+            ),
+        ]
+
+
 class FakeReportService(ReportService):
-    def render(self, request, draft, citations):
-        del request, citations
-        return f"# {draft.title}\n\n{draft.executive_summary}"
+    def render_result(self, request, draft, citations):
+        del request
+        from shandu.services.report import RenderedReport
+
+        return RenderedReport(
+            markdown=f"# {draft.title}\n\n{draft.executive_summary}",
+            citations=citations,
+        )
+
+
+class FilteringReportService(ReportService):
+    def render_result(self, request, draft, citations):
+        del request, draft
+        from shandu.services.report import RenderedReport
+
+        return RenderedReport(
+            markdown="# Synthetic Final\n\nOnly one citation [1].",
+            citations=[citations[1].model_copy(update={"citation_id": 1})],
+        )
 
 
 def test_orchestrator_stops_on_synthesis_decision() -> None:
@@ -120,8 +165,29 @@ def test_orchestrator_stops_on_synthesis_decision() -> None:
     assert "Synthetic Final" in result.report_markdown
 
 
+def test_orchestrator_returns_report_normalized_citation_ledger() -> None:
+    memory_service = MemoryService(InMemoryMemoryStore())
+    orchestrator = LeadOrchestrator(
+        lead_agent=FakeLeadAgent(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=ExtraCitationAgent(),
+        memory_service=memory_service,
+        report_service=FilteringReportService(),
+    )
+
+    request = ResearchRequest(query="test", max_iterations=1, parallelism=1)
+    result = asyncio.run(orchestrator.run(request))
+
+    assert result.run_stats["candidate_citation_count"] == 2
+    assert result.run_stats["citation_count"] == 1
+    assert [item.citation_id for item in result.citations] == [1]
+    assert result.citations[0].title == "Used"
+
+
 class ParallelLeadAgent(FakeLeadAgent):
-    async def create_iteration_plan(self, request, iteration, prior_summaries, memory_context):
+    async def create_iteration_plan(
+        self, request, iteration, prior_summaries, memory_context
+    ):
         del request, prior_summaries, memory_context
         if iteration > 0:
             return IterationPlan(
@@ -135,15 +201,37 @@ class ParallelLeadAgent(FakeLeadAgent):
             iteration_index=iteration,
             goals=["parallel"],
             subagent_tasks=[
-                SubagentTask(task_id="task-1", focus="q1", search_queries=["q1"], expected_output="out"),
-                SubagentTask(task_id="task-2", focus="q2", search_queries=["q2"], expected_output="out"),
-                SubagentTask(task_id="task-3", focus="q3", search_queries=["q3"], expected_output="out"),
-                SubagentTask(task_id="task-4", focus="q4", search_queries=["q4"], expected_output="out"),
+                SubagentTask(
+                    task_id="task-1",
+                    focus="q1",
+                    search_queries=["q1"],
+                    expected_output="out",
+                ),
+                SubagentTask(
+                    task_id="task-2",
+                    focus="q2",
+                    search_queries=["q2"],
+                    expected_output="out",
+                ),
+                SubagentTask(
+                    task_id="task-3",
+                    focus="q3",
+                    search_queries=["q3"],
+                    expected_output="out",
+                ),
+                SubagentTask(
+                    task_id="task-4",
+                    focus="q4",
+                    search_queries=["q4"],
+                    expected_output="out",
+                ),
             ],
             continue_loop=False,
         )
 
-    async def synthesize_iteration(self, request, iteration, iteration_evidence, prior_summaries):
+    async def synthesize_iteration(
+        self, request, iteration, iteration_evidence, prior_summaries
+    ):
         del request, iteration_evidence, prior_summaries
         return IterationSynthesis(
             summary=f"summary-{iteration}",
@@ -173,8 +261,12 @@ class SlowSearchSubagent(FakeSearchSubagent):
 
 
 def test_orchestrator_parallelism_controls_task_concurrency() -> None:
-    request_serial = ResearchRequest(query="parallel-test", max_iterations=1, parallelism=1)
-    request_parallel = ResearchRequest(query="parallel-test", max_iterations=1, parallelism=2)
+    request_serial = ResearchRequest(
+        query="parallel-test", max_iterations=1, parallelism=1
+    )
+    request_parallel = ResearchRequest(
+        query="parallel-test", max_iterations=1, parallelism=2
+    )
 
     orchestrator_serial = LeadOrchestrator(
         lead_agent=ParallelLeadAgent(),
@@ -223,6 +315,32 @@ def test_orchestrator_emits_task_level_search_progress_events() -> None:
     assert any(message == "Task task-4 completed" for message in search_messages)
 
 
+def test_orchestrator_emits_live_model_call_count() -> None:
+    orchestrator = LeadOrchestrator(
+        lead_agent=FakeLeadAgent(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        memory_service=MemoryService(InMemoryMemoryStore()),
+        report_service=FakeReportService(),
+    )
+    request = ResearchRequest(query="model-call-test", max_iterations=1, parallelism=1)
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    result = asyncio.run(orchestrator.run(request, progress_callback=on_event))
+
+    live_counts = [
+        event.metrics["agent_model_calls"]
+        for event in events
+        if "agent_model_calls" in event.metrics
+    ]
+    assert live_counts
+    assert live_counts[0] == 1
+    assert live_counts[-1] == result.run_stats["agent_model_calls"]
+
+
 class TraceSearchSubagent(FakeSearchSubagent):
     async def execute_task(self, run_scope, task, request, progress_callback=None):
         del run_scope
@@ -259,11 +377,19 @@ def test_orchestrator_forwards_subagent_trace_events() -> None:
     asyncio.run(orchestrator.run(request, progress_callback=on_event))
 
     trace_events = [
-        event for event in events if event.stage == "search" and event.metrics.get("trace_type")
+        event
+        for event in events
+        if event.stage == "search" and event.metrics.get("trace_type")
     ]
-    assert any(event.metrics.get("trace_type") == "query_started" for event in trace_events)
-    assert any(event.metrics.get("trace_type") == "query_completed" for event in trace_events)
-    assert any(event.metrics.get("trace_type") == "scrape_completed" for event in trace_events)
+    assert any(
+        event.metrics.get("trace_type") == "query_started" for event in trace_events
+    )
+    assert any(
+        event.metrics.get("trace_type") == "query_completed" for event in trace_events
+    )
+    assert any(
+        event.metrics.get("trace_type") == "scrape_completed" for event in trace_events
+    )
 
 
 class FakeCostTracker:
@@ -276,7 +402,9 @@ class FakeCostTracker:
         del baseline
         from shandu.runtime.cost_tracker import CostSnapshot
 
-        return CostSnapshot(llm_calls=5, cost_events=2, total_cost_usd=0.045, total_tokens=3200)
+        return CostSnapshot(
+            llm_calls=5, cost_events=2, total_cost_usd=0.045, total_tokens=3200
+        )
 
 
 def test_orchestrator_adds_cost_stats_when_available() -> None:

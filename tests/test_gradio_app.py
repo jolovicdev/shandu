@@ -4,6 +4,7 @@ from pathlib import Path
 
 from shandu.contracts import RunEvent
 from shandu.ui.gradio_app import GuiRunState, _persist_report_markdown
+from shandu.ui.gradio.layout import _outputs
 
 
 def test_gradio_task_status_not_completed_on_trace_completed_message() -> None:
@@ -49,9 +50,29 @@ def test_gradio_task_status_completed_only_on_final_task_event() -> None:
     assert task["Status"] == "completed"
 
 
+def test_gradio_model_calls_update_from_live_events() -> None:
+    state = GuiRunState(query="q")
+    state.apply_event(
+        RunEvent(
+            stage="plan",
+            message="Iteration 1 plan ready",
+            metrics={"agent_model_calls": 1},
+        )
+    )
+
+    assert "Model calls" in state.lane_html()
+    assert "<dd>1</dd>" in state.lane_html()
+
+
 def test_persist_report_markdown_writes_export_file() -> None:
     path = _persist_report_markdown("run-xyz", "# Title\n\nBody")
     assert path is not None
     file_path = Path(path)
     assert file_path.exists()
     assert file_path.read_text(encoding="utf-8").startswith("# Title")
+
+
+def test_gradio_run_output_contract_stays_aligned() -> None:
+    state = GuiRunState(query="q")
+    assert len(state.render(running=False).as_tuple()) == 10
+    assert len(_outputs(state=state, running=False, download_path=None)) == 11

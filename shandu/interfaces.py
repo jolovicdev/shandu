@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .contracts import (
     AISearchResult,
@@ -18,6 +18,9 @@ from .contracts import (
 
 DetailLevel = Literal["concise", "standard", "high"]
 DepthPolicy = Literal["adaptive", "fixed"]
+
+if TYPE_CHECKING:
+    from .services.report import RenderedReport
 
 
 class DeskLike(Protocol):
@@ -62,7 +65,9 @@ class SearchServiceLike(Protocol):
 
 
 class ScrapeServiceLike(Protocol):
-    async def scrape_many(self, urls: list[str]) -> tuple[Sequence[ScrapedPageLike], int]: ...
+    async def scrape_many(
+        self, urls: list[str]
+    ) -> tuple[Sequence[ScrapedPageLike], int]: ...
 
 
 class LeadAgentLike(Protocol):
@@ -112,12 +117,12 @@ class CitationAgentLike(Protocol):
 
 
 class ReportServiceLike(Protocol):
-    def render(
+    def render_result(
         self,
         request: ResearchRequest,
         draft: FinalReportDraft,
         citations: list[CitationEntry],
-    ) -> str: ...
+    ) -> RenderedReport: ...
 
 
 ProgressCallback = Callable[[RunEvent], Any]

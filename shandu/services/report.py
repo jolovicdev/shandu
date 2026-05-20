@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
+from dataclasses import dataclass
 
 from ..contracts import CitationEntry, FinalReportDraft, ResearchRequest
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedReport:
+    markdown: str
+    citations: list[CitationEntry]
 
 
 class ReportService:
@@ -13,13 +20,23 @@ class ReportService:
         draft: FinalReportDraft,
         citations: list[CitationEntry],
     ) -> str:
+        return self.render_result(request, draft, citations).markdown
+
+    def render_result(
+        self,
+        request: ResearchRequest,
+        draft: FinalReportDraft,
+        citations: list[CitationEntry],
+    ) -> RenderedReport:
         markdown = (
             draft.markdown.strip()
             if draft.markdown and draft.markdown.strip()
             else self._render_from_sections(request, draft)
         )
         normalized = self._normalize_citation_markers(markdown, citations)
-        normalized, normalized_citations = self._reindex_citation_numbers(normalized, citations)
+        normalized, normalized_citations = self._reindex_citation_numbers(
+            normalized, citations
+        )
         body = self._strip_references_section(normalized)
         body, normalized_citations = self._filter_and_reindex_used_citations(
             body,
@@ -27,10 +44,15 @@ class ReportService:
         )
         reference_lines = self._reference_lines(normalized_citations)
         if not reference_lines:
-            return body.strip()
-        return "\n".join([body.strip(), "", "## References", "", *reference_lines]).strip()
+            return RenderedReport(markdown=body.strip(), citations=normalized_citations)
+        rendered = "\n".join(
+            [body.strip(), "", "## References", "", *reference_lines]
+        ).strip()
+        return RenderedReport(markdown=rendered, citations=normalized_citations)
 
-    def _render_from_sections(self, request: ResearchRequest, draft: FinalReportDraft) -> str:
+    def _render_from_sections(
+        self, request: ResearchRequest, draft: FinalReportDraft
+    ) -> str:
         lines: list[str] = []
         lines.append(f"# {draft.title.strip()}")
         lines.append("")
@@ -58,17 +80,42 @@ class ReportService:
 
     def _reference_lines(self, citations: list[CitationEntry]) -> list[str]:
         return [
-            f"[{entry.citation_id}] {entry.publisher}. \"{entry.title}\". {entry.url} (accessed {entry.accessed_at})"
+            f"- **[{entry.citation_id}] {entry.publisher}** - "
+            f'"{entry.title}". [Source]({entry.url}) '
+            f"(accessed {entry.accessed_at})"
             for entry in sorted(citations, key=lambda item: item.citation_id)
         ]
 
     def _strip_references_section(self, markdown: str) -> str:
-        lines: list[str] = []
-        for line in markdown.splitlines():
-            if line.strip().lower().startswith("## references"):
-                break
-            lines.append(line)
-        return "\n".join(lines).strip()
+        heading_pattern = re.compile(
+            r"^\s{0,3}(?:#{1,6}\s*)?(?:key\s+)?"
+            r"(?:references?|sources?|bibliography|citations?)\s*:?\s*$",
+            re.IGNORECASE,
+        )
+        lines = markdown.splitlines()
+        for index, line in enumerate(lines):
+            if heading_pattern.match(line) and self._looks_like_reference_block(
+                lines[index + 1 :]
+            ):
+                return "\n".join(lines[:index]).strip()
+        return markdown.strip()
+
+    def _looks_like_reference_block(self, lines: list[str]) -> bool:
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if re.match(r"^\s{0,3}#{1,6}\s+\S+", line):
+                return False
+            return self._looks_like_reference_entry(stripped)
+        return True
+
+    def _looks_like_reference_entry(self, line: str) -> bool:
+        return bool(
+            re.match(r"^(?:[-*+]\s*)?(?:\[\d+\]|\d+[\.)])\s+", line)
+            or re.search(r"https?://|www\.", line, re.IGNORECASE)
+            or re.search(r"\[[^\]]+\]\(https?://", line, re.IGNORECASE)
+        )
 
     def _normalize_citation_markers(
         self,
@@ -115,7 +162,10 @@ class ReportService:
             return markdown, []
 
         ordered = sorted(citations, key=lambda item: item.citation_id)
-        id_map = {str(entry.citation_id): index for index, entry in enumerate(ordered, start=1)}
+        id_map = {
+            str(entry.citation_id): index
+            for index, entry in enumerate(ordered, start=1)
+        }
 
         pattern = re.compile(r"\[(\d+)\]")
 
@@ -127,7 +177,9 @@ class ReportService:
             return f"[{mapped}]"
 
         normalized_markdown = pattern.sub(replace, markdown)
-        normalized_markdown = re.sub(r"(\[(\d+)\])(?:\s*\[\2\])+", r"[\2]", normalized_markdown)
+        normalized_markdown = re.sub(
+            r"(\[(\d+)\])(?:\s*\[\2\])+", r"[\2]", normalized_markdown
+        )
 
         normalized_citations: list[CitationEntry] = []
         for index, entry in enumerate(ordered, start=1):

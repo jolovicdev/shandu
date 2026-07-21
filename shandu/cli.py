@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import click
+from pydantic import ValidationError
 
 from .config import config, infer_api_key_env_name
 from .contracts import ResearchRequest, RunEvent
@@ -165,23 +166,30 @@ def run_command(
         str(config.get("orchestration", "depth_policy", "adaptive")),
         "adaptive",
     )
-    request = ResearchRequest(
-        query=query,
-        max_iterations=max_iterations
-        if max_iterations is not None
-        else int(config.get("orchestration", "max_iterations", 2)),
-        parallelism=parallelism
-        if parallelism is not None
-        else int(config.get("orchestration", "parallelism", 3)),
-        detail_level=_resolve_detail_level(detail_level, default_detail),
-        depth_policy=default_depth,
-        max_results_per_query=max_results_per_query
-        if max_results_per_query is not None
-        else int(config.get("orchestration", "max_results_per_query", 5)),
-        max_pages_per_task=max_pages_per_task
-        if max_pages_per_task is not None
-        else int(config.get("orchestration", "max_pages_per_task", 3)),
-    )
+    try:
+        request = ResearchRequest(
+            query=query,
+            max_iterations=max_iterations
+            if max_iterations is not None
+            else int(config.get("orchestration", "max_iterations", 2)),
+            parallelism=parallelism
+            if parallelism is not None
+            else int(config.get("orchestration", "parallelism", 3)),
+            detail_level=_resolve_detail_level(detail_level, default_detail),
+            depth_policy=default_depth,
+            max_results_per_query=max_results_per_query
+            if max_results_per_query is not None
+            else int(config.get("orchestration", "max_results_per_query", 5)),
+            max_pages_per_task=max_pages_per_task
+            if max_pages_per_task is not None
+            else int(config.get("orchestration", "max_pages_per_task", 3)),
+        )
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
+            for err in exc.errors()
+        )
+        raise click.ClickException(f"Invalid research options: {problems}") from exc
 
     engine = ShanduEngine.from_config()
     snapshot = ui.new_snapshot(request, str(config.get("api", "model")))

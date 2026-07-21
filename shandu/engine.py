@@ -73,8 +73,7 @@ class ShanduEngine:
         return runner.run(self.run(request, progress_callback))
 
     async def stream(self, request: ResearchRequest) -> AsyncIterator[RunEvent]:
-        queue: asyncio.Queue[RunEvent] = asyncio.Queue()
-        finished = asyncio.Event()
+        queue: asyncio.Queue[RunEvent | None] = asyncio.Queue()
         error: Exception | None = None
 
         async def on_event(event: RunEvent) -> None:
@@ -88,11 +87,15 @@ class ShanduEngine:
                 error = exc
                 await queue.put(RunEvent(stage="error", message=str(exc)))
             finally:
-                finished.set()
+                # Sentinel guarantees the consumer wakes even when run() raises a
+                # BaseException (e.g. CancelledError) that the except above skips.
+                await queue.put(None)
 
         task = asyncio.create_task(worker())
-        while not finished.is_set() or not queue.empty():
+        while True:
             event = await queue.get()
+            if event is None:
+                break
             yield event
         await task
         if error is not None:

@@ -85,3 +85,35 @@ def test_ai_search_handles_empty_sources() -> None:
     result = asyncio.run(service.search("missing"))
     assert "No search results were returned" in result.answer_markdown
     assert result.sources == []
+
+
+def test_ai_search_attaches_scraped_excerpt_for_noncanonical_hit_url() -> None:
+    from shandu.services.scrape.service import _canonicalize_url
+
+    class NonCanonicalSearch:
+        async def search(self, query: str, max_results: int) -> list[SearchHit]:
+            del query, max_results
+            return [SearchHit(query="q", url="https://example.com", title="Home", snippet="")]
+
+    class CanonicalizingScrape:
+        async def scrape_many(self, urls: list[str]) -> tuple[list[ScrapedPage], int]:
+            pages = [
+                ScrapedPage(
+                    requested_url=_canonicalize_url(url),
+                    url=_canonicalize_url(url),
+                    title="Home",
+                    text="Body text from the homepage.",
+                    domain="example.com",
+                )
+                for url in urls
+            ]
+            return pages, 0
+
+    service = AISearchService(
+        runtime=FakeRuntime(""),
+        search_service=NonCanonicalSearch(),
+        scrape_service=CanonicalizingScrape(),
+    )
+
+    result = asyncio.run(service.search("home"))
+    assert result.sources[0].text_excerpt.startswith("Body text")

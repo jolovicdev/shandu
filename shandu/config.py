@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def infer_api_key_env_name(model: str) -> str:
@@ -75,6 +78,9 @@ class Config:
                 payload = json.load(handle)
             self._merge(self._config, payload)
         except Exception:
+            logger.warning(
+                "Ignoring malformed config at %s; using defaults", self._path, exc_info=True
+            )
             return
 
     def _load_env(self) -> None:

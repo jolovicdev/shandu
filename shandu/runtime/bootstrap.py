@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
+import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-import os
 
 from blackgeorge import Desk
 from blackgeorge.memory.sqlite import SQLiteMemoryStore
@@ -10,6 +12,8 @@ import litellm
 
 from ..config import config
 from .cost_tracker import CostTracker
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -57,6 +61,12 @@ class RuntimeBootstrap:
             self.desk.event_bus.subscribe("llm.completed", self.cost_tracker.handle_event)
         except Exception:
             pass
+
+    def close(self) -> None:
+        try:
+            self.desk.close()
+        finally:
+            self.memory_store.close()
 
     @classmethod
     def from_config(cls) -> "RuntimeBootstrap":
@@ -126,15 +136,24 @@ class RuntimeBootstrap:
 
 
 _bootstrap: RuntimeBootstrap | None = None
+_bootstrap_lock = threading.Lock()
 
 
 def get_bootstrap() -> RuntimeBootstrap:
     global _bootstrap
     if _bootstrap is None:
-        _bootstrap = RuntimeBootstrap.from_config()
+        with _bootstrap_lock:
+            if _bootstrap is None:
+                _bootstrap = RuntimeBootstrap.from_config()
     return _bootstrap
 
 
 def reset_bootstrap() -> None:
     global _bootstrap
+    current = _bootstrap
     _bootstrap = None
+    if current is not None:
+        try:
+            current.close()
+        except Exception:
+            logger.warning("Failed to close previous runtime bootstrap", exc_info=True)

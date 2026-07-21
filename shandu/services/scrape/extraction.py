@@ -223,23 +223,26 @@ def _parse_pdf(data: bytes) -> _ExtractionResult:
         import fitz
 
         doc = fitz.open(stream=data, filetype="pdf")
-        if doc.page_count > _MAX_PDF_PAGES:
-            raise _ParseError("non_text_content", f"PDF exceeds {_MAX_PDF_PAGES} pages")
-        title = (doc.metadata.get("title") or "").strip()
-        if not title and len(doc) > 0:
-            blocks = doc[0].get_text("blocks")
-            for block in blocks:
-                block_text = block[4].strip()
-                if block_text and 10 < len(block_text) < 200:
-                    title = block_text
-                    break
-        full_text: list[str] = []
-        for page in doc:
-            full_text.append(page.get_text())
-        text = _cap_text("\n".join(full_text))
-        if not text:
-            raise _ParseError("pdf_parse_failed", "Empty PDF text")
-        return _ExtractionResult(title=title, text=text)
+        try:
+            if doc.page_count > _MAX_PDF_PAGES:
+                raise _ParseError("non_text_content", f"PDF exceeds {_MAX_PDF_PAGES} pages")
+            title = (doc.metadata.get("title") or "").strip()
+            if not title and len(doc) > 0:
+                blocks = doc[0].get_text("blocks")
+                for block in blocks:
+                    block_text = block[4].strip()
+                    if block_text and 10 < len(block_text) < 200:
+                        title = block_text
+                        break
+            full_text: list[str] = []
+            for page in doc:
+                full_text.append(page.get_text())
+            text = _cap_text("\n".join(full_text))
+            if not text:
+                raise _ParseError("pdf_parse_failed", "Empty PDF text")
+            return _ExtractionResult(title=title, text=text)
+        finally:
+            doc.close()
     except _ParseError:
         raise
     except Exception as exc:
@@ -277,22 +280,26 @@ def _parse_xlsx(data: bytes) -> _ExtractionResult:
         from openpyxl import load_workbook
 
         wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
-        rows: list[str] = []
-        row_count = 0
-        for sheet in wb:
-            for row in sheet.iter_rows(values_only=True):
-                cells = [str(c) for c in row if c is not None]
-                if cells:
-                    rows.append(" | ".join(cells))
-                row_count += 1
+        try:
+            rows: list[str] = []
+            row_count = 0
+            for sheet in wb:
+                for row in sheet.iter_rows(values_only=True):
+                    cells = [str(c) for c in row if c is not None]
+                    if cells:
+                        rows.append(" | ".join(cells))
+                    row_count += 1
+                    if row_count >= _MAX_XLSX_ROWS:
+                        break
                 if row_count >= _MAX_XLSX_ROWS:
                     break
-            if row_count >= _MAX_XLSX_ROWS:
-                break
-        text = _cap_text("\n".join(rows))
-        if not text:
-            raise _ParseError("non_text_content", "Empty XLSX")
-        return _ExtractionResult(title=wb.properties.title or "", text=text)
+            text = _cap_text("\n".join(rows))
+            if not text:
+                raise _ParseError("non_text_content", "Empty XLSX")
+            title = wb.properties.title or ""
+        finally:
+            wb.close()
+        return _ExtractionResult(title=title, text=text)
     except _ParseError:
         raise
     except Exception as exc:

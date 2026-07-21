@@ -199,7 +199,10 @@ def run_command(
         console.print(ui.event_line(event))
 
     console.print(f"[brand]Running:[/] [accent]{request.query}[/]")
-    result = engine.run_sync(request, progress_callback=on_event)
+    try:
+        result = engine.run_sync(request, progress_callback=on_event)
+    finally:
+        engine.close()
 
     if verbose:
         console.print(ui.dashboard(snapshot))
@@ -236,12 +239,15 @@ def ai_search_command(
     json_output: bool,
 ) -> None:
     engine = ShanduEngine.from_config()
-    result = engine.ai_search_sync(
-        query=query,
-        max_results=max_results,
-        max_pages=max_pages,
-        detail_level=_resolve_detail_level(detail_level, "standard"),
-    )
+    try:
+        result = engine.ai_search_sync(
+            query=query,
+            max_results=max_results,
+            max_pages=max_pages,
+            detail_level=_resolve_detail_level(detail_level, "standard"),
+        )
+    finally:
+        engine.close()
 
     if output:
         path = Path(output)

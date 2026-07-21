@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from types import ModuleType
 from typing import Any, Protocol, cast
@@ -14,6 +15,7 @@ from ..config import config
 # ddgs 9.x text backends. "lite"/"html" were duckduckgo_search names and are
 # rejected by ddgs (it falls back to "auto"), so they only add redundant work.
 _TEXT_BACKENDS: tuple[str, ...] = ("duckduckgo", "auto")
+_SEARCH_CACHE_MAX = 256
 
 
 class SearchHit(BaseModel):
@@ -55,7 +57,7 @@ class SearchService:
         self._ddgs = _resolve_ddgs()
         self._region = str(config.get("search", "region", "wt-wt"))
         self._safesearch = str(config.get("search", "safesearch", "moderate"))
-        self._cache: dict[str, tuple[float, list[SearchHit]]] = {}
+        self._cache: OrderedDict[str, tuple[float, list[SearchHit]]] = OrderedDict()
         self._cache_ttl = 300.0
         self._inflight: dict[str, asyncio.Task[list[SearchHit]]] = {}
 
@@ -69,10 +71,14 @@ class SearchService:
         if time.monotonic() - timestamp > self._cache_ttl:
             del self._cache[key]
             return None
+        self._cache.move_to_end(key)
         return hits
 
     def _set_cached(self, key: str, hits: list[SearchHit]) -> None:
         self._cache[key] = (time.monotonic(), hits)
+        self._cache.move_to_end(key)
+        while len(self._cache) > _SEARCH_CACHE_MAX:
+            self._cache.popitem(last=False)
 
     async def search(self, query: str, max_results: int) -> list[SearchHit]:
         if self._ddgs is None:

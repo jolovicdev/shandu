@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections import OrderedDict
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import aiohttp
@@ -30,6 +31,8 @@ from .models import ScrapedPage, _FetchResult, _ParseError
 from .scheduler import _DomainScheduler
 
 logger = logging.getLogger(__name__)
+
+_PAGE_CACHE_MAX = 128
 
 
 async def _read_limited_response(response: aiohttp.ClientResponse) -> bytes | None:
@@ -104,8 +107,10 @@ class ScrapeService:
         self._timeout_count = 0
         self._total_scrapes = 0
         self._retry_count = 0
-        self._page_cache: dict[str, ScrapedPage] = {}
+        self._page_cache: OrderedDict[str, ScrapedPage] = OrderedDict()
         self._inflight: dict[str, asyncio.Task[ScrapedPage]] = {}
+        self._session: aiohttp.ClientSession | None = None
+        self._session_loop: asyncio.AbstractEventLoop | None = None
         self._headers = dict(_HEADERS)
         self._headers["User-Agent"] = _USER_AGENTS[0]
 
@@ -118,13 +123,9 @@ class ScrapeService:
                 continue
             seen.add(url)
             normalized.append(url)
-        session = await self._get_session()
-        try:
-            tasks = [self.scrape(url, session=session) for url in normalized]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-        finally:
-            if not session.closed:
-                await session.close()
+        session = await self._shared_session()
+        tasks = [self.scrape(url, session=session) for url in normalized]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         pages: list[ScrapedPage] = []
         for url, result in zip(normalized, results):
             if isinstance(result, ScrapedPage):
@@ -161,6 +162,7 @@ class ScrapeService:
 
         cached = self._page_cache.get(normalized_url)
         if cached is not None:
+            self._page_cache.move_to_end(normalized_url)
             return cached
 
         in_flight = self._inflight.get(normalized_url)
@@ -190,11 +192,17 @@ class ScrapeService:
                 await active_session.close()
 
         if page.fetch_error is None:
-            self._page_cache[url] = page
+            self._store_page(url, page)
             final_key = _canonicalize_url(page.url)
             if final_key != url:
-                self._page_cache[final_key] = page.model_copy(update={"requested_url": final_key})
+                self._store_page(final_key, page.model_copy(update={"requested_url": final_key}))
         return page
+
+    def _store_page(self, key: str, page: ScrapedPage) -> None:
+        self._page_cache[key] = page
+        self._page_cache.move_to_end(key)
+        while len(self._page_cache) > _PAGE_CACHE_MAX:
+            self._page_cache.popitem(last=False)
 
     async def _scrape_with_retry(
         self,
@@ -203,7 +211,12 @@ class ScrapeService:
         attempt: int,
     ) -> ScrapedPage:
         result = await self._fetch_one(url, session, attempt)
-        if result.retryable and attempt < self._max_attempts - 1:
+        max_attempts = (
+            min(2, self._max_attempts)
+            if result.fetch_error == "timeout"
+            else self._max_attempts
+        )
+        if result.retryable and attempt < max_attempts - 1:
             self._retry_count += 1
             delay = self._backoff_delay(attempt)
             await asyncio.sleep(delay)
@@ -449,3 +462,19 @@ class ScrapeService:
             limit=max(8, self._max_concurrent * 4), ttl_dns_cache=300
         )
         return aiohttp.ClientSession(timeout=timeout, connector=connector)
+
+    async def _shared_session(self) -> aiohttp.ClientSession:
+        loop = asyncio.get_running_loop()
+        session = self._session
+        if session is not None and not session.closed and self._session_loop is loop:
+            return session
+        self._session = await self._get_session()
+        self._session_loop = loop
+        return self._session
+
+    async def aclose(self) -> None:
+        session = self._session
+        self._session = None
+        self._session_loop = None
+        if session is not None and not session.closed:
+            await session.close()

@@ -182,3 +182,99 @@ def test_search_subagent_emits_search_and_scrape_traces() -> None:
     assert "scrape_started" in traces
     assert "scrape_completed" in traces
     assert "fallback_evidence" in traces
+
+
+def test_extraction_preserves_page_order_under_concurrency() -> None:
+    from shandu.agents.search_subagent import _ExtractionPayload
+
+    class ThreeHitSearch:
+        async def search(self, query: str, max_results: int):
+            del query, max_results
+            return [
+                SearchHit(query="q", url=f"https://example.com/{i}", title=f"H{i}", snippet=f"s{i}")
+                for i in range(3)
+            ]
+
+    class ThreePageScrape:
+        async def scrape_many(self, urls: list[str]):
+            del urls
+            return [
+                ScrapedPage(
+                    requested_url=f"https://example.com/{i}",
+                    url=f"https://example.com/{i}",
+                    title=f"T{i}",
+                    text=f"text {i}",
+                    domain="example.com",
+                )
+                for i in range(3)
+            ], 0
+
+    class OutOfOrderDesk:
+        def __init__(self) -> None:
+            self._n = 0
+
+        async def arun(self, worker, job):
+            del worker, job
+            idx = self._n
+            self._n += 1
+            await asyncio.sleep(0.03 * (3 - idx))
+            return SimpleNamespace(
+                status="completed",
+                data=_ExtractionPayload(snippet="s", extracted_text="body", confidence=0.7),
+            )
+
+    class Runtime:
+        def __init__(self, desk: OutOfOrderDesk) -> None:
+            self.settings = SimpleNamespace(model="deepseek/deepseek-v4-flash")
+            self.desk = desk
+
+    subagent = SearchSubagent(
+        runtime=Runtime(OutOfOrderDesk()),
+        search_service=ThreeHitSearch(),
+        scrape_service=ThreePageScrape(),
+    )
+    task = SubagentTask(task_id="task-1", focus="focus", search_queries=["q"], expected_output="out")
+    request = ResearchRequest(query="q", max_pages_per_task=3, max_results_per_query=3)
+
+    evidence = asyncio.run(subagent.execute_task("run:1", task, request))
+
+    assert [item.requested_url for item in evidence] == [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+    ]
+    assert all(item.extracted_text == "body" for item in evidence)
+
+
+def test_query_merge_preserves_query_order_under_concurrency() -> None:
+    class PerQuerySearch:
+        async def search(self, query: str, max_results: int):
+            del max_results
+            if query == "q1":
+                await asyncio.sleep(0.04)
+            mapping = {
+                "q1": [("https://example.com/a", "A"), ("https://example.com/b", "B")],
+                "q2": [("https://example.com/b", "B2"), ("https://example.com/c", "C")],
+            }
+            return [
+                SearchHit(query=query, url=url, title=title, snippet="s")
+                for url, title in mapping.get(query, [])
+            ]
+
+    subagent = SearchSubagent(
+        runtime=FakeRuntime(),
+        search_service=PerQuerySearch(),
+        scrape_service=EmptyScrapeService(),
+    )
+    task = SubagentTask(
+        task_id="task-1", focus="focus", search_queries=["q1", "q2"], expected_output="out"
+    )
+    request = ResearchRequest(query="q", max_pages_per_task=5, max_results_per_query=5)
+
+    evidence = asyncio.run(subagent.execute_task("run:1", task, request))
+
+    assert [item.requested_url for item in evidence] == [
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+    ]

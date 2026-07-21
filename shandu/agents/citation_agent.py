@@ -36,7 +36,7 @@ class CitationAgent:
             return []
 
         evidence_json = json.dumps(
-            [item.model_dump(mode="json") for item in evidence], ensure_ascii=False
+            [self._project(item) for item in evidence], ensure_ascii=False
         )
         worker = Worker(
             name="CitationSubagent",
@@ -57,6 +57,17 @@ class CitationAgent:
             pass
 
         return self._fallback(evidence)
+
+    @staticmethod
+    def _project(item: EvidenceRecord) -> dict[str, str]:
+        return {
+            "evidence_id": item.evidence_id,
+            "requested_url": item.requested_url,
+            "final_url": item.final_url or "",
+            "title": item.title,
+            "domain": item.domain or "",
+            "snippet": (item.snippet or "")[:280],
+        }
 
     def _normalize(
         self,

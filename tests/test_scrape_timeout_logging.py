@@ -25,10 +25,47 @@ def test_scrape_timeout_increments_counter():
     result = asyncio.run(service.scrape("https://example.com", session=fake_session))
     assert result is not None
     assert result.fetch_error == "timeout"
-    # Initial attempt + 2 retries = 3 timeouts
-    assert service._timeout_count == 3
-    assert service._retry_count == 2
+    # Timeouts get at most one retry: initial attempt + 1 retry = 2 timeouts.
+    assert service._timeout_count == 2
+    assert service._retry_count == 1
     assert service._total_scrapes == 1
+
+
+def test_retryable_status_uses_full_attempt_budget():
+    service = ScrapeService()
+    service._backoff_delay = lambda attempt: 0.0
+    call_count = 0
+
+    class FakeSession:
+        closed = False
+
+        async def close(self):
+            pass
+
+        def get(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+
+            class FakeResponse:
+                url = "https://example.com"
+                headers = {"content-type": "text/html"}
+                status = 429
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    pass
+
+            return FakeResponse()
+
+    fake_session = FakeSession()
+    result = asyncio.run(service.scrape("https://example.com", session=fake_session))
+    assert result is not None
+    assert result.http_status == 429
+    # 429 is retryable but not a timeout, so it uses the full attempt budget.
+    assert call_count == service._max_attempts
+    assert service._retry_count == service._max_attempts - 1
 
 
 def test_scrape_success_after_retry():

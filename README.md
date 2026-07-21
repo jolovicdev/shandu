@@ -207,6 +207,7 @@ result = engine.run_sync(
     )
 )
 print(result.report_markdown)
+engine.close()  # release the shared HTTP session
 ```
 
 ## Development

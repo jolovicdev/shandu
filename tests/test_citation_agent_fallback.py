@@ -60,3 +60,42 @@ def test_citation_agent_falls_back_to_deterministic_entries() -> None:
     assert citations[0].citation_id == 1
     assert citations[1].citation_id == 2
     assert set(citations[0].evidence_ids) == {"e1", "e2"}
+
+
+def test_citation_payload_omits_full_body_and_caps_snippet() -> None:
+    class CapturingDesk:
+        def __init__(self) -> None:
+            self.captured: str | None = None
+
+        async def arun(self, worker, job):
+            del worker
+            self.captured = job.input
+            raise RuntimeError("stop")
+
+    class Runtime:
+        def __init__(self, desk: CapturingDesk) -> None:
+            self.settings = SimpleNamespace(model="deepseek/deepseek-v4-flash")
+            self.desk = desk
+
+    desk = CapturingDesk()
+    agent = CitationAgent(runtime=Runtime(desk))
+    evidence = [
+        EvidenceRecord(
+            evidence_id="e1",
+            task_id="t1",
+            query="q",
+            requested_url="https://example.com/a",
+            title="A",
+            snippet="S" * 400,
+            extracted_text="SECRET_BODY_TEXT",
+            confidence=0.8,
+        )
+    ]
+
+    asyncio.run(agent.build_citations("query", evidence))
+
+    assert desk.captured is not None
+    assert "SECRET_BODY_TEXT" not in desk.captured
+    assert "extracted_text" not in desk.captured
+    assert "S" * 280 in desk.captured
+    assert "S" * 281 not in desk.captured

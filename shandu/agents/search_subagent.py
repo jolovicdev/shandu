@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
@@ -9,7 +10,12 @@ from blackgeorge.utils import new_id
 from pydantic import BaseModel, Field
 
 from ..contracts import EvidenceRecord, ResearchRequest, SubagentTask
-from ..interfaces import RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
+from ..interfaces import (
+    RuntimeExecutionLike,
+    ScrapedPageLike,
+    ScrapeServiceLike,
+    SearchServiceLike,
+)
 from ..prompts import extractor_instructions, extractor_job
 
 SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
@@ -40,10 +46,9 @@ class SearchSubagent:
         progress_callback: SearchTraceCallback | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
-        all_hits: list[dict[str, str]] = []
-        seen: set[str] = set()
+        queries = task.search_queries or [task.focus]
 
-        for query in task.search_queries or [task.focus]:
+        async def run_query(query: str) -> Sequence[Any]:
             await self._emit_trace(
                 progress_callback,
                 "query_started",
@@ -65,6 +70,13 @@ class SearchSubagent:
                     "urls": [hit.url for hit in hits[:8]],
                 },
             )
+            return hits
+
+        query_hits = await asyncio.gather(*(run_query(query) for query in queries))
+
+        all_hits: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for hits in query_hits:
             for hit in hits:
                 if hit.url in seen:
                     continue
@@ -110,29 +122,11 @@ class SearchSubagent:
             if canonical_hit_url:
                 hits_by_url.setdefault(canonical_hit_url, entry)
 
-        evidence: list[EvidenceRecord] = []
-        for page in pages:
+        async def process_page(page: ScrapedPageLike) -> EvidenceRecord:
             if page.fetch_error is not None:
                 hit_payload = hits_by_url.get(page.requested_url)
                 snippet = str(hit_payload.get("snippet", "") if hit_payload else "").strip()
                 title = str(hit_payload.get("title", "") if hit_payload else page.title).strip() or page.url
-                extracted_text = snippet or title
-                evidence.append(
-                    EvidenceRecord(
-                        evidence_id=new_id(),
-                        task_id=task.task_id,
-                        query=task.focus,
-                        requested_url=page.requested_url,
-                        domain=page.domain,
-                        title=title,
-                        snippet=snippet or title,
-                        extracted_text=extracted_text,
-                        confidence=0.33,
-                        source_type="search_snippet",
-                        extraction_method="search_snippet_fallback",
-                        fetch_error=page.fetch_error,
-                    )
-                )
                 await self._emit_trace(
                     progress_callback,
                     "fallback_evidence",
@@ -144,7 +138,20 @@ class SearchSubagent:
                         "fetch_error": page.fetch_error,
                     },
                 )
-                continue
+                return EvidenceRecord(
+                    evidence_id=new_id(),
+                    task_id=task.task_id,
+                    query=task.focus,
+                    requested_url=page.requested_url,
+                    domain=page.domain,
+                    title=title,
+                    snippet=snippet or title,
+                    extracted_text=snippet or title,
+                    confidence=0.33,
+                    source_type="search_snippet",
+                    extraction_method="search_snippet_fallback",
+                    fetch_error=page.fetch_error,
+                )
 
             await self._emit_trace(
                 progress_callback,
@@ -167,24 +174,26 @@ class SearchSubagent:
                 },
             )
             source_type, extraction_method = self._source_metadata(page.content_type, page.url)
-            evidence.append(
-                EvidenceRecord(
-                    evidence_id=new_id(),
-                    task_id=task.task_id,
-                    query=task.focus,
-                    requested_url=page.requested_url,
-                    final_url=page.url,
-                    domain=page.domain,
-                    title=page.title,
-                    snippet=extraction.snippet,
-                    extracted_text=extraction.extracted_text,
-                    confidence=extraction.confidence,
-                    fetched_at=page.fetched_at,
-                    published_at=page.published_at,
-                    source_type=source_type,
-                    extraction_method=extraction_method,
-                )
+            return EvidenceRecord(
+                evidence_id=new_id(),
+                task_id=task.task_id,
+                query=task.focus,
+                requested_url=page.requested_url,
+                final_url=page.url,
+                domain=page.domain,
+                title=page.title,
+                snippet=extraction.snippet,
+                extracted_text=extraction.extracted_text,
+                confidence=extraction.confidence,
+                fetched_at=page.fetched_at,
+                published_at=page.published_at,
+                source_type=source_type,
+                extraction_method=extraction_method,
             )
+
+        evidence: list[EvidenceRecord] = await asyncio.gather(
+            *(process_page(page) for page in pages)
+        )
 
         for url in urls:
             canonical_url = canonical_urls.get(url, url)

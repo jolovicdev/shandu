@@ -336,12 +336,15 @@ def _run_action(
         event_queue.put(event)
 
     def run_worker() -> None:
+        engine = None
         try:
             engine = ShanduEngine.from_config()
             result_box["result"] = engine.run_sync(request, progress_callback=on_event)
         except Exception as exc:
             error_box["error"] = str(exc)
         finally:
+            if engine is not None:
+                engine.close()
             event_queue.put(None)
 
     threading.Thread(target=run_worker, daemon=True).start()

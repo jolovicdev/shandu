@@ -26,10 +26,12 @@ class ShanduEngine:
         runtime: RuntimeInspectLike,
         orchestrator: OrchestratorLike,
         ai_search_service: AISearchServiceLike,
+        scrape_service: ScrapeService | None = None,
     ) -> None:
         self._runtime = runtime
         self._orchestrator = orchestrator
         self._ai_search = ai_search_service
+        self._scrape_service = scrape_service
 
     @classmethod
     def from_config(cls) -> "ShanduEngine":
@@ -55,6 +57,7 @@ class ShanduEngine:
             runtime=runtime,
             orchestrator=orchestrator,
             ai_search_service=ai_search_service,
+            scrape_service=scrape_service,
         )
 
     async def run(
@@ -134,3 +137,12 @@ class ShanduEngine:
                 detail_level=detail_level,
             )
         )
+
+    async def aclose(self) -> None:
+        if self._scrape_service is not None:
+            await self._scrape_service.aclose()
+
+    def close(self) -> None:
+        if self._scrape_service is None:
+            return
+        get_async_runner().run(self.aclose())

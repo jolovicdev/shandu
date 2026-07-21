@@ -386,15 +386,11 @@ def _detect_fetch_error(html: str | None, status: int | None, text: str) -> str 
             return "empty_js_shell"
 
         weak_text = len(text.split()) < 80
-        html_lower = html.lower()
-
-        captcha_matched = weak_text and any(p.search(html_lower) for p in _CAPTCHA_PATTERNS)
-        if captcha_matched:
-            return "captcha"
-
         if weak_text:
-            paywall_matched = any(p.search(html_lower) for p in _PAYWALL_PATTERNS)
-            if paywall_matched:
+            html_lower = html.lower()
+            if any(p.search(html_lower) for p in _CAPTCHA_PATTERNS):
+                return "captcha"
+            if any(p.search(html_lower) for p in _PAYWALL_PATTERNS):
                 return "paywall"
 
     return None

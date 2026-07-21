@@ -59,7 +59,10 @@ async def _read_limited_response(response: aiohttp.ClientResponse) -> bytes | No
 
     if hasattr(response, "text"):
         text = await response.text(errors="ignore")
-        data = text.encode(getattr(response, "charset", None) or "utf-8", errors="ignore")
+        try:
+            data = text.encode(getattr(response, "charset", None) or "utf-8", errors="ignore")
+        except LookupError:
+            data = text.encode("utf-8", errors="ignore")
         if len(data) > _MAX_DOWNLOAD_BYTES:
             return None
         return data
@@ -78,6 +81,13 @@ def _canonicalize_url(url: str) -> str:
         return ""
     path = parts.path or "/"
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+
+
+def _safe_decode(data: bytes, charset: str | None) -> str:
+    try:
+        return data.decode(charset or "utf-8", errors="ignore")
+    except LookupError:
+        return data.decode("utf-8", errors="ignore")
 
 
 class ScrapeService:
@@ -173,10 +183,11 @@ class ScrapeService:
         owns_session = session is None
         self._total_scrapes += 1
 
-        page = await self._scrape_with_retry(url, active_session, attempt=0)
-
-        if owns_session and not active_session.closed:
-            await active_session.close()
+        try:
+            page = await self._scrape_with_retry(url, active_session, attempt=0)
+        finally:
+            if owns_session and not active_session.closed:
+                await active_session.close()
 
         if page.fetch_error is None:
             self._page_cache[url] = page
@@ -263,9 +274,11 @@ class ScrapeService:
                             data = await _read_limited_response(response)
                             if data is None:
                                 return _error_page("non_text_content", status, retryable=False)
-                            html = data.decode(getattr(response, "charset", None) or "utf-8", errors="ignore")
-                            result = _extract_html(html)
-                            published_at = result.published_at or _extract_published_at(html)
+                            html = _safe_decode(data, getattr(response, "charset", None))
+                            result = await asyncio.to_thread(_extract_html, html)
+                            published_at = result.published_at or await asyncio.to_thread(
+                                _extract_published_at, html
+                            )
                             if not result.text.strip():
                                 fetch_error = _detect_fetch_error(html, status, result.text) or "empty_content"
                             else:

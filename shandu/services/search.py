@@ -11,6 +11,10 @@ from pydantic import BaseModel
 
 from ..config import config
 
+# ddgs 9.x text backends. "lite"/"html" were duckduckgo_search names and are
+# rejected by ddgs (it falls back to "auto"), so they only add redundant work.
+_TEXT_BACKENDS: tuple[str, ...] = ("duckduckgo", "auto")
+
 
 class SearchHit(BaseModel):
     query: str
@@ -92,7 +96,7 @@ class SearchService:
 
     async def _do_search(self, key: str, query: str, max_results: int) -> list[SearchHit]:
         raw: list[Mapping[str, Any]] | None = None
-        for backend in ("duckduckgo", "lite", "html", "auto"):
+        for backend in _TEXT_BACKENDS:
             try:
                 raw = await asyncio.to_thread(self._fetch_backend, query, max_results, backend)
             except Exception:

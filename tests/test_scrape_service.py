@@ -32,3 +32,12 @@ def test_scrape_service_extracts_main_content_and_drops_noise() -> None:
     assert "informative and content-rich" in text
     assert "ignore me" not in text
     assert "header nav" not in text
+
+
+def test_safe_decode_falls_back_on_unknown_charset() -> None:
+    from shandu.services.scrape.service import _safe_decode
+
+    data = b"<html><body>ok</body></html>"
+    assert _safe_decode(data, "utf-8") == "<html><body>ok</body></html>"
+    assert _safe_decode(data, "utf8mb4") == "<html><body>ok</body></html>"
+    assert _safe_decode(data, None) == "<html><body>ok</body></html>"

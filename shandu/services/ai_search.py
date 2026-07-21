@@ -5,6 +5,7 @@ from blackgeorge import Job, Worker
 from ..contracts import AISearchResult, AISearchSource
 from ..interfaces import DetailLevel, RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
 from ..prompts import aisearch_expected_output, aisearch_instructions, aisearch_job
+from .scrape.service import _canonicalize_url
 
 
 class AISearchService:
@@ -36,7 +37,7 @@ class AISearchService:
             if hit.url in seen:
                 continue
             seen.add(hit.url)
-            page = scraped_by_url.get(hit.url)
+            page = scraped_by_url.get(_canonicalize_url(hit.url))
             excerpt = ""
             if page is not None:
                 excerpt = page.text[:1400].strip()

@@ -41,17 +41,25 @@ class AsyncRunner:
             if self._loop is None or self._thread is None:
                 return
             self._loop.call_soon_threadsafe(self._loop.stop)
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=5.0)
+            if self._thread.is_alive():
+                # Loop still draining a coroutine; keep the refs so run() does
+                # not spawn a second loop/thread while this one is alive.
+                return
+            self._loop.close()
             self._loop = None
             self._thread = None
             self._ready.clear()
 
 
 _runner: AsyncRunner | None = None
+_runner_lock = threading.Lock()
 
 
 def get_async_runner() -> AsyncRunner:
     global _runner
     if _runner is None:
-        _runner = AsyncRunner()
+        with _runner_lock:
+            if _runner is None:
+                _runner = AsyncRunner()
     return _runner

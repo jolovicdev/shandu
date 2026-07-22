@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from blackgeorge import Job, Worker
 from blackgeorge.utils import new_id
 from pydantic import BaseModel, Field
 
-from ..contracts import EvidenceRecord, ResearchRequest, SubagentTask
+from ..contracts import EvidenceRecord, ResearchRequest, SourceClass, SubagentTask
 from ..interfaces import (
     RuntimeExecutionLike,
     ScrapedPageLike,
@@ -20,11 +20,74 @@ from ..prompts import extractor_instructions, extractor_job
 
 SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
+_SNIPPET_FALLBACK_METHOD = "search_snippet_fallback"
+_SNIPPET_ONLY_CREDIBILITY = 0.20
+
 
 class _ExtractionPayload(BaseModel):
     snippet: str
     extracted_text: str
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    source_class: SourceClass = "unknown"
+    authorship: Literal["named", "organizational", "anonymous"] = "anonymous"
+    is_promotional: bool = False
+    summarizes_inaccessible_source: bool = False
+
+
+def assess_source_quality(
+    source_class: SourceClass,
+    authorship: str,
+    is_promotional: bool,
+    summarizes_inaccessible_source: bool,
+    has_publish_date: bool,
+) -> tuple[float, list[str]]:
+    """Score an assessed source from its provenance signals.
+
+    The score starts from a per-class tier and loses small amounts for missing
+    date, missing author, promotional intent, and secondhand summaries. Every
+    credibility constant lives here. Callers handle the non-assessed buckets
+    (snippet-only, unassessed) directly.
+    """
+    tiers: dict[str, float] = {
+        "peer_reviewed": 0.92,
+        "primary": 0.90,
+        "official": 0.88,
+        "technical_reference": 0.80,
+        "journalism": 0.72,
+        "expert_commentary": 0.62,
+        "corporate": 0.52,
+        "aggregator": 0.42,
+        "community": 0.42,
+        "personal_blog": 0.36,
+        "advocacy_marketing": 0.30,
+        "social_profile": 0.26,
+        "unknown": 0.40,
+    }
+    self_published_classes = {
+        "personal_blog",
+        "social_profile",
+        "corporate",
+        "advocacy_marketing",
+    }
+
+    score = tiers[source_class]
+    flags: list[str] = []
+    if not has_publish_date:
+        score -= 0.10
+        flags.append("undated")
+    if authorship == "anonymous":
+        score -= 0.10
+        flags.append("no_author")
+    if is_promotional:
+        score -= 0.15
+        flags.append("promotional")
+    if summarizes_inaccessible_source:
+        score -= 0.15
+        flags.append("secondhand")
+    if source_class in self_published_classes:
+        flags.append("self_published")
+
+    return max(0.0, min(1.0, score)), flags
 
 
 class SearchSubagent:
@@ -138,6 +201,7 @@ class SearchSubagent:
                         "fetch_error": page.fetch_error,
                     },
                 )
+                credibility, quality_flags = _SNIPPET_ONLY_CREDIBILITY, ["snippet_only"]
                 return EvidenceRecord(
                     evidence_id=new_id(),
                     task_id=task.task_id,
@@ -149,7 +213,10 @@ class SearchSubagent:
                     extracted_text=snippet or title,
                     confidence=0.33,
                     source_type="search_snippet",
-                    extraction_method="search_snippet_fallback",
+                    extraction_method=_SNIPPET_FALLBACK_METHOD,
+                    relevance_score=0.33,
+                    credibility_score=credibility,
+                    quality_flags=quality_flags,
                     fetch_error=page.fetch_error,
                 )
 
@@ -162,7 +229,22 @@ class SearchSubagent:
                     "title": page.title,
                 },
             )
-            extraction = await self._extract(task, page.url, page.title, page.text, progress_callback)
+            extraction, assessed = await self._extract(
+                task, page.url, page.title, page.text, progress_callback
+            )
+            source_type, extraction_method = self._source_metadata(page.content_type, page.url)
+            if assessed:
+                source_class = extraction.source_class
+                credibility, quality_flags = assess_source_quality(
+                    extraction.source_class,
+                    extraction.authorship,
+                    extraction.is_promotional,
+                    extraction.summarizes_inaccessible_source,
+                    page.published_at is not None,
+                )
+            else:
+                source_class = None
+                credibility, quality_flags = None, ["unassessed"]
             await self._emit_trace(
                 progress_callback,
                 "extract_completed",
@@ -171,9 +253,9 @@ class SearchSubagent:
                     "url": page.url,
                     "title": page.title,
                     "confidence": extraction.confidence,
+                    "credibility": credibility,
                 },
             )
-            source_type, extraction_method = self._source_metadata(page.content_type, page.url)
             return EvidenceRecord(
                 evidence_id=new_id(),
                 task_id=task.task_id,
@@ -189,6 +271,10 @@ class SearchSubagent:
                 published_at=page.published_at,
                 source_type=source_type,
                 extraction_method=extraction_method,
+                relevance_score=extraction.confidence,
+                credibility_score=credibility,
+                source_class=source_class,
+                quality_flags=quality_flags,
             )
 
         evidence: list[EvidenceRecord] = await asyncio.gather(
@@ -205,6 +291,7 @@ class SearchSubagent:
             snippet = str(hit_payload.get("snippet", "")).strip()
             title = str(hit_payload.get("title", "")).strip() or url
             extracted_text = snippet or title
+            credibility, quality_flags = _SNIPPET_ONLY_CREDIBILITY, ["snippet_only"]
             evidence.append(
                 EvidenceRecord(
                     evidence_id=new_id(),
@@ -217,7 +304,10 @@ class SearchSubagent:
                     extracted_text=extracted_text,
                     confidence=0.33,
                     source_type="search_snippet",
-                    extraction_method="search_snippet_fallback",
+                    extraction_method=_SNIPPET_FALLBACK_METHOD,
+                    relevance_score=0.33,
+                    credibility_score=credibility,
+                    quality_flags=quality_flags,
                     fetch_error="scrape_failed",
                 )
             )
@@ -281,7 +371,7 @@ class SearchSubagent:
         title: str,
         text: str,
         progress_callback: SearchTraceCallback | None = None,
-    ) -> _ExtractionPayload:
+    ) -> tuple[_ExtractionPayload, bool]:
         payload = {
             "task_focus": task.focus,
             "task_expected_output": task.expected_output,
@@ -301,7 +391,7 @@ class SearchSubagent:
         try:
             report = await self._runtime.desk.arun(worker, job)
             if report.status == "completed" and isinstance(report.data, _ExtractionPayload):
-                return report.data
+                return report.data, True
         except Exception:
             pass
 
@@ -313,8 +403,11 @@ class SearchSubagent:
 
         fallback_snippet = text[:320].strip()
         fallback_body = text[:2200].strip()
-        return _ExtractionPayload(
-            snippet=fallback_snippet or title,
-            extracted_text=fallback_body or title,
-            confidence=0.45,
+        return (
+            _ExtractionPayload(
+                snippet=fallback_snippet or title,
+                extracted_text=fallback_body or title,
+                confidence=0.45,
+            ),
+            False,
         )

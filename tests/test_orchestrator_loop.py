@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 
 from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
@@ -424,3 +425,78 @@ def test_orchestrator_adds_cost_stats_when_available() -> None:
     assert result.run_stats["cost_coverage"] == "full"
     assert result.run_stats["llm_tokens"] == 3200
     assert result.run_stats["usd_spent"] == 0.045
+
+
+def test_run_stats_include_source_class_and_dated_summary() -> None:
+    orchestrator = LeadOrchestrator(
+        lead_agent=FakeLeadAgent(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        memory_service=MemoryService(InMemoryMemoryStore()),
+        report_service=FakeReportService(),
+    )
+    request = ResearchRequest(query="quality-test", max_iterations=1, parallelism=1)
+    result = asyncio.run(orchestrator.run(request))
+
+    assert "source_class_counts" in result.run_stats
+    assert "dated_evidence_fraction" in result.run_stats
+    assert result.run_stats["dated_evidence_fraction"] == 0.0
+
+
+def test_compact_evidence_carries_source_quality_fields() -> None:
+    from shandu.agents.lead import LeadAgent
+
+    compact = LeadAgent._compact_evidence(
+        [
+            {
+                "task_id": "t1",
+                "query": "q",
+                "requested_url": "https://example.com/a",
+                "domain": "example.com",
+                "title": "Alpha",
+                "snippet": "s",
+                "extracted_text": "body",
+                "confidence": 0.8,
+                "published_at": "2026-01-01",
+                "source_class": "journalism",
+                "credibility_score": 0.72,
+                "quality_flags": ["undated"],
+            }
+        ]
+    )
+
+    entry = compact[0]
+    assert entry["domain"] == "example.com"
+    assert entry["published_at"] == "2026-01-01"
+    assert entry["source_class"] == "journalism"
+    assert entry["credibility_score"] == 0.72
+    assert entry["quality_flags"] == ["undated"]
+
+
+def test_adaptive_loop_weighs_credibility() -> None:
+    coverage = SimpleNamespace(
+        coverage_score=0.7,
+        open_question_severity=0.3,
+        contradiction_count=0,
+        should_continue=False,
+    )
+    weak = [
+        EvidenceRecord(
+            evidence_id=f"e{i}",
+            task_id="t",
+            query="q",
+            requested_url=f"https://d{i}.example/a",
+            domain=f"d{i}.example",
+            title="T",
+            snippet="s",
+            extracted_text="x",
+            confidence=0.8,
+            credibility_score=0.3,
+        )
+        for i in range(3)
+    ]
+
+    assert LeadOrchestrator._adaptive_should_continue(coverage, weak, 3, 0) is True
+
+    unscored = [ev.model_copy(update={"credibility_score": None}) for ev in weak]
+    assert LeadOrchestrator._adaptive_should_continue(coverage, unscored, 3, 0) is False

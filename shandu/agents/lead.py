@@ -249,10 +249,15 @@ class LeadAgent:
                     "task_id": str(entry.get("task_id", "")),
                     "query": str(entry.get("query", "")),
                     "url": str(entry.get("requested_url", entry.get("url", ""))),
+                    "domain": str(entry.get("domain", "") or ""),
                     "title": str(entry.get("title", "")),
                     "snippet": str(entry.get("snippet", "")),
                     "extracted_text": str(entry.get("extracted_text", ""))[:2200],
                     "confidence": confidence,
+                    "published_at": entry.get("published_at"),
+                    "source_class": entry.get("source_class"),
+                    "credibility_score": entry.get("credibility_score"),
+                    "quality_flags": entry.get("quality_flags") or [],
                 }
             )
         return compact

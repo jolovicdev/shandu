@@ -5,6 +5,37 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+SourceClass = Literal[
+    "primary",
+    "official",
+    "peer_reviewed",
+    "journalism",
+    "technical_reference",
+    "corporate",
+    "expert_commentary",
+    "community",
+    "personal_blog",
+    "advocacy_marketing",
+    "aggregator",
+    "social_profile",
+    "unknown",
+]
+
+# quality_flags vocabulary: undated (no publication date), no_author (anonymous),
+# self_published (publisher and subject are the same party), secondhand
+# (summarizes primary work it does not contain), promotional (exists to persuade
+# or sell), snippet_only (evidence is a search snippet, page not extracted),
+# unassessed (no model source-quality assessment happened for this record).
+QualityFlag = Literal[
+    "undated",
+    "no_author",
+    "self_published",
+    "secondhand",
+    "promotional",
+    "snippet_only",
+    "unassessed",
+]
+
 
 class ResearchRequest(BaseModel):
     query: str
@@ -48,6 +79,8 @@ class EvidenceRecord(BaseModel):
     extraction_method: str = ""
     relevance_score: float | None = None
     credibility_score: float | None = None
+    source_class: SourceClass | None = None
+    quality_flags: list[QualityFlag] = Field(default_factory=list)
     fetch_error: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

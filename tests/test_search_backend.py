@@ -8,12 +8,15 @@ def test_search_service_constructs() -> None:
     assert service is not None
 
 
-def test_search_backends_exclude_stale_names() -> None:
+def test_search_backends_pair_engines_with_auto_fallback() -> None:
     from shandu.services.search import _TEXT_BACKENDS
 
     assert "lite" not in _TEXT_BACKENDS
     assert "html" not in _TEXT_BACKENDS
-    assert "duckduckgo" in _TEXT_BACKENDS
+    primary = _TEXT_BACKENDS[0].split(",")
+    assert "brave" in primary
+    assert "duckduckgo" in primary
+    assert _TEXT_BACKENDS[-1] == "auto"
 
 
 def test_search_cache_evicts_oldest() -> None:

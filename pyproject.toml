@@ -4,15 +4,26 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shandu"
-version = "3.0.9"
-description = "Multi-agent research system powered by Blackgeorge"
+version = "3.1.0"
+description = "Open-source deep research agent: multi-agent web search, scraping, source-credibility scoring, and citation-backed reports with any LiteLLM model"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
   {name = "Dusan Jolovic", email = "jolovic@pm.me"}
 ]
-keywords = ["research", "ai", "blackgeorge", "deepresearch", "search"]
+keywords = [
+  "deep-research",
+  "research-agent",
+  "ai-agent",
+  "multi-agent",
+  "web-search",
+  "web-scraping",
+  "citations",
+  "report-generation",
+  "llm",
+  "litellm",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",

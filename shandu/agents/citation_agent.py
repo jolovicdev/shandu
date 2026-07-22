@@ -11,6 +11,17 @@ from ..contracts import CitationEntry, EvidenceRecord
 from ..interfaces import RuntimeExecutionLike
 from ..prompts import citation_instructions, citation_job
 
+# Evidence below this credibility stays out of the ledger so weak pages can
+# inform caveats without earning a reference entry. Snippet-only fallbacks
+# (0.20) and penalized blogs/social/marketing pages land under it; a clean
+# personal blog (0.36) or worst-case journalism (0.37) stays citable. If
+# nothing clears the bar, the full corpus is used so reports keep citations.
+_MIN_CITABLE_CREDIBILITY = 0.35
+
+# Same-work dedup only trusts titles long enough to be distinctive; short
+# titles ("10-K", "FAQ") collide across unrelated pages on the same site.
+_MIN_MERGE_TITLE_LEN = 12
+
 
 class _CitationCandidate(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
@@ -35,8 +46,17 @@ class CitationAgent:
         if not evidence:
             return []
 
+        citable = [
+            item
+            for item in evidence
+            if item.credibility_score is None
+            or item.credibility_score >= _MIN_CITABLE_CREDIBILITY
+        ]
+        if not citable:
+            citable = evidence
+
         evidence_json = json.dumps(
-            [self._project(item) for item in evidence], ensure_ascii=False
+            [self._project(item) for item in citable], ensure_ascii=False
         )
         worker = Worker(
             name="CitationSubagent",
@@ -50,13 +70,13 @@ class CitationAgent:
         try:
             report = await self._runtime.desk.arun(worker, job)
             if report.status == "completed" and isinstance(report.data, _CitationBundle):
-                normalized = self._normalize(report.data.citations, evidence)
+                normalized = self._normalize(report.data.citations, citable)
                 if normalized:
                     return normalized
         except Exception:
             pass
 
-        return self._fallback(evidence)
+        return self._fallback(citable)
 
     @staticmethod
     def _project(item: EvidenceRecord) -> dict[str, str]:
@@ -68,6 +88,27 @@ class CitationAgent:
             "domain": item.domain or "",
             "snippet": (item.snippet or "")[:280],
         }
+
+    @staticmethod
+    def _sanitize_title(title: str, fallback: str) -> str:
+        cleaned = " ".join(title.split())
+        if len(cleaned) < 3 or cleaned.lower().startswith(
+            ("http://", "https://", "www.")
+        ):
+            return fallback
+        # Some pages ship a whole lede as <title>; cap so the reference list
+        # stays scannable.
+        if len(cleaned) > 160:
+            cleaned = cleaned[:157].rstrip() + "..."
+        return cleaned
+
+    @staticmethod
+    def _merge_key(url: str, title: str) -> tuple[str, str] | None:
+        host = urlparse(url).netloc.lower().removeprefix("www.")
+        normalized = " ".join(title.split()).casefold()
+        if not host or len(normalized) < _MIN_MERGE_TITLE_LEN:
+            return None
+        return host, normalized
 
     def _normalize(
         self,
@@ -81,26 +122,35 @@ class CitationAgent:
             by_url.setdefault(item.requested_url, set()).add(item.evidence_id)
 
         normalized: list[CitationEntry] = []
-        seen: set[str] = set()
+        seen_urls: set[str] = set()
+        merged: dict[tuple[str, str], CitationEntry] = {}
         accessed = date.today().isoformat()
-        for idx, candidate in enumerate(candidates, start=1):
+        for candidate in candidates:
             url = candidate.url.strip()
-            if not url or url in seen:
+            if not url or url in seen_urls:
                 continue
-            seen.add(url)
+            seen_urls.add(url)
             evidence_ids = list(by_url.get(url, set())) or candidate.evidence_ids
             publisher = candidate.publisher.strip() or urlparse(url).netloc
-            title = candidate.title.strip() or "Untitled"
-            normalized.append(
-                CitationEntry(
-                    citation_id=idx,
-                    evidence_ids=sorted(set(evidence_ids)),
-                    url=url,
-                    title=title,
-                    publisher=publisher,
-                    accessed_at=accessed,
-                )
+            title = self._sanitize_title(candidate.title, publisher or "Untitled")
+            # Fallback titles equal the publisher; merging on them would fuse
+            # unrelated pages from the same site.
+            key = self._merge_key(url, title) if title != publisher else None
+            if key is not None and key in merged:
+                entry = merged[key]
+                entry.evidence_ids = sorted(set(entry.evidence_ids) | set(evidence_ids))
+                continue
+            entry = CitationEntry(
+                citation_id=len(normalized) + 1,
+                evidence_ids=sorted(set(evidence_ids)),
+                url=url,
+                title=title,
+                publisher=publisher,
+                accessed_at=accessed,
             )
+            if key is not None:
+                merged[key] = entry
+            normalized.append(entry)
         return normalized
 
     def _fallback(self, evidence: list[EvidenceRecord]) -> list[CitationEntry]:
@@ -109,17 +159,27 @@ class CitationAgent:
             grouped.setdefault(item.requested_url, []).append(item)
 
         citations: list[CitationEntry] = []
+        merged: dict[tuple[str, str], CitationEntry] = {}
         accessed = date.today().isoformat()
-        for idx, (url, items) in enumerate(grouped.items(), start=1):
+        for url, items in grouped.items():
             first = items[0]
-            citations.append(
-                CitationEntry(
-                    citation_id=idx,
-                    evidence_ids=sorted({entry.evidence_id for entry in items}),
-                    url=url,
-                    title=first.title or "Untitled",
-                    publisher=urlparse(url).netloc or "unknown",
-                    accessed_at=accessed,
-                )
+            publisher = urlparse(url).netloc or "unknown"
+            title = self._sanitize_title(first.title, publisher)
+            evidence_ids = sorted({entry.evidence_id for entry in items})
+            key = self._merge_key(url, title) if title != publisher else None
+            if key is not None and key in merged:
+                entry = merged[key]
+                entry.evidence_ids = sorted(set(entry.evidence_ids) | set(evidence_ids))
+                continue
+            entry = CitationEntry(
+                citation_id=len(citations) + 1,
+                evidence_ids=evidence_ids,
+                url=url,
+                title=title,
+                publisher=publisher,
+                accessed_at=accessed,
             )
+            if key is not None:
+                merged[key] = entry
+            citations.append(entry)
         return citations

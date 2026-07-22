@@ -366,6 +366,7 @@ class LeadOrchestrator:
             "agent_model_calls": agent_model_calls,
             "agent_fallbacks": lead_fallbacks + extraction_fallbacks,
         }
+        run_stats.update(self._quality_summary(all_evidence))
         self._append_cost_stats(run_stats, cost_start)
 
         result = ResearchRunResult(
@@ -445,7 +446,8 @@ class LeadOrchestrator:
             if d and isinstance(d, str):
                 domains.add(d)
             conf = getattr(ev, "confidence", 0.0) or 0.0
-            if conf >= 0.7:
+            cred = getattr(ev, "credibility_score", None)
+            if conf >= 0.7 and (cred is None or cred >= 0.6):
                 high_conf += 1
 
         if float(cov) < 0.6:
@@ -460,6 +462,18 @@ class LeadOrchestrator:
             return True
 
         return False
+
+    @staticmethod
+    def _quality_summary(evidence: list[EvidenceRecord]) -> dict[str, Any]:
+        counts: dict[str, int] = {}
+        dated = 0
+        for ev in evidence:
+            label = ev.source_class or "unclassified"
+            counts[label] = counts.get(label, 0) + 1
+            if ev.published_at:
+                dated += 1
+        fraction = round(dated / len(evidence), 3) if evidence else 0.0
+        return {"source_class_counts": counts, "dated_evidence_fraction": fraction}
 
     def _append_cost_stats(
         self,
@@ -527,6 +541,8 @@ class LeadOrchestrator:
             message = f"Task {task_id} extracted page" if task_id else "Extracted page"
             if "confidence" in payload:
                 metrics["confidence"] = payload["confidence"]
+            if payload.get("credibility") is not None:
+                metrics["credibility"] = payload["credibility"]
         elif trace_type == "extract_started":
             message = (
                 f"Task {task_id} extracting page" if task_id else "Extracting page"

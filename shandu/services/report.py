@@ -6,6 +6,23 @@ from dataclasses import dataclass
 
 from ..contracts import CitationEntry, FinalReportDraft, ResearchRequest
 
+# Table headers whose whole purpose is provenance; the reporter prompt bans
+# them, and this renderer pass removes any that slip through.
+_BANNED_PROVENANCE_HEADERS = {
+    "source",
+    "sources",
+    "evidence source",
+    "reference",
+    "references",
+    "ref",
+    "citation",
+    "citations",
+    "provenance",
+    "links",
+    "key sources",
+    "key proponents / sources",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class RenderedReport:
@@ -33,6 +50,8 @@ class ReportService:
             if draft.markdown and draft.markdown.strip()
             else self._render_from_sections(request, draft)
         )
+        markdown = self._strip_provenance_columns(markdown)
+        markdown = self._strip_horizontal_rules(markdown)
         normalized = self._normalize_citation_markers(markdown, citations)
         normalized, normalized_citations = self._reindex_citation_numbers(
             normalized, citations
@@ -86,6 +105,84 @@ class ReportService:
             for entry in sorted(citations, key=lambda item: item.citation_id)
         ]
 
+    def _strip_provenance_columns(self, markdown: str) -> str:
+        lines = markdown.splitlines()
+        output: list[str] = []
+        in_fence = False
+        index = 0
+        while index < len(lines):
+            stripped = lines[index].strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+                output.append(lines[index])
+                index += 1
+                continue
+            if in_fence or not self._is_table_row(lines[index]):
+                output.append(lines[index])
+                index += 1
+                continue
+            block_end = index
+            while block_end < len(lines) and self._is_table_row(lines[block_end]):
+                block_end += 1
+            output.extend(self._rewrite_table(lines[index:block_end]))
+            index = block_end
+        return "\n".join(output)
+
+    @staticmethod
+    def _is_table_row(line: str) -> bool:
+        stripped = line.strip()
+        return len(stripped) > 1 and stripped.startswith("|") and stripped.endswith("|")
+
+    @staticmethod
+    def _split_row(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    def _rewrite_table(self, rows: list[str]) -> list[str]:
+        if len(rows) < 2:
+            return rows
+        header = self._split_row(rows[0])
+        separator = self._split_row(rows[1])
+        if len(separator) != len(header) or not all(
+            re.fullmatch(r":?-{2,}:?", cell) for cell in separator
+        ):
+            return rows
+        banned = {
+            index
+            for index, cell in enumerate(header)
+            if cell.strip("*").strip().casefold() in _BANNED_PROVENANCE_HEADERS
+        }
+        if not banned or len(banned) >= len(header):
+            return rows
+        body = [self._split_row(row) for row in rows[2:]]
+        if any(len(cells) != len(header) for cells in body):
+            return rows
+
+        marker_pattern = re.compile(r"\[[A-Za-z0-9_-]{1,64}\]")
+
+        def join(cells: list[str]) -> str:
+            return "| " + " | ".join(cells) + " |"
+
+        rewritten = [
+            join([cell for index, cell in enumerate(header) if index not in banned]),
+            join([cell for index, cell in enumerate(separator) if index not in banned]),
+        ]
+        for cells in body:
+            kept = [cell for index, cell in enumerate(cells) if index not in banned]
+            markers = [
+                marker
+                for index in sorted(banned)
+                for marker in marker_pattern.findall(cells[index])
+            ]
+            fresh = [
+                marker
+                for marker in dict.fromkeys(markers)
+                if all(marker not in cell for cell in kept)
+            ]
+            if kept and fresh:
+                kept[0] = f"{kept[0]} {' '.join(fresh)}".strip()
+            rewritten.append(join(kept))
+        return rewritten
+
     def _strip_references_section(self, markdown: str) -> str:
         heading_pattern = re.compile(
             r"^\s{0,3}(?:#{1,6}\s*)?(?:key\s+)?"
@@ -117,11 +214,30 @@ class ReportService:
             or re.search(r"\[[^\]]+\]\(https?://", line, re.IGNORECASE)
         )
 
+    @staticmethod
+    def _strip_horizontal_rules(markdown: str) -> str:
+        # Only blank-line-surrounded rules; a setext heading underline
+        # ("Title\n---") has text directly above and must survive.
+        return re.sub(
+            r"(\n[ \t]*\n)(?:-{3,}|\*{3,}|_{3,})[ \t]*\n",
+            r"\1",
+            markdown,
+        )
+
     def _normalize_citation_markers(
         self,
         markdown: str,
         citations: list[CitationEntry],
     ) -> str:
+        # Split grouped markers ("[1, 2]") into single ones so each number is
+        # validated below instead of bypassing the marker pipeline entirely.
+        markdown = re.sub(
+            r"\[(\d+(?:\s*,\s*\d+)+)\]",
+            lambda match: "".join(
+                f"[{int(token)}]" for token in re.split(r"\s*,\s*", match.group(1))
+            ),
+            markdown,
+        )
         valid_numbers = {str(entry.citation_id) for entry in citations}
         evidence_to_number: dict[str, str] = {}
         for entry in citations:

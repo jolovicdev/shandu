@@ -427,6 +427,7 @@ class GuiRunState:
             "scraped",
             "missed",
             "confidence",
+            "credibility",
         ):
             if key in event.metrics:
                 details.append(f"{key}={event.metrics[key]}")

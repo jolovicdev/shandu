@@ -102,22 +102,32 @@ flowchart TD
 - Final rendered reports use numeric citation markers only (`[1]`, `[2]`, ...).
 - Internal evidence IDs are removed from rendered markdown.
 - References are rebuilt from citation ledger ordering for stable output.
+- Evidence below the credibility bar is excluded from the ledger unless no stronger evidence exists.
+- URL variants of the same work (same site, same title) merge into one ledger entry.
+- Ledger titles are sanitized; boilerplate or bare-URL titles fall back to the publisher.
+- Tables with dedicated provenance columns (Source, Reference, ...) are rewritten at render
+  time: the column is dropped and its citation markers move into the row.
 
 ## 7) Module Boundaries (Black Box View)
 
 - Engine: public runtime entrypoint (`run`, `stream`, `inspect`, `ai_search`).
 - Orchestrator: iterative loop control, task fan-out, progress events, and result assembly.
 - Lead agent: planning, synthesis, and final report drafting.
-- Search subagents: evidence retrieval and extraction for each planned task.
-- Citation agent: citation ledger generation and normalization.
-- Search service: web search backend abstraction.
+- Search subagents: concurrent search queries and per-page extraction for each planned task.
+  The extractor classifies every source (class, authorship, promotional intent, secondhand
+  summaries) and a pure scoring function derives `credibility_score` and `quality_flags`;
+  the synthesizer, reporter, and adaptive loop consume them.
+- Citation agent: citation ledger generation and normalization; filters low-credibility
+  evidence, merges same-work URL variants, and sanitizes titles.
+- Search service: web search backend abstraction with a bounded LRU result cache.
 - Scrape service: layered HTML extraction pipeline (trafilatura → readability-lxml → BS4),
   document-format parsers (PDF/DOCX/XLSX/CSV/plaintext/markdown), structured content blocks
   (headings, paragraphs, tables, code, blockquotes), fetch-error classification (paywall,
   captcha, empty JS shell, blocked), per-domain rate limiting with exponential backoff,
-  retry policy (3 attempts, jitter, status-aware), in-flight request deduplication,
-  cross-task URL caching, publication-date extraction from OpenGraph/JSON-LD/meta/time tags,
-  redirect-aware provenance tracking, and search-snippet fallback evidence when scraping fails.
+  status-aware retries with jitter (timeouts capped at one retry), one shared HTTP session
+  per service, in-flight request deduplication, LRU-bounded cross-task URL caching,
+  publication-date extraction from OpenGraph/JSON-LD/meta/time tags, redirect-aware
+  provenance tracking, and search-snippet fallback evidence when scraping fails.
 - Memory service: persistent run memory and retrieval.
 - Report service: citation normalization and final markdown rendering.
 - AI search service: one-shot search + explanation workflow.

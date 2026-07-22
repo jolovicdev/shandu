@@ -1,17 +1,22 @@
-# Shandu - Multi-Agent AI Research CLI and GUI
+# Shandu - Open-Source Deep Research Agent (CLI + GUI)
 
-Shandu is a Python deep-research agent that plans research loops, searches the web,
-scrapes webpages and documents, extracts evidence, and writes citation-backed reports.
-It is powered by Blackgeorge and works from both a terminal CLI and a Gradio control room.
+Shandu is a Python deep research agent: ask a question, and a team of LLM agents
+plans research loops, runs web searches, scrapes pages and documents, scores every
+source for credibility, and writes a long-form markdown report with numbered
+citations. It covers the same ground as hosted deep-research tools (OpenAI Deep
+Research, Perplexity, Gemini), but it is open source and runs on your own machine
+with any model LiteLLM supports: DeepSeek, OpenRouter, Anthropic, OpenAI, or a
+local endpoint. Built on the Blackgeorge agent framework, usable from a terminal
+CLI or a Gradio web GUI.
 
 - Architecture deep dive: [`ARCH.md`](ARCH.md)
 - Example long-form output: see the `examples` directory.
 - DeepSeek Flash example: [`examples/deepseek-flash.md`](examples/deepseek-flash.md)
 
-## Architecture
+## How It Works
 
-- Lead orchestrator plans iterative research loops.
-- Parallel search subagents retrieve and extract web evidence.
+- Lead orchestrator plans iterative research loops (plan, search, synthesize, repeat).
+- Parallel search subagents run web search and evidence extraction concurrently.
 - Citation subagent builds the final reference ledger.
 - SQLite-backed memory tracks run context across steps.
 - Rich CLI control deck renders run metrics and timeline.
@@ -142,7 +147,8 @@ shandu aisearch "latest state of open-source browser automation in 2026" \
   --output aisearch.md
 ```
 
-`aisearch` returns classic behavior: web search + synthesized explanation with source citations.
+`aisearch` is the quick mode: a single Perplexity-style answer built from live web
+search, with source citations, when a full deep-research run is more than you need.
 
 Citation behavior:
 
@@ -217,7 +223,7 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-## Scraper Notes
+## Web Scraping Pipeline
 
 - Three-layer HTML extraction: trafilatura → readability-lxml → BS4.
 - Document-format support: PDF, DOCX, XLSX, CSV, plaintext, markdown.
@@ -228,7 +234,17 @@ uv run pytest -q
 - In-flight deduplication prevents concurrent duplicate fetches of the same URL.
 - Redirect-aware: pages tracked by requested URL so redirects don't cause false misses.
 
-> Upcoming: EVEN STRONGER source-quality enforcement will flag weak/undated/advocacy sources (blog posts, linkedin etc.) so the
-> synthesizer can distinguish strong primary evidence from low-signal pages.
+## Source-Quality Enforcement
+
+A research agent is only as good as what it cites. Shandu grades every page it
+reads instead of treating all search results as equal, so reports lean on primary
+sources and peer-reviewed work rather than SEO farms, undated blogs, and
+marketing pages.
+
+- The per-page extractor classifies each source on the existing extraction call (primary, official, peer-reviewed, journalism, corporate, community, personal blog, advocacy/marketing, aggregator, social profile, or unknown) and records authorship, dating, and whether the page only summarizes work it does not contain.
+- Each evidence record carries a `source_class`, a `credibility_score` derived from those signals, and `quality_flags` such as `undated`, `no_author`, `promotional`, `snippet_only`, or `unassessed`.
+- The synthesizer and reporter weight claims by credibility and name weak-only support explicitly; undated evidence is treated as stale for time-sensitive queries.
+- The adaptive loop treats high-confidence but low-credibility evidence as weak, so weak-source corpora keep searching; run stats report source-class counts and the fraction of dated evidence.
+- The citation ledger excludes evidence below the credibility bar (weak pages can still inform caveats in prose), merges URL variants of the same work (abstract/HTML/PDF) into one reference, and sanitizes boilerplate titles.
 
 MIT license.

@@ -12,9 +12,13 @@ from pydantic import BaseModel
 
 from ..config import config
 
-# ddgs 9.x text backends. "lite"/"html" were duckduckgo_search names and are
-# rejected by ddgs (it falls back to "auto"), so they only add redundant work.
-_TEXT_BACKENDS: tuple[str, ...] = ("duckduckgo", "auto")
+# ddgs 9.x text backends. A comma-delimited entry queries those engines in
+# parallel threads and merges URL-deduped results, so the primary entry gets
+# per-query source diversity and survives either engine having a bad day;
+# "auto" stays as the everything-else fallback. "lite"/"html" were
+# duckduckgo_search names rejected by ddgs; "bing" is disabled and "google"
+# is blocked (HTTP 403) as of ddgs 9.10.
+_TEXT_BACKENDS: tuple[str, ...] = ("brave,duckduckgo", "auto")
 _SEARCH_CACHE_MAX = 256
 
 

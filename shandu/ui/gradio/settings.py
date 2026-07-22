@@ -10,6 +10,23 @@ from ...runtime import reset_bootstrap
 from .constants import DEPTH_POLICIES, DETAIL_LEVELS
 
 
+# Only these config values feed RuntimeBootstrap. Orchestration values are
+# read per-request, so saving them must not tear down the shared runtime:
+# reset_bootstrap() closes SQLite stores that any in-flight run still holds,
+# and the GUI saves configuration at the start of every run.
+_RUNTIME_KEYS: tuple[tuple[str, str], ...] = (
+    ("api", "model"),
+    ("api", "api_key_env"),
+    ("api", "api_key"),
+    ("api", "temperature"),
+    ("api", "max_tokens"),
+)
+
+
+def _runtime_snapshot() -> tuple[str, ...]:
+    return tuple(str(config.get(section, key, "")) for section, key in _RUNTIME_KEYS)
+
+
 @dataclass(frozen=True, slots=True)
 class GuiDefaults:
     model: str
@@ -74,6 +91,7 @@ def save_configuration(
     key_text = str(api_key_value or "").strip()
 
     resolved_env = env_text or infer_api_key_env_name(model_text)
+    runtime_before = _runtime_snapshot()
     config.set("api", "model", model_text)
     config.set("api", "api_key_env", resolved_env)
     if key_text:
@@ -107,7 +125,8 @@ def save_configuration(
         int(max_pages_per_task) if max_pages_per_task is not None else 3,
     )
     config.save()
-    reset_bootstrap()
+    if _runtime_snapshot() != runtime_before:
+        reset_bootstrap()
     config.apply_provider_api_key()
     return f"Saved configuration for `{model_text}` using env key `{resolved_env}`."
 

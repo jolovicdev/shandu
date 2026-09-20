@@ -43,8 +43,8 @@ class ResearchRequest(BaseModel):
     parallelism: int = Field(default=3, ge=1, le=8)
     detail_level: Literal["concise", "standard", "high"] = "high"
     depth_policy: Literal["adaptive", "fixed"] = "adaptive"
-    max_results_per_query: int = Field(default=5, ge=1, le=20)
-    max_pages_per_task: int = Field(default=3, ge=1, le=10)
+    max_results_per_query: int = Field(default=8, ge=1, le=20)
+    max_pages_per_task: int = Field(default=6, ge=1, le=10)
 
 
 class SubagentTask(BaseModel):

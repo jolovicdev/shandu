@@ -47,15 +47,15 @@ def load_defaults() -> GuiDefaults:
         model=model,
         api_key_env=str(config.get("api", "api_key_env", "")),
         temperature=float(config.get("api", "temperature", 0.2)),
-        max_tokens=int(config.get("api", "max_tokens", 16384)),
+        max_tokens=int(config.get("api", "max_tokens", 32768)),
         max_iterations=int(config.get("orchestration", "max_iterations", 2)),
         parallelism=int(config.get("orchestration", "parallelism", 3)),
         detail_level=str(config.get("orchestration", "detail_level", "high")),
         depth_policy=str(config.get("orchestration", "depth_policy", "adaptive")),
         max_results_per_query=int(
-            config.get("orchestration", "max_results_per_query", 5)
+            config.get("orchestration", "max_results_per_query", 8)
         ),
-        max_pages_per_task=int(config.get("orchestration", "max_pages_per_task", 3)),
+        max_pages_per_task=int(config.get("orchestration", "max_pages_per_task", 6)),
     )
 
 
@@ -100,7 +100,7 @@ def save_configuration(
         "api", "temperature", float(temperature) if temperature is not None else 0.2
     )
     config.set(
-        "api", "max_tokens", int(max_tokens) if max_tokens is not None else 16384
+        "api", "max_tokens", int(max_tokens) if max_tokens is not None else 32768
     )
     config.set(
         "orchestration",
@@ -117,12 +117,12 @@ def save_configuration(
     config.set(
         "orchestration",
         "max_results_per_query",
-        int(max_results_per_query) if max_results_per_query is not None else 5,
+        int(max_results_per_query) if max_results_per_query is not None else 8,
     )
     config.set(
         "orchestration",
         "max_pages_per_task",
-        int(max_pages_per_task) if max_pages_per_task is not None else 3,
+        int(max_pages_per_task) if max_pages_per_task is not None else 6,
     )
     config.save()
     if _runtime_snapshot() != runtime_before:

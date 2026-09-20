@@ -108,7 +108,7 @@ Direct LiteLLM-style provider key env vars (examples):
 Generation/runtime controls:
 
 - `SHANDU_TEMPERATURE` (default `0.2`)
-- `SHANDU_MAX_TOKENS` (default `16384`)
+- `SHANDU_MAX_TOKENS` (default `32768`)
 - `SHANDU_STORAGE_DIR` (default `.blackgeorge`)
 - `SHANDU_PROXY` (optional proxy for scraping)
 

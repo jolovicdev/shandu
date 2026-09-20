@@ -108,7 +108,7 @@ def configure() -> None:
         "Temperature", default=float(config.get("api", "temperature", 0.2)), type=float
     )
     max_tokens = click.prompt(
-        "Max tokens", default=int(config.get("api", "max_tokens", 16384)), type=int
+        "Max tokens", default=int(config.get("api", "max_tokens", 32768)), type=int
     )
     max_iterations = click.prompt(
         "Default max iterations",
@@ -221,10 +221,10 @@ def run_command(
             depth_policy=_resolve_depth_policy(depth_policy, default_depth),
             max_results_per_query=max_results_per_query
             if max_results_per_query is not None
-            else int(config.get("orchestration", "max_results_per_query", 5)),
+            else int(config.get("orchestration", "max_results_per_query", 8)),
             max_pages_per_task=max_pages_per_task
             if max_pages_per_task is not None
-            else int(config.get("orchestration", "max_pages_per_task", 3)),
+            else int(config.get("orchestration", "max_pages_per_task", 6)),
         )
     except ValidationError as exc:
         problems = "; ".join(

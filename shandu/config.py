@@ -63,7 +63,9 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
     "api": {
         "model": DEFAULT_MODEL,
         "temperature": 0.2,
-        "max_tokens": 16384,
+        # Reasoning tokens count against this cap, so it must hold a long
+        # report plus the reasoning that precedes it.
+        "max_tokens": 32768,
         "api_key_env": "",
         "api_key": "",
     },
@@ -78,8 +80,8 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
     "orchestration": {
         "max_iterations": 2,
         "parallelism": 3,
-        "max_results_per_query": 5,
-        "max_pages_per_task": 3,
+        "max_results_per_query": 8,
+        "max_pages_per_task": 6,
         "detail_level": "high",
         "depth_policy": "adaptive",
     },
@@ -157,7 +159,7 @@ class Config:
         if os.getenv("SHANDU_MAX_TOKENS"):
             try:
                 self._config["api"]["max_tokens"] = int(
-                    os.getenv("SHANDU_MAX_TOKENS", "16384")
+                    os.getenv("SHANDU_MAX_TOKENS", "32768")
                 )
             except ValueError:
                 pass

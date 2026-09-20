@@ -72,7 +72,7 @@ class RuntimeBootstrap:
             RuntimeSettings(
                 model=str(lookup("api", "model", DEFAULT_MODEL)),
                 temperature=float(lookup("api", "temperature", 0.2)),
-                max_tokens=int(lookup("api", "max_tokens", 16384)),
+                max_tokens=int(lookup("api", "max_tokens", 32768)),
                 storage_dir=str(lookup("runtime", "storage_dir", ".blackgeorge")),
                 structured_output_retries=int(
                     lookup("runtime", "structured_output_retries", 3)

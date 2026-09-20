@@ -335,20 +335,18 @@ class LeadAgent:
             len(json.dumps(record, ensure_ascii=False, default=str))
             for record in compact
         ]
-        kept = [record.get("citation_id") is not None for record in compact]
-        used = sum(size for size, keep in zip(sizes, kept) if keep)
-        dropped = [
-            index
-            for index, keep in enumerate(kept)
-            if not keep
-        ]
-        dropped.sort(key=lambda index: scores[index], reverse=True)
-        for index in dropped:
-            if used + sizes[index] > _REPORTER_EVIDENCE_BUDGET:
-                break
-            kept[index] = True
-            used += sizes[index]
-        return [record for record, keep in zip(compact, kept) if keep]
+        # Cited records claim the budget first, then the rest by score.
+        order = sorted(
+            range(len(compact)),
+            key=lambda index: (compact[index].get("citation_id") is None, -scores[index]),
+        )
+        kept: set[int] = set()
+        used = 0
+        for index in order:
+            if used + sizes[index] <= _REPORTER_EVIDENCE_BUDGET:
+                kept.add(index)
+                used += sizes[index]
+        return [record for index, record in enumerate(compact) if index in kept]
 
     @staticmethod
     def _compact_citations(citations_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:

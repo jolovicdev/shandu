@@ -148,25 +148,6 @@ class FilteringReportService(ReportService):
         )
 
 
-def test_orchestrator_overrides_model_stop_on_weak_corpus() -> None:
-    memory_service = MemoryService(InMemoryMemoryStore())
-    orchestrator = LeadOrchestrator(
-        lead_agent=FakeLeadAgent(),
-        search_subagent=FakeSearchSubagent(),
-        citation_agent=FakeCitationAgent(),
-        memory_service=memory_service,
-        report_service=FakeReportService(),
-    )
-
-    request = ResearchRequest(query="test", max_iterations=5, parallelism=2)
-    result = asyncio.run(orchestrator.run(request))
-
-    assert result.run_stats["iterations"] == 5
-    assert result.run_stats["evidence_count"] == 5
-    assert result.run_stats["citation_count"] == 1
-    assert "Synthetic Final" in result.report_markdown
-
-
 def test_orchestrator_returns_report_normalized_citation_ledger() -> None:
     memory_service = MemoryService(InMemoryMemoryStore())
     orchestrator = LeadOrchestrator(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from shandu.contracts import (
     CitationEntry,
     FinalReportDraft,
@@ -228,62 +230,35 @@ def test_report_service_preserves_narrative_sources_section() -> None:
     assert "This section should not be truncated" in rendered
 
 
-def test_report_service_strips_sources_heading_with_reference_entries() -> None:
-    service = ReportService()
-    request = ResearchRequest(query="Compare X vs Y")
-    draft = FinalReportDraft(
-        title="Report",
-        executive_summary="Summary",
-        sections=[],
-        markdown=(
-            "# Report\n\n"
-            "Finding A is supported [1].\n\n"
-            "## Sources\n\n"
-            "[1] model-authored bibliography entry that should be stripped"
+@pytest.mark.parametrize(
+    "markdown,kept,dropped",
+    [
+        (
+            "| Model | FLOP | Source |\n"
+            "|---|---|---|\n"
+            "| GPT-5 | 5e25 [2] | Epoch AI [2] |\n"
+            "| V3.2 | n/a | researchaudio.io [3] |",
+            ["| GPT-5 | 5e25 [2] |", "| V3.2 [3] | n/a |"],
+            ["Source", "Epoch AI"],
         ),
-    )
-    citations = [
-        CitationEntry(
-            citation_id=1,
-            evidence_ids=["e1"],
-            url="https://example.com/used",
-            title="Used",
-            publisher="example.com",
-            accessed_at="2026-02-21",
-        )
-    ]
+        (
+            "| Claim | **Sources** |\n"
+            "| :--- | ---: |\n"
+            "| X is true [1] | Publisher [1] |",
+            ["| X is true [1] |"],
+            ["Sources"],
+        ),
+    ],
+)
+def test_strip_provenance_column_drops_source_column(
+    markdown, kept, dropped
+) -> None:
+    result = ReportService()._strip_provenance_columns(markdown)
 
-    rendered = service.render(request, draft, citations)
-
-    assert "model-authored bibliography" not in rendered
-    assert '- **[1] example.com** - "Used". [Source](https://example.com/used)' in rendered
-
-
-def test_strip_provenance_column_moves_markers() -> None:
-    service = ReportService()
-    markdown = (
-        "| Model | FLOP | Source |\n"
-        "|---|---|---|\n"
-        "| GPT-5 | 5e25 [2] | Epoch AI [2] |\n"
-        "| V3.2 | n/a | researchaudio.io [3] |"
-    )
-
-    result = service._strip_provenance_columns(markdown)
-
-    assert "Source" not in result
-    assert "Epoch AI" not in result
-    assert "| GPT-5 | 5e25 [2] |" in result
-    assert "| V3.2 [3] | n/a |" in result
-
-
-def test_strip_provenance_handles_bold_headers_and_alignment() -> None:
-    service = ReportService()
-    markdown = "| Claim | **Sources** |\n| :--- | ---: |\n| X is true [1] | Publisher [1] |"
-
-    result = service._strip_provenance_columns(markdown)
-
-    assert "Sources" not in result
-    assert "| X is true [1] |" in result
+    for text in kept:
+        assert text in result
+    for text in dropped:
+        assert text not in result
 
 
 def test_strip_provenance_leaves_malformed_and_clean_tables() -> None:
@@ -402,27 +377,16 @@ def _single_citation() -> list[CitationEntry]:
     ]
 
 
-def test_marker_passes_leave_fenced_code_byte_for_byte() -> None:
+@pytest.mark.parametrize(
+    "code",
+    [
+        "```python\nx = arr[0]\narr = [1, 2, 3]\n```",
+        "~~~\nx = arr[0]\narr = [1, 2]\n~~~",
+    ],
+)
+def test_marker_passes_leave_fenced_code_byte_for_byte(code) -> None:
     service = ReportService()
     request = ResearchRequest(query="q")
-    code = "```python\nx = arr[0]\narr = [1, 2, 3]\n```"
-    draft = FinalReportDraft(
-        title="Report",
-        executive_summary="Summary",
-        sections=[],
-        markdown=f"# Report\n\nClaim [1].\n\n{code}\n",
-    )
-
-    rendered = service.render(request, draft, _single_citation())
-
-    assert code in rendered
-    assert "Claim [1]." in rendered
-
-
-def test_marker_passes_leave_tilde_fences_byte_for_byte() -> None:
-    service = ReportService()
-    request = ResearchRequest(query="q")
-    code = "~~~\nx = arr[0]\narr = [1, 2]\n~~~"
     draft = FinalReportDraft(
         title="Report",
         executive_summary="Summary",

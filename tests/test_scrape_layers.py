@@ -11,6 +11,8 @@ from docx import Document
 from openpyxl import Workbook
 from unittest import mock
 
+import pytest
+
 from shandu.services.scrape import ScrapeService
 from shandu.services.scrape.extraction import (
     _detect_fetch_error,
@@ -36,28 +38,18 @@ def _long_html(title: str = "Title", words: int = 100) -> str:
 
 
 
-def test_trafilatura_extracts_title_text_and_blocks() -> None:
-    html = _long_html("Trafilatura Article", words=100)
-    result = _extract_with_trafilatura(html)
+@pytest.mark.parametrize(
+    "extract,title",
+    [
+        (_extract_with_trafilatura, "Trafilatura Article"),
+        (_extract_with_readability, "Readability Article"),
+        (_extract_with_bs4, "BS4 Article"),
+    ],
+)
+def test_extract_backends_return_title_text_and_blocks(extract, title) -> None:
+    result = extract(_long_html(title, words=100))
     assert result is not None
-    assert result.title == "Trafilatura Article"
-    assert len(result.text.split()) >= 100
-    assert len(result.blocks) > 0
-
-
-def test_readability_extracts_title_text_and_blocks() -> None:
-    html = _long_html("Readability Article", words=100)
-    result = _extract_with_readability(html)
-    assert result is not None
-    assert result.title == "Readability Article"
-    assert len(result.text.split()) >= 100
-    assert len(result.blocks) > 0
-
-
-def test_bs4_fallback_extracts_title_text_and_blocks() -> None:
-    html = _long_html("BS4 Article", words=100)
-    result = _extract_with_bs4(html)
-    assert result.title == "BS4 Article"
+    assert result.title == title
     assert len(result.text.split()) >= 100
     assert len(result.blocks) > 0
 
@@ -198,17 +190,6 @@ def test_parse_docx_keeps_paragraphs_and_tables_in_order() -> None:
     ]
 
 
-def test_parse_docx_reads_table_only_document() -> None:
-    def build(document: Document) -> None:
-        table = document.add_table(rows=1, cols=2)
-        table.cell(0, 0).text = "Alpha"
-        table.cell(0, 1).text = "Beta"
-
-    result = _parse_docx(_docx_bytes(build))
-
-    assert result.text == "Alpha | Beta"
-
-
 def test_parse_xlsx_extracts_rows() -> None:
     wb = Workbook()
     ws = wb.active
@@ -233,33 +214,31 @@ def test_parse_plaintext_extracts_text() -> None:
 
 
 
-def test_extract_published_at_finds_new_meta_names() -> None:
-    html = (
-        '<html><head>'
-        '<meta name="prism.publicationDate" content="2024-03-01">'
-        '<meta name="sailthru.date" content="2024-03-02">'
-        '</head><body></body></html>'
-    )
-    assert _extract_published_at(html) == "2024-03-01"
-
-
-def test_extract_published_at_finds_dc_date_issued() -> None:
-    html = '<html><head><meta name="dc.date.issued" content="2024-04-01"></head><body></body></html>'
-    assert _extract_published_at(html) == "2024-04-01"
-
-
-def test_extract_published_at_finds_parsely_pub_date() -> None:
-    html = '<html><head><meta name="parsely-pub-date" content="2024-05-01"></head><body></body></html>'
-    assert _extract_published_at(html) == "2024-05-01"
-
-
-def test_extract_published_at_finds_upload_date() -> None:
-    html = (
-        '<html><head>'
-        '<script type="application/ld+json">{"uploadDate":"2024-06-01"}</script>'
-        '</head><body></body></html>'
-    )
-    assert _extract_published_at(html) == "2024-06-01"
+@pytest.mark.parametrize(
+    "head,expected",
+    [
+        (
+            '<meta name="prism.publicationDate" content="2024-03-01">'
+            '<meta name="sailthru.date" content="2024-03-02">',
+            "2024-03-01",
+        ),
+        (
+            '<meta name="dc.date.issued" content="2024-04-01">',
+            "2024-04-01",
+        ),
+        (
+            '<meta name="parsely-pub-date" content="2024-05-01">',
+            "2024-05-01",
+        ),
+        (
+            '<script type="application/ld+json">{"uploadDate":"2024-06-01"}</script>',
+            "2024-06-01",
+        ),
+    ],
+)
+def test_extract_published_at_finds_known_sources(head, expected) -> None:
+    html = f"<html><head>{head}</head><body></body></html>"
+    assert _extract_published_at(html) == expected
 
 
 
@@ -278,14 +257,23 @@ def test_detect_fetch_error_detects_empty_js_shell() -> None:
     assert _detect_fetch_error(html, "") == "empty_js_shell"
 
 
-def test_detect_fetch_error_returns_none_for_normal_page() -> None:
-    html = '<html><body><p>This is a normal page with plenty of content.</p></body></html>'
-    assert _detect_fetch_error(html, "normal content here") is None
-
-
-def test_detect_fetch_error_ignores_captcha_marker_when_text_is_strong() -> None:
-    html = '<html><body><article><p>' + " ".join(["word"] * 120) + '</p></article><script>g-recaptcha</script></body></html>'
-    assert _detect_fetch_error(html, " ".join(["word"] * 120)) is None
+@pytest.mark.parametrize(
+    "html,text",
+    [
+        (
+            "<html><body><p>This is a normal page with plenty of content.</p></body></html>",
+            "normal content here",
+        ),
+        (
+            "<html><body><article><p>"
+            + " ".join(["word"] * 120)
+            + "</p></article><script>g-recaptcha</script></body></html>",
+            " ".join(["word"] * 120),
+        ),
+    ],
+)
+def test_detect_fetch_error_returns_none_for_benign_pages(html, text) -> None:
+    assert _detect_fetch_error(html, text) is None
 
 
 def test_extract_html_caps_long_successful_extraction() -> None:

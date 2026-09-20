@@ -4,26 +4,28 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
+
 from shandu.config import DEFAULT_CONFIG, Config, infer_api_key_env_name
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_infer_api_key_env_name_for_common_models() -> None:
-    assert infer_api_key_env_name("deepseek/deepseek-v4-flash") == "DEEPSEEK_API_KEY"
-    assert infer_api_key_env_name("openrouter/minimax/minimax-m2.5") == "OPENROUTER_API_KEY"
-    assert infer_api_key_env_name("anthropic/claude-sonnet-4") == "ANTHROPIC_API_KEY"
-
-
-def test_infer_api_key_env_name_for_bare_model_names() -> None:
-    assert infer_api_key_env_name("gpt-4o") == "OPENAI_API_KEY"
-    assert infer_api_key_env_name("not-a-real-model-xyz") == "OPENAI_API_KEY"
-
-
-def test_infer_api_key_env_name_empty_for_provider_managed_models() -> None:
-    assert infer_api_key_env_name("bedrock/anthropic.claude-3-sonnet") == ""
-    assert infer_api_key_env_name("vertex_ai/gemini-1.5-pro") == ""
-    assert infer_api_key_env_name("ollama/llama3") == ""
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("deepseek/deepseek-v4-flash", "DEEPSEEK_API_KEY"),
+        ("openrouter/minimax/minimax-m2.5", "OPENROUTER_API_KEY"),
+        ("anthropic/claude-sonnet-4", "ANTHROPIC_API_KEY"),
+        ("gpt-4o", "OPENAI_API_KEY"),
+        ("not-a-real-model-xyz", "OPENAI_API_KEY"),
+        ("bedrock/anthropic.claude-3-sonnet", ""),
+        ("vertex_ai/gemini-1.5-pro", ""),
+        ("ollama/llama3", ""),
+    ],
+)
+def test_infer_api_key_env_name(model, expected) -> None:
+    assert infer_api_key_env_name(model) == expected
 
 
 def test_config_save_restricts_file_permissions(tmp_path, monkeypatch) -> None:

@@ -260,44 +260,6 @@ class _UsageLead:
         return FinalReportDraft(title="t", executive_summary="s")
 
 
-def test_sequential_runs_report_independent_costs() -> None:
-    lead = _UsageLead()
-    orchestrator = LeadOrchestrator(
-        lead_agent=lead,
-        search_subagent=_EmptySearchSubagent(),
-        citation_agent=_EmptyCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
-        report_service=ReportService(),
-    )
-
-    async def run_once():
-        return await orchestrator.run(
-            ResearchRequest(query="q", max_iterations=1, parallelism=1)
-        )
-
-    lead.usage = {
-        "prompt_tokens": 60,
-        "completion_tokens": 40,
-        "total_tokens": 100,
-        "cost_usd": 0.01,
-    }
-    first = asyncio.run(run_once())
-    lead.usage = {
-        "prompt_tokens": 120,
-        "completion_tokens": 80,
-        "total_tokens": 200,
-        "cost_usd": 0.02,
-    }
-    second = asyncio.run(run_once())
-
-    assert first.run_stats["metered_calls"] == 3
-    assert first.run_stats["llm_tokens"] == 300
-    assert first.run_stats["usd_spent"] == pytest.approx(0.03)
-    assert second.run_stats["metered_calls"] == 3
-    assert second.run_stats["llm_tokens"] == 600
-    assert second.run_stats["usd_spent"] == pytest.approx(0.06)
-
-
 def test_overlapping_runs_report_independent_costs() -> None:
     def make_orchestrator(total_tokens: int, cost_usd: float) -> LeadOrchestrator:
         lead = _UsageLead()

@@ -4,6 +4,7 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
+import pytest
 from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
 from shandu.agents.lead import LeadAgent
@@ -37,36 +38,25 @@ def _request() -> ResearchRequest:
     return ResearchRequest(query="q", max_iterations=1, parallelism=1)
 
 
-def test_planner_failure_logs_and_exposes_reason(caplog) -> None:
+@pytest.mark.parametrize(
+    "method",
+    ["create_iteration_plan", "synthesize_iteration", "build_final_report"],
+)
+def test_lead_failure_logs_and_exposes_reason(caplog, method) -> None:
     agent = LeadAgent(runtime=_ModelRuntime(_FailedDesk()))
     with caplog.at_level(logging.WARNING, logger="shandu.agents.lead"):
-        plan = asyncio.run(
-            agent.create_iteration_plan(_request(), 0, [], [])
-        )
+        if method == "create_iteration_plan":
+            plan = asyncio.run(agent.create_iteration_plan(_request(), 0, [], []))
+            assert isinstance(plan, IterationPlan)
+        elif method == "synthesize_iteration":
+            synthesis = asyncio.run(
+                agent.synthesize_iteration(_request(), 0, [], [])
+            )
+            assert isinstance(synthesis, IterationSynthesis)
+        else:
+            draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+            assert draft.title
 
-    assert isinstance(plan, IterationPlan)
-    assert any("401" in record.message for record in caplog.records)
-    assert agent.last_fallback_reason is not None
-    assert "401" in agent.last_fallback_reason
-
-
-def test_synthesizer_failure_logs_and_exposes_reason(caplog) -> None:
-    agent = LeadAgent(runtime=_ModelRuntime(_FailedDesk()))
-    with caplog.at_level(logging.WARNING, logger="shandu.agents.lead"):
-        synthesis = asyncio.run(agent.synthesize_iteration(_request(), 0, [], []))
-
-    assert isinstance(synthesis, IterationSynthesis)
-    assert any("401" in record.message for record in caplog.records)
-    assert agent.last_fallback_reason is not None
-    assert "401" in agent.last_fallback_reason
-
-
-def test_reporter_failure_logs_and_exposes_reason(caplog) -> None:
-    agent = LeadAgent(runtime=_ModelRuntime(_FailedDesk()))
-    with caplog.at_level(logging.WARNING, logger="shandu.agents.lead"):
-        draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
-
-    assert draft.title
     assert any("401" in record.message for record in caplog.records)
     assert agent.last_fallback_reason is not None
     assert "401" in agent.last_fallback_reason

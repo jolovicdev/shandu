@@ -6,6 +6,8 @@ from pathlib import Path
 
 import gradio as gr
 
+import shandu.ui.gradio.app as app_module
+from shandu.config import config
 from shandu.contracts import RunEvent
 from shandu.ui.gradio import layout as layout_module
 from shandu.ui.gradio_app import GuiRunState, _persist_report_markdown
@@ -153,3 +155,19 @@ def test_save_and_run_share_runtime_concurrency_group() -> None:
 
     assert groups["_save_action"] == ("shandu_runtime", 1)
     assert groups["_run_action"] == ("shandu_runtime", 1)
+
+
+def test_launch_gui_allows_export_dir(monkeypatch, tmp_path) -> None:
+    launched: dict = {}
+
+    class FakeDemo:
+        def launch(self, **kwargs) -> None:
+            launched.update(kwargs)
+
+    monkeypatch.setattr(app_module, "build_gui", lambda: FakeDemo())
+    monkeypatch.setitem(
+        config._config["runtime"], "storage_dir", str(tmp_path / "storage")
+    )
+    app_module.launch_gui()
+
+    assert launched.get("allowed_paths") == [str(tmp_path / "storage" / "exports")]

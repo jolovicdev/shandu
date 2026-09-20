@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from typing import Any
 from collections.abc import AsyncIterator, Callable
 
@@ -50,6 +51,7 @@ class ShanduEngine:
             citation_agent=citation,
             memory_service=memory_service,
             report_service=report_service,
+            runtime_settings=asdict(runtime.settings),
         )
         ai_search_service = AISearchService(runtime, search_service, scrape_service)
         return cls(

@@ -128,7 +128,7 @@ def save_configuration(
     if _runtime_snapshot() != runtime_before:
         reset_bootstrap()
     config.apply_provider_api_key()
-    return f"Saved configuration for `{model_text}` using env key `{resolved_env}`."
+    return f"Saved configuration: model {model_text}, env key {resolved_env}."
 
 
 def persist_report_markdown(run_id: str, markdown: str) -> str | None:

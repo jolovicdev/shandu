@@ -35,12 +35,16 @@ class LeadOrchestrator:
         citation_agent: CitationAgentLike,
         memory_service: MemoryService,
         report_service: ReportServiceLike,
+        runtime_settings: dict[str, Any] | None = None,
     ) -> None:
         self._lead = lead_agent
         self._search_subagent = search_subagent
         self._citation = citation_agent
         self._memory = memory_service
         self._report = report_service
+        self._runtime_settings = (
+            dict(runtime_settings) if runtime_settings is not None else None
+        )
         self._channel = Channel()
         self._blackboard = Blackboard()
 
@@ -61,6 +65,10 @@ class LeadOrchestrator:
 
         self._memory.write(scope, "created_at", started_at, author="orchestrator")
         self._memory.write(scope, "status", "running", author="orchestrator")
+        if self._runtime_settings is not None:
+            self._memory.write(
+                scope, "settings", dict(self._runtime_settings), author="orchestrator"
+            )
         await emit(
             RunEvent(
                 stage="bootstrap",

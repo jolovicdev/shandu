@@ -4,6 +4,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from blackgeorge import Desk
 from blackgeorge.memory.sqlite import SQLiteMemoryStore
@@ -64,20 +65,23 @@ class RuntimeBootstrap:
 
     @classmethod
     def from_config(cls) -> "RuntimeBootstrap":
+        def lookup(section: str, key: str, default: Any) -> Any:
+            return config.get(section, key, default)
+
         return cls(
             RuntimeSettings(
-                model=str(config.get("api", "model", DEFAULT_MODEL)),
-                temperature=float(config.get("api", "temperature", 0.2)),
-                max_tokens=int(config.get("api", "max_tokens", 16384)),
-                storage_dir=str(config.get("runtime", "storage_dir", ".blackgeorge")),
+                model=str(lookup("api", "model", DEFAULT_MODEL)),
+                temperature=float(lookup("api", "temperature", 0.2)),
+                max_tokens=int(lookup("api", "max_tokens", 16384)),
+                storage_dir=str(lookup("runtime", "storage_dir", ".blackgeorge")),
                 structured_output_retries=int(
-                    config.get("runtime", "structured_output_retries", 3)
+                    lookup("runtime", "structured_output_retries", 3)
                 ),
-                max_iterations=int(config.get("runtime", "max_iterations", 12)),
-                max_tool_calls=int(config.get("runtime", "max_tool_calls", 24)),
-                num_retries=int(config.get("runtime", "num_retries", 2)),
+                max_iterations=int(lookup("runtime", "max_iterations", 12)),
+                max_tool_calls=int(lookup("runtime", "max_tool_calls", 24)),
+                num_retries=int(lookup("runtime", "num_retries", 2)),
                 max_context_messages=int(
-                    config.get("runtime", "max_context_messages", 30)
+                    lookup("runtime", "max_context_messages", 30)
                 ),
             )
         )

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 from textwrap import shorten
+from typing import Any
 
 from rich import box
 from rich.columns import Columns
@@ -16,6 +16,23 @@ from rich.text import Text
 from rich.theme import Theme
 
 from ..contracts import AISearchResult, ResearchRequest, ResearchRunResult, RunEvent
+
+def _inspect_result_summary(output: object) -> list[tuple[str, str]]:
+    if not isinstance(output, dict):
+        return []
+    stats = output.get("run_stats")
+    if not isinstance(stats, dict):
+        return []
+    rows: list[tuple[str, str]] = []
+    for key, label in (
+        ("iterations", "iterations"),
+        ("evidence_count", "evidence"),
+        ("citation_count", "citations"),
+    ):
+        value = stats.get(key)
+        if value is not None:
+            rows.append((label, str(value)))
+    return rows
 
 
 @dataclass
@@ -253,6 +270,8 @@ class ShanduUI:
             table.add_row(key, escape(str(payload.get(key, ""))))
         events = payload.get("events", [])
         table.add_row("events", str(len(events) if isinstance(events, list) else 0))
+        for label, value in _inspect_result_summary(payload.get("output_json")):
+            table.add_row(label, escape(value))
         return Panel(table, title="Run Inspection", border_style="panel", box=box.ROUNDED)
 
     def ai_sources_panel(self, result: AISearchResult) -> Panel:

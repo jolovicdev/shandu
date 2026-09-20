@@ -393,6 +393,26 @@ def test_orchestrator_forwards_subagent_trace_events() -> None:
     )
 
 
+def test_run_persists_effective_settings_to_scope() -> None:
+    memory_service = MemoryService(InMemoryMemoryStore())
+    orchestrator = LeadOrchestrator(
+        lead_agent=FakeLeadAgent(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        memory_service=memory_service,
+        report_service=FakeReportService(),
+        runtime_settings={"model": "m", "max_tokens": 4096},
+    )
+    result = asyncio.run(
+        orchestrator.run(
+            ResearchRequest(query="settings-test", max_iterations=1, parallelism=1)
+        )
+    )
+
+    stored = memory_service.read(f"run:{result.run_id}", "settings")
+    assert stored == {"model": "m", "max_tokens": 4096}
+
+
 def test_orchestrator_adds_cost_stats_when_available() -> None:
     lead = FakeLeadAgent()
     lead.last_llm_usage = {

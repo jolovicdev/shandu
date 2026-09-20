@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from blackgeorge import Desk
 from blackgeorge.memory.sqlite import SQLiteMemoryStore
 import litellm
 
-from ..config import config
+from ..config import DEFAULT_MODEL, config
 from .cost_tracker import CostTracker
 
 logger = logging.getLogger(__name__)
@@ -33,12 +33,7 @@ class RuntimeBootstrap:
     def __init__(self, settings: RuntimeSettings) -> None:
         self.settings = settings
         self.cost_tracker = CostTracker()
-        config.apply_provider_api_key()
-        api_key_env = config.get_api_key_env_name(settings.model)
-        api_key_value = str(config.get("api", "api_key", "")).strip()
-        if api_key_env and api_key_value and not os.getenv(api_key_env):
-            os.environ[api_key_env] = api_key_value
-        litellm.set_verbose = False
+        config.apply_provider_api_key(settings.model)
         litellm.suppress_debug_info = True
         storage = Path(settings.storage_dir)
         storage.mkdir(parents=True, exist_ok=True)
@@ -60,7 +55,7 @@ class RuntimeBootstrap:
         try:
             self.desk.event_bus.subscribe("llm.completed", self.cost_tracker.handle_event)
         except Exception:
-            pass
+            logger.warning("Failed to subscribe cost tracker to llm.completed", exc_info=True)
 
     def close(self) -> None:
         try:
@@ -70,20 +65,23 @@ class RuntimeBootstrap:
 
     @classmethod
     def from_config(cls) -> "RuntimeBootstrap":
+        def lookup(section: str, key: str, default: Any) -> Any:
+            return config.get(section, key, default)
+
         return cls(
             RuntimeSettings(
-                model=str(config.get("api", "model", "deepseek/deepseek-v4-flash")),
-                temperature=float(config.get("api", "temperature", 0.2)),
-                max_tokens=int(config.get("api", "max_tokens", 16384)),
-                storage_dir=str(config.get("runtime", "storage_dir", ".blackgeorge")),
+                model=str(lookup("api", "model", DEFAULT_MODEL)),
+                temperature=float(lookup("api", "temperature", 0.2)),
+                max_tokens=int(lookup("api", "max_tokens", 32768)),
+                storage_dir=str(lookup("runtime", "storage_dir", ".blackgeorge")),
                 structured_output_retries=int(
-                    config.get("runtime", "structured_output_retries", 3)
+                    lookup("runtime", "structured_output_retries", 3)
                 ),
-                max_iterations=int(config.get("runtime", "max_iterations", 12)),
-                max_tool_calls=int(config.get("runtime", "max_tool_calls", 24)),
-                num_retries=int(config.get("runtime", "num_retries", 2)),
+                max_iterations=int(lookup("runtime", "max_iterations", 12)),
+                max_tool_calls=int(lookup("runtime", "max_tool_calls", 24)),
+                num_retries=int(lookup("runtime", "num_retries", 2)),
                 max_context_messages=int(
-                    config.get("runtime", "max_context_messages", 30)
+                    lookup("runtime", "max_context_messages", 30)
                 ),
             )
         )
@@ -92,6 +90,10 @@ class RuntimeBootstrap:
         record = self.desk.run_store.get_run(run_id)
         if record is not None:
             events = self.desk.run_store.get_events(run_id)
+            usage_tracker = CostTracker()
+            for event in events:
+                usage_tracker.handle_event(event)
+            usage_snapshot = usage_tracker.snapshot()
             return {
                 "exists": True,
                 "run_id": record.run_id,
@@ -101,6 +103,14 @@ class RuntimeBootstrap:
                 "input": record.input,
                 "output": record.output,
                 "output_json": record.output_json,
+                "usage": {
+                    "prompt_tokens": usage_snapshot.prompt_tokens,
+                    "completion_tokens": usage_snapshot.completion_tokens,
+                    "total_tokens": usage_snapshot.total_tokens,
+                    "cost_usd": usage_snapshot.total_cost_usd,
+                    "llm_calls": usage_snapshot.llm_calls,
+                    "cost_events": usage_snapshot.cost_events,
+                },
                 "events": [
                     {
                         "type": event.type,
@@ -137,6 +147,8 @@ class RuntimeBootstrap:
 
 _bootstrap: RuntimeBootstrap | None = None
 _bootstrap_lock = threading.Lock()
+_active_runs = 0
+_retired: list[RuntimeBootstrap] = []
 
 
 def get_bootstrap() -> RuntimeBootstrap:
@@ -148,12 +160,39 @@ def get_bootstrap() -> RuntimeBootstrap:
     return _bootstrap
 
 
+def acquire_bootstrap_run() -> None:
+    global _active_runs
+    with _bootstrap_lock:
+        _active_runs += 1
+
+
+def release_bootstrap_run() -> None:
+    global _active_runs
+    with _bootstrap_lock:
+        _active_runs -= 1
+        if _active_runs > 0:
+            return
+        pending = list(_retired)
+        del _retired[:]
+    for bootstrap in pending:
+        _close_bootstrap(bootstrap)
+
+
 def reset_bootstrap() -> None:
     global _bootstrap
-    current = _bootstrap
-    _bootstrap = None
-    if current is not None:
-        try:
-            current.close()
-        except Exception:
-            logger.warning("Failed to close previous runtime bootstrap", exc_info=True)
+    with _bootstrap_lock:
+        current = _bootstrap
+        _bootstrap = None
+        if current is None:
+            return
+        if _active_runs > 0:
+            _retired.append(current)
+            return
+    _close_bootstrap(current)
+
+
+def _close_bootstrap(bootstrap: RuntimeBootstrap) -> None:
+    try:
+        bootstrap.close()
+    except Exception:
+        logger.warning("Failed to close previous runtime bootstrap", exc_info=True)

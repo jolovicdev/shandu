@@ -21,13 +21,13 @@ _ARGS = {
     "api_key_env": "DEEPSEEK_API_KEY",
     "api_key_value": "",
     "temperature": 0.2,
-    "max_tokens": 16384,
+    "max_tokens": 32768,
     "max_iterations": 2,
     "parallelism": 3,
     "detail_level": "high",
     "depth_policy": "adaptive",
-    "max_results_per_query": 5,
-    "max_pages_per_task": 3,
+    "max_results_per_query": 8,
+    "max_pages_per_task": 6,
 }
 
 

@@ -3,7 +3,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from collections.abc import Iterable
+from datetime import datetime
+from typing import Any
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
@@ -51,7 +54,26 @@ def _cap_extraction_result(result: _ExtractionResult) -> _ExtractionResult:
         text=_cap_text(result.text),
         blocks=blocks,
         published_at=result.published_at,
+        site_name=result.site_name,
     )
+
+
+_XML_CAPTURED_TAGS = {"head", "p", "item", "quote", "code", "table", "figcaption"}
+_HTML_CAPTURED_TAGS = {
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "p",
+    "li",
+    "blockquote",
+    "pre",
+    "code",
+    "table",
+    "figcaption",
+}
 
 
 def _trafilatura_xml_to_blocks(xml_str: str) -> list[ContentBlock]:
@@ -61,6 +83,10 @@ def _trafilatura_xml_to_blocks(xml_str: str) -> list[ContentBlock]:
     try:
         soup = BeautifulSoup(xml_str, "lxml-xml")
         for elem in soup.find_all(True):
+            # A node nested in an already-captured ancestor (p in quote,
+            # p in table cell) would emit its text twice.
+            if any(parent.name in _XML_CAPTURED_TAGS for parent in elem.parents):
+                continue
             tag = elem.name
             text = elem.get_text(" ", strip=True)
             if not text:
@@ -90,9 +116,9 @@ def _trafilatura_xml_to_blocks(xml_str: str) -> list[ContentBlock]:
 
 def _soup_to_blocks(soup: BeautifulSoup) -> list[ContentBlock]:
     blocks: list[ContentBlock] = []
-    for node in soup.find_all(
-        ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre", "code", "table", "figcaption"]
-    ):
+    for node in soup.find_all(sorted(_HTML_CAPTURED_TAGS)):
+        if any(parent.name in _HTML_CAPTURED_TAGS for parent in node.parents):
+            continue
         tag_name = node.name
         text = node.get_text(" ", strip=True)
         if not text:
@@ -122,36 +148,24 @@ def _extract_with_trafilatura(html: str) -> _ExtractionResult | None:
     try:
         import trafilatura
 
-        json_result = trafilatura.extract(
+        xml_result = trafilatura.extract(
             html,
-            output_format="json",
+            output_format="xml",
             with_metadata=True,
             include_comments=False,
             include_tables=True,
             include_images=False,
         )
-        if not json_result:
+        if not xml_result:
             return None
-        data = json.loads(json_result)
-        title = (data.get("title") or "").strip()
-        text = (data.get("text") or "").strip()
+        # Title and date are attributes of <doc>; the body carries the blocks.
+        doc = BeautifulSoup(xml_result, "lxml-xml").find("doc")
+        title = (doc.get("title", "") if doc is not None else "").strip()
+        published_at = (doc.get("date", "") if doc is not None else "").strip() or None
+        blocks = _trafilatura_xml_to_blocks(xml_result)
+        text = "\n".join(block.text for block in blocks).strip()
         if len(text.split()) < _MIN_ARTICLE_WORDS:
             return None
-        published_at = (data.get("date") or "").strip() or None
-
-        xml_result = trafilatura.extract(
-            html,
-            output_format="xml",
-            include_comments=False,
-            include_tables=True,
-            include_images=False,
-        )
-        blocks = _trafilatura_xml_to_blocks(xml_result or "")
-        if not blocks:
-            for line in text.splitlines():
-                line = line.strip()
-                if line:
-                    blocks.append(ContentBlock(type="paragraph", text=line))
         return _cap_extraction_result(
             _ExtractionResult(title=title, text=text, blocks=blocks, published_at=published_at)
         )
@@ -208,14 +222,66 @@ def _extract_with_bs4(html: str) -> _ExtractionResult:
     return _ExtractionResult(title=title, text=text, blocks=blocks)
 
 
+_ARXIV_STAMP = re.compile(
+    r"arXiv:\d{4}\.\d{4,5}(?:v\d+)?\s*\[[\w.-]+\]\s*(\d{1,2} [A-Z][a-z]{2} \d{4})"
+)
+
+
+def _arxiv_stamp_date(html: str) -> str | None:
+    # arXiv HTML papers carry no date metadata, only the version stamp
+    # "arXiv:2309.17453v4 [cs.CL] 07 Apr 2024"; without it the date falls to
+    # a guess from body text, which lands on dates inside the references.
+    match = _ARXIV_STAMP.search(html)
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%d %b %Y").date().isoformat()
+    except ValueError:
+        return None
+
+
 def _extract_html(html: str) -> _ExtractionResult:
     result = _extract_with_trafilatura(html)
-    if result is not None:
-        return result
-    result = _extract_with_readability(html)
-    if result is not None:
-        return result
-    return _extract_with_bs4(html)
+    if result is None:
+        result = _extract_with_readability(html)
+    if result is None:
+        result = _extract_with_bs4(html)
+    result.site_name = _extract_site_name(html)
+    result.published_at = _arxiv_stamp_date(html) or result.published_at
+    return result
+
+
+def _pdf_layout_title(page: Any) -> str:
+    """Title from the first-page block set in the largest horizontal type.
+
+    Horizontal only: preprint servers stamp a rotated identifier in the margin
+    in larger type than the title.
+    """
+    best_size = 0.0
+    best_text = ""
+    for block in page.get_text("dict").get("blocks", []):
+        spans = [
+            span
+            for line in block.get("lines", [])
+            if tuple(line.get("dir", (1, 0))) == (1, 0)
+            for span in line.get("spans", [])
+            if span.get("text", "").strip()
+        ]
+        if not spans:
+            continue
+        size = max(round(span["size"], 1) for span in spans)
+        if size > best_size:
+            best_size = size
+            best_text = " ".join(
+                span["text"].strip() for span in spans if round(span["size"], 1) == size
+            )
+    return best_text if 10 < len(best_text) < 300 else ""
+
+
+def _pdf_creation_date(metadata: dict[str, Any]) -> str | None:
+    # PDF dates look like D:20251029105853-04'00'.
+    match = re.match(r"D:(\d{4})(\d{2})(\d{2})", metadata.get("creationDate") or "")
+    return "-".join(match.groups()) if match else None
 
 
 def _parse_pdf(data: bytes) -> _ExtractionResult:
@@ -226,21 +292,19 @@ def _parse_pdf(data: bytes) -> _ExtractionResult:
         try:
             if doc.page_count > _MAX_PDF_PAGES:
                 raise _ParseError("non_text_content", f"PDF exceeds {_MAX_PDF_PAGES} pages")
-            title = (doc.metadata.get("title") or "").strip()
+            metadata = doc.metadata or {}
+            title = (metadata.get("title") or "").strip()
             if not title and len(doc) > 0:
-                blocks = doc[0].get_text("blocks")
-                for block in blocks:
-                    block_text = block[4].strip()
-                    if block_text and 10 < len(block_text) < 200:
-                        title = block_text
-                        break
+                title = _pdf_layout_title(doc[0])
             full_text: list[str] = []
             for page in doc:
                 full_text.append(page.get_text())
             text = _cap_text("\n".join(full_text))
             if not text:
                 raise _ParseError("pdf_parse_failed", "Empty PDF text")
-            return _ExtractionResult(title=title, text=text)
+            return _ExtractionResult(
+                title=title, text=text, published_at=_pdf_creation_date(metadata)
+            )
         finally:
             doc.close()
     except _ParseError:
@@ -252,20 +316,46 @@ def _parse_pdf(data: bytes) -> _ExtractionResult:
 def _parse_docx(data: bytes) -> _ExtractionResult:
     try:
         from docx import Document
+        from docx.oxml.ns import qn
 
         doc = Document(io.BytesIO(data))
         title = (doc.core_properties.title or "").strip()
-        paragraphs: list[str] = []
-        for p in doc.paragraphs:
-            txt = p.text.strip()
-            if txt:
-                paragraphs.append(txt)
-        if not title and paragraphs:
-            for p in paragraphs:
-                if len(p) > 5:
-                    title = p
+        lines: list[str] = []
+        chars = 0
+        for child in doc.element.body:
+            if chars >= _MAX_EXTRACTED_CHARS:
+                break
+            if child.tag == qn("w:p"):
+                pending = [
+                    "".join(
+                        node.text or "" for node in child.iter(qn("w:t"))
+                    ).strip()
+                ]
+            elif child.tag == qn("w:tbl"):
+                pending = []
+                for row in child.iter(qn("w:tr")):
+                    cells = [
+                        "".join(
+                            node.text or "" for node in cell.iter(qn("w:t"))
+                        ).strip()
+                        for cell in row.iter(qn("w:tc"))
+                    ]
+                    cells = [cell for cell in cells if cell]
+                    if cells:
+                        pending.append(" | ".join(cells))
+            else:
+                continue
+            for line in pending:
+                if not line or chars >= _MAX_EXTRACTED_CHARS:
+                    continue
+                lines.append(line)
+                chars += len(line) + 1
+        if not title and lines:
+            for line in lines:
+                if len(line) > 5:
+                    title = line
                     break
-        text = _cap_text("\n".join(paragraphs))
+        text = _cap_text("\n".join(lines))
         if not text:
             raise _ParseError("non_text_content", "Empty DOCX")
         return _ExtractionResult(title=title, text=text)
@@ -324,7 +414,7 @@ def _parse_csv(data: bytes) -> _ExtractionResult:
         raise _ParseError("non_text_content", str(exc)) from exc
 
 
-def _parse_plaintext(data: bytes, content_type: str | None = None) -> _ExtractionResult:
+def _parse_plaintext(data: bytes) -> _ExtractionResult:
     text = _cap_text(data.decode("utf-8", errors="ignore"))
     if not text:
         raise _ParseError("non_text_content", "Empty text file")
@@ -380,7 +470,7 @@ def _extract_published_at(html: str) -> str | None:
     return None
 
 
-def _detect_fetch_error(html: str | None, status: int | None, text: str) -> str | None:
+def _detect_fetch_error(html: str | None, text: str) -> str | None:
     if html:
         if len(html) > 8000 and len(text.split()) < 40:
             return "empty_js_shell"
@@ -448,6 +538,13 @@ def _guess_format(url: str, content_type: str) -> str:
         return "html"
 
     return ""
+
+
+def _extract_site_name(html: str) -> str | None:
+    tag = BeautifulSoup(html, "lxml").find("meta", attrs={"property": "og:site_name"})
+    content = tag.get("content") if tag is not None else None
+    cleaned = " ".join(str(content).split()) if content else ""
+    return cleaned[:160] or None
 
 
 def _extract_title_from_soup(soup: BeautifulSoup) -> str:

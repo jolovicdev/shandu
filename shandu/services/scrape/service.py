@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import random
+import re
+import socket
 from collections import OrderedDict
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from typing import Any
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import aiohttp
 
@@ -33,6 +37,99 @@ from .scheduler import _DomainScheduler
 logger = logging.getLogger(__name__)
 
 _PAGE_CACHE_MAX = 128
+_BLOCKED_PRIVATE_FETCH_ERROR = "blocked_private_host"
+_MAX_REDIRECT_HOPS = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+class _PrivateAddressError(aiohttp.ClientError):
+    """Every resolved address for a host is non-public."""
+
+
+def _ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    ):
+        return False
+    return ip.is_global
+
+
+def _record_host_is_public(value: str) -> bool:
+    try:
+        return _ip_is_public(ipaddress.ip_address(value))
+    except ValueError:
+        pass
+    try:
+        normalized = socket.inet_ntoa(socket.inet_aton(value))
+    except (OSError, ValueError):
+        return False
+    return _ip_is_public(ipaddress.ip_address(normalized))
+
+
+def _literal_host_blocked(host: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            normalized = socket.inet_ntoa(socket.inet_aton(host))
+        except (OSError, ValueError):
+            return False
+        ip = ipaddress.ip_address(normalized)
+    return not _ip_is_public(ip)
+
+
+def _blocked_host_in_url(url: str) -> str | None:
+    try:
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return url
+    if host and _literal_host_blocked(host):
+        return host
+    return None
+
+
+class _PublicAddressConnector(aiohttp.TCPConnector):
+    async def _resolve_host(
+        self, host: str, port: int, traces: Any = None
+    ) -> list[dict[str, Any]]:
+        records = await super()._resolve_host(host, port, traces=traces)
+        public = [
+            record
+            for record in records
+            if _record_host_is_public(str(record.get("host", "")))
+        ]
+        if not public:
+            raise _PrivateAddressError(f"blocked non-public address for {host}")
+        return public
+
+
+async def _proxy_target_blocked(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return True
+    host = parts.hostname or ""
+    if not host:
+        return True
+    resolver = aiohttp.DefaultResolver()
+    try:
+        try:
+            records = await resolver.resolve(host, port)
+        except Exception:
+            # This check is the only private-address guard on the proxy
+            # path, so an unresolvable host is refused.
+            return True
+        return not any(
+            _record_host_is_public(str(record.get("host", ""))) for record in records
+        )
+    finally:
+        await resolver.close()
 
 
 async def _read_limited_response(response: aiohttp.ClientResponse) -> bytes | None:
@@ -86,6 +183,17 @@ def _canonicalize_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
+_ARXIV_ABSTRACT_URL = re.compile(r"^https?://(?:www\.)?arxiv\.org/abs/(?P<paper>[^?#]+)")
+
+
+def _fulltext_url(url: str) -> str:
+    # An arXiv abstract page holds only the abstract; the paper is the PDF.
+    match = _ARXIV_ABSTRACT_URL.match(url)
+    if match:
+        return f"https://arxiv.org/pdf/{match['paper']}"
+    return url
+
+
 def _safe_decode(data: bytes, charset: str | None) -> str:
     try:
         return data.decode(charset or "utf-8", errors="ignore")
@@ -104,9 +212,6 @@ class ScrapeService:
             base_delay=float(config.get("scraper", "domain_base_delay", 0.5)),
         )
         self._max_attempts = max(1, min(int(config.get("scraper", "max_attempts", 3)), 5))
-        self._timeout_count = 0
-        self._total_scrapes = 0
-        self._retry_count = 0
         self._page_cache: OrderedDict[str, ScrapedPage] = OrderedDict()
         self._inflight: dict[str, asyncio.Task[ScrapedPage]] = {}
         self._session: aiohttp.ClientSession | None = None
@@ -183,7 +288,6 @@ class ScrapeService:
     ) -> ScrapedPage:
         active_session = session or await self._get_session()
         owns_session = session is None
-        self._total_scrapes += 1
 
         try:
             page = await self._scrape_with_retry(url, active_session, attempt=0)
@@ -217,7 +321,6 @@ class ScrapeService:
             else self._max_attempts
         )
         if result.retryable and attempt < max_attempts - 1:
-            self._retry_count += 1
             delay = self._backoff_delay(attempt)
             await asyncio.sleep(delay)
             return await self._scrape_with_retry(url, session, attempt + 1)
@@ -234,7 +337,26 @@ class ScrapeService:
         session: aiohttp.ClientSession,
         attempt: int,
     ) -> _FetchResult:
-        domain = urlparse(url).netloc
+        request_url = _fulltext_url(url)
+        hop = 0
+        while True:
+            outcome = await self._fetch_single_request(
+                url, request_url, session, attempt, hop
+            )
+            if isinstance(outcome, _FetchResult):
+                return outcome
+            request_url = outcome
+            hop += 1
+
+    async def _fetch_single_request(
+        self,
+        url: str,
+        request_url: str,
+        session: aiohttp.ClientSession,
+        attempt: int,
+        hop: int,
+    ) -> _FetchResult | str:
+        domain = urlparse(request_url).netloc
 
         def _error_page(
             fetch_error: str, status: int | None = None, retryable: bool = False
@@ -254,6 +376,16 @@ class ScrapeService:
                 retryable=retryable,
             )
 
+        if _blocked_host_in_url(request_url) is not None:
+            logger.warning("Refusing to fetch URL with non-public host: %s", request_url)
+            return _error_page(_BLOCKED_PRIVATE_FETCH_ERROR, None, retryable=False)
+
+        if self._proxy and await _proxy_target_blocked(request_url):
+            logger.warning(
+                "Refusing to fetch URL with non-public host via proxy: %s", request_url
+            )
+            return _error_page(_BLOCKED_PRIVATE_FETCH_ERROR, None, retryable=False)
+
         await self._domain_scheduler.acquire(domain)
         try:
             async with self._semaphore:
@@ -263,12 +395,25 @@ class ScrapeService:
                         ua_index = attempt % len(_USER_AGENTS)
                         headers["User-Agent"] = _USER_AGENTS[ua_index]
 
-                    kwargs: dict[str, object] = {"allow_redirects": True, "headers": headers}
+                    kwargs: dict[str, object] = {"allow_redirects": False, "headers": headers}
                     if self._proxy:
                         kwargs["proxy"] = self._proxy
 
-                    async with session.get(url, **kwargs) as response:
+                    async with session.get(request_url, **kwargs) as response:
                         status = response.status
+
+                        if status in _REDIRECT_STATUSES:
+                            if hop >= _MAX_REDIRECT_HOPS:
+                                return _error_page("scrape_failed", status, retryable=False)
+                            location = response.headers.get("location", "")
+                            next_url = (
+                                _canonicalize_url(urljoin(request_url, location))
+                                if location
+                                else ""
+                            )
+                            if not next_url:
+                                return _error_page("scrape_failed", status, retryable=False)
+                            return next_url
 
                         if status in _RETRYABLE_STATUSES:
                             self._domain_scheduler.bump_backoff(domain)
@@ -280,7 +425,7 @@ class ScrapeService:
                         self._domain_scheduler.reset_backoff(domain)
 
                         content_type = response.headers.get("content-type", "").lower()
-                        final_url = _canonicalize_url(str(response.url)) or url
+                        final_url = _canonicalize_url(str(response.url)) or request_url
                         fmt = _guess_format(final_url, content_type)
 
                         if fmt == "html":
@@ -293,9 +438,9 @@ class ScrapeService:
                                 _extract_published_at, html
                             )
                             if not result.text.strip():
-                                fetch_error = _detect_fetch_error(html, status, result.text) or "empty_content"
+                                fetch_error = _detect_fetch_error(html, result.text) or "empty_content"
                             else:
-                                fetch_error = _detect_fetch_error(html, status, result.text)
+                                fetch_error = _detect_fetch_error(html, result.text)
                             page = ScrapedPage(
                                 requested_url=url,
                                 url=final_url,
@@ -303,6 +448,7 @@ class ScrapeService:
                                 text=result.text,
                                 blocks=result.blocks,
                                 domain=urlparse(final_url).netloc,
+                                site_name=result.site_name,
                                 published_at=published_at,
                                 content_type=content_type,
                                 fetch_error=fetch_error,
@@ -328,6 +474,7 @@ class ScrapeService:
                                 text=result.text,
                                 blocks=result.blocks,
                                 domain=urlparse(final_url).netloc,
+                                published_at=result.published_at,
                                 content_type=content_type,
                                 http_status=status,
                             )
@@ -398,7 +545,7 @@ class ScrapeService:
                             if data is None:
                                 return _error_page("non_text_content", status, retryable=False)
                             try:
-                                result = await asyncio.to_thread(_parse_plaintext, data, content_type)
+                                result = await asyncio.to_thread(_parse_plaintext, data)
                             except _ParseError as exc:
                                 return _error_page(exc.fetch_error, status, retryable=False)
                             page = ScrapedPage(
@@ -416,10 +563,9 @@ class ScrapeService:
                         return _error_page("non_text_content", status, retryable=False)
 
                 except asyncio.TimeoutError:
-                    self._timeout_count += 1
                     logger.warning(
                         "Scrape timeout: %s (timeout=%ss, attempt=%s)",
-                        url,
+                        request_url,
                         self._timeout,
                         attempt + 1,
                     )
@@ -431,34 +577,27 @@ class ScrapeService:
                         return _error_page(_error_for_status(status), status, retryable=True)
                     return _error_page(_error_for_status(status), status, retryable=False)
                 except (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError) as exc:
-                    logger.warning("Retryable scrape exception for %s: %s", url, exc)
+                    logger.warning("Retryable scrape exception for %s: %s", request_url, exc)
                     return _error_page("scrape_failed", None, retryable=True)
+                except _PrivateAddressError:
+                    logger.warning(
+                        "Refusing to fetch URL with non-public host: %s", request_url
+                    )
+                    return _error_page(_BLOCKED_PRIVATE_FETCH_ERROR, None, retryable=False)
                 except Exception as exc:
-                    logger.warning("Scrape exception for %s: %s", url, exc)
+                    logger.warning("Scrape exception for %s: %s", request_url, exc)
                     return _error_page("scrape_failed", None, retryable=False)
         finally:
             await self._domain_scheduler.release(domain)
 
-    def _canonicalize_url(self, url: str) -> str:
-        return _canonicalize_url(url)
-
-    def _extract(self, html: str) -> tuple[str, str]:
-        result = _extract_html(html)
-        return result.title, result.text
-
-    @staticmethod
-    def _extract_published_at(html: str) -> str | None:
-        return _extract_published_at(html)
-
-    @staticmethod
-    def _extract_title(soup: object) -> str:
-        from .extraction import _extract_title_from_soup
-
-        return _extract_title_from_soup(soup)  # type: ignore[arg-type]
-
     async def _get_session(self) -> aiohttp.ClientSession:
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        connector = aiohttp.TCPConnector(
+        # With a proxy the connector only resolves the operator-configured
+        # proxy host, so targets are validated by precheck instead.
+        connector_cls: type[aiohttp.TCPConnector] = (
+            aiohttp.TCPConnector if self._proxy else _PublicAddressConnector
+        )
+        connector = connector_cls(
             limit=max(8, self._max_concurrent * 4), ttl_dns_cache=300
         )
         return aiohttp.ClientSession(timeout=timeout, connector=connector)

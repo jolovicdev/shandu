@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from datetime import date
 from typing import Any
 
@@ -25,6 +27,40 @@ from ..prompts import (
     synthesizer_instructions,
     synthesizer_job,
 )
+from ..runtime.costing import collect_llm_usage
+
+logger = logging.getLogger(__name__)
+
+# Reporter evidence budget in characters (~30k tokens), leaving room for
+# instructions, prior summaries, and output inside typical context windows.
+_REPORTER_EVIDENCE_BUDGET = 120_000
+# Floor for one record's extracted text. A record gets an equal share of the
+# budget when that is larger, so a small corpus reaches the reporter whole.
+_MIN_EVIDENCE_TEXT_CHARS = 2200
+# A reasoning model sometimes drafts the whole report inside its reasoning
+# channel and then stops, so the call completes with empty content. The report
+# is the one call a run cannot do without, so that case is retried.
+_REPORTER_ATTEMPTS = 3
+
+
+def _add_usage(
+    total: dict[str, Any] | None, usage: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not usage:
+        return total
+    merged = dict(total or {})
+    for key, value in usage.items():
+        merged[key] = merged.get(key, 0) + value
+    merged["llm_calls"] = (total or {}).get("llm_calls", 0) + 1
+    return merged
+
+
+def _failure_reason(report: Any, label: str) -> str:
+    errors = getattr(report, "errors", None) or []
+    detail = "; ".join(str(item) for item in errors if str(item).strip())
+    if detail:
+        return detail[:300]
+    return f"{label} status={getattr(report, 'status', 'unknown')}"
 
 
 class _PlanPayload(BaseModel):
@@ -51,6 +87,8 @@ class LeadAgent:
     def __init__(self, runtime: RuntimeExecutionLike) -> None:
         self._runtime = runtime
         self.fallback_count = 0
+        self.last_fallback_reason: str | None = None
+        self.last_llm_usage: dict[str, Any] | None = None
 
     async def create_iteration_plan(
         self,
@@ -77,30 +115,41 @@ class LeadAgent:
             input=planner_job(payload),
             response_schema=_PlanPayload,
         )
+        self.last_llm_usage = None
         try:
             report = await self._runtime.desk.arun(worker, job)
+            self.last_llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _PlanPayload):
-                tasks = self._ensure_parallel_task_count(
+                tasks = self._normalize_tasks(
                     report.data.subagent_tasks,
                     request=request,
                     iteration=iteration,
                 )
-                return IterationPlan(
-                    iteration_index=iteration,
-                    goals=report.data.goals,
-                    subagent_tasks=tasks,
-                    continue_loop=report.data.continue_loop,
-                    stop_reason=report.data.stop_reason,
-                )
+                # An empty plan is the planner's stop signal; tasks that all
+                # lack a focus are a malformed plan.
+                if tasks or not report.data.subagent_tasks:
+                    return IterationPlan(
+                        iteration_index=iteration,
+                        goals=report.data.goals,
+                        subagent_tasks=tasks,
+                        continue_loop=report.data.continue_loop,
+                        stop_reason=report.data.stop_reason,
+                    )
+                reason = "planner returned no usable tasks"
+            else:
+                reason = _failure_reason(report, "planner")
+            logger.warning("Lead planner call did not complete: %s", reason)
         except Exception:
-            pass
+            reason = "planner raised before completing"
+            logger.warning("Lead planner call failed", exc_info=True)
 
         self.fallback_count += 1
+        self.last_fallback_reason = reason
 
         return IterationPlan(
             iteration_index=iteration,
             goals=[request.query],
-            subagent_tasks=self._ensure_parallel_task_count([], request, iteration),
+            subagent_tasks=self._fallback_tasks(request, iteration),
             continue_loop=True,
             stop_reason=None,
         )
@@ -129,8 +178,10 @@ class LeadAgent:
             input=synthesizer_job(payload),
             response_schema=_SynthesisPayload,
         )
+        self.last_llm_usage = None
         try:
             report = await self._runtime.desk.arun(worker, job)
+            self.last_llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _SynthesisPayload):
                 return IterationSynthesis(
                     summary=report.data.summary,
@@ -146,10 +197,14 @@ class LeadAgent:
                         should_continue=report.data.coverage_should_continue,
                     ),
                 )
+            reason = _failure_reason(report, "synthesizer")
+            logger.warning("Lead synthesizer call did not complete: %s", reason)
         except Exception:
-            pass
+            reason = "synthesizer raised before completing"
+            logger.warning("Lead synthesizer call failed", exc_info=True)
 
         self.fallback_count += 1
+        self.last_fallback_reason = reason
 
         fallback_summary = "No structured synthesis available; using deterministic fallback."
         continue_loop = iteration + 1 < request.max_iterations and bool(iteration_evidence)
@@ -172,7 +227,7 @@ class LeadAgent:
             "query": request.query,
             "detail_level": request.detail_level,
             "iterations": [summary.model_dump(mode="json") for summary in iteration_summaries],
-            "evidence": self._compact_evidence(evidence_payload),
+            "evidence": self._compact_evidence(evidence_payload, citations_payload),
             "citations": self._compact_citations(citations_payload),
             "today": date.today().isoformat(),
         }
@@ -182,25 +237,35 @@ class LeadAgent:
             model=self._runtime.settings.model,
             instructions=reporter_instructions(),
         )
-        job = Job(
-            input=reporter_job(payload, target_words),
-            expected_output=reporter_expected_output(),
-        )
+        job_input = reporter_job(payload, target_words)
+        self.last_llm_usage = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
-            content = getattr(report, "content", None)
-            if report.status == "completed" and isinstance(content, str) and content.strip():
-                markdown = content.strip()
-                return FinalReportDraft(
-                    title=self._extract_title(markdown, request.query),
-                    executive_summary=self._extract_summary(markdown),
-                    sections=[],
-                    markdown=markdown,
+            for _ in range(_REPORTER_ATTEMPTS):
+                job = Job(input=job_input, expected_output=reporter_expected_output())
+                report = await self._runtime.desk.arun(worker, job)
+                self.last_llm_usage = _add_usage(
+                    self.last_llm_usage, collect_llm_usage(report)
                 )
+                if report.status != "completed":
+                    reason = _failure_reason(report, "reporter")
+                    break
+                content = getattr(report, "content", None)
+                if isinstance(content, str) and content.strip():
+                    markdown = content.strip()
+                    return FinalReportDraft(
+                        title=self._extract_title(markdown, request.query),
+                        executive_summary=self._extract_summary(markdown),
+                        sections=[],
+                        markdown=markdown,
+                    )
+                reason = "reporter returned empty content"
+            logger.warning("Lead reporter call did not complete: %s", reason)
         except Exception:
-            pass
+            reason = "reporter raised before completing"
+            logger.warning("Lead reporter call failed", exc_info=True)
 
         self.fallback_count += 1
+        self.last_fallback_reason = reason
 
         findings = [
             item
@@ -237,22 +302,49 @@ class LeadAgent:
         )
 
     @staticmethod
-    def _compact_evidence(evidence_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _compact_evidence(
+        evidence_payload: list[dict[str, Any]],
+        citations_payload: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        citation_by_evidence: dict[str, int] = {}
+        for candidate in citations_payload:
+            try:
+                citation_id = int(candidate.get("citation_id", 0))
+            except (TypeError, ValueError):
+                continue
+            if citation_id <= 0:
+                continue
+            for evidence_id in candidate.get("evidence_ids") or []:
+                if evidence_id:
+                    citation_by_evidence.setdefault(str(evidence_id), citation_id)
+        text_chars = max(
+            _MIN_EVIDENCE_TEXT_CHARS,
+            _REPORTER_EVIDENCE_BUDGET // max(1, len(evidence_payload)),
+        )
         compact: list[dict[str, Any]] = []
+        scores: list[float] = []
         for entry in evidence_payload:
             try:
                 confidence = float(entry.get("confidence", 0.5) or 0.5)
             except (TypeError, ValueError):
                 confidence = 0.5
+            try:
+                credibility = float(entry.get("credibility_score"))
+            except (TypeError, ValueError):
+                credibility = 0.5
+            scores.append(credibility * confidence)
             compact.append(
                 {
                     "task_id": str(entry.get("task_id", "")),
+                    "citation_id": citation_by_evidence.get(
+                        str(entry.get("evidence_id", ""))
+                    ),
                     "query": str(entry.get("query", "")),
                     "url": str(entry.get("requested_url", entry.get("url", ""))),
                     "domain": str(entry.get("domain", "") or ""),
                     "title": str(entry.get("title", "")),
                     "snippet": str(entry.get("snippet", "")),
-                    "extracted_text": str(entry.get("extracted_text", ""))[:2200],
+                    "extracted_text": str(entry.get("extracted_text", ""))[:text_chars],
                     "confidence": confidence,
                     "published_at": entry.get("published_at"),
                     "source_class": entry.get("source_class"),
@@ -260,7 +352,28 @@ class LeadAgent:
                     "quality_flags": entry.get("quality_flags") or [],
                 }
             )
-        return compact
+        return LeadAgent._apply_evidence_budget(compact, scores)
+
+    @staticmethod
+    def _apply_evidence_budget(
+        compact: list[dict[str, Any]], scores: list[float]
+    ) -> list[dict[str, Any]]:
+        sizes = [
+            len(json.dumps(record, ensure_ascii=False, default=str))
+            for record in compact
+        ]
+        # Cited records claim the budget first, then the rest by score.
+        order = sorted(
+            range(len(compact)),
+            key=lambda index: (compact[index].get("citation_id") is None, -scores[index]),
+        )
+        kept: set[int] = set()
+        used = 0
+        for index in order:
+            if used + sizes[index] <= _REPORTER_EVIDENCE_BUDGET:
+                kept.add(index)
+                used += sizes[index]
+        return [record for index, record in enumerate(compact) if index in kept]
 
     @staticmethod
     def _compact_citations(citations_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -283,7 +396,7 @@ class LeadAgent:
         return compact
 
     @staticmethod
-    def _ensure_parallel_task_count(
+    def _normalize_tasks(
         tasks: list[SubagentTask],
         request: ResearchRequest,
         iteration: int,
@@ -313,35 +426,7 @@ class LeadAgent:
                 )
             )
 
-        if not normalized:
-            normalized = LeadAgent._fallback_tasks(request, iteration)
-
-        facets = [
-            "latest developments",
-            "market landscape",
-            "technical details",
-            "counterarguments",
-            "regional data",
-            "expert analysis",
-            "primary-source statements",
-            "case studies",
-        ]
-        facet_index = 0
-        while len(normalized) < target:
-            base_focus = normalized[facet_index % len(normalized)].focus
-            facet = facets[facet_index % len(facets)]
-            task_number = len(normalized) + 1
-            normalized.append(
-                SubagentTask(
-                    task_id=f"iter_{iteration + 1}_task_{task_number}",
-                    focus=f"{base_focus} - {facet}",
-                    search_queries=[f"{request.query} {facet}", base_focus],
-                    expected_output="Independent evidence track with distinct sources.",
-                )
-            )
-            facet_index += 1
-
-        return normalized
+        return normalized[:target]
 
     @staticmethod
     def _fallback_tasks(request: ResearchRequest, iteration: int) -> list[SubagentTask]:

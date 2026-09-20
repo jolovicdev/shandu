@@ -1,4 +1,4 @@
-# Shandu Package Architecture (3.0.8)
+# Shandu Package Architecture (3.2.0)
 
 ## Component Map
 

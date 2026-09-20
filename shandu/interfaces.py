@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .contracts import (
@@ -50,6 +50,7 @@ class ScrapedPageLike(Protocol):
     requested_url: str
     url: str
     title: str
+    site_name: str | None
     text: str
     blocks: Any
     domain: str
@@ -72,6 +73,8 @@ class ScrapeServiceLike(Protocol):
 
 class LeadAgentLike(Protocol):
     fallback_count: int
+    last_fallback_reason: str | None
+    last_llm_usage: dict[str, Any] | None
 
     async def create_iteration_plan(
         self,
@@ -105,6 +108,7 @@ class SearchSubagentLike(Protocol):
         task: SubagentTask,
         request: ResearchRequest,
         progress_callback: Callable[[str, dict[str, Any]], Any] | None = None,
+        extracted_urls: Collection[str] | None = None,
     ) -> list[EvidenceRecord]: ...
 
 

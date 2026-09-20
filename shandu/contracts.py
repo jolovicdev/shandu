@@ -43,8 +43,8 @@ class ResearchRequest(BaseModel):
     parallelism: int = Field(default=3, ge=1, le=8)
     detail_level: Literal["concise", "standard", "high"] = "high"
     depth_policy: Literal["adaptive", "fixed"] = "adaptive"
-    max_results_per_query: int = Field(default=5, ge=1, le=20)
-    max_pages_per_task: int = Field(default=3, ge=1, le=10)
+    max_results_per_query: int = Field(default=8, ge=1, le=20)
+    max_pages_per_task: int = Field(default=6, ge=1, le=10)
 
 
 class SubagentTask(BaseModel):
@@ -66,10 +66,12 @@ class EvidenceRecord(BaseModel):
     evidence_id: str
     task_id: str
     query: str
+    search_query: str | None = None
     requested_url: str
     final_url: str | None = None
     domain: str | None = None
     title: str
+    site_name: str | None = None
     snippet: str
     extracted_text: str
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)

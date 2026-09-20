@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import cast
 
-from ...config import config, infer_api_key_env_name
+from ...config import DEFAULT_MODEL, config, infer_api_key_env_name
 from ...interfaces import DepthPolicy, DetailLevel
 from ...runtime import reset_bootstrap
+from ...services.report import persist_report_markdown as persist_report_markdown
 from .constants import DEPTH_POLICIES, DETAIL_LEVELS
 
 
@@ -42,20 +42,20 @@ class GuiDefaults:
 
 
 def load_defaults() -> GuiDefaults:
-    model = str(config.get("api", "model", "deepseek/deepseek-v4-flash"))
+    model = str(config.get("api", "model", DEFAULT_MODEL))
     return GuiDefaults(
         model=model,
-        api_key_env=config.get_api_key_env_name(model),
+        api_key_env=str(config.get("api", "api_key_env", "")),
         temperature=float(config.get("api", "temperature", 0.2)),
-        max_tokens=int(config.get("api", "max_tokens", 16384)),
+        max_tokens=int(config.get("api", "max_tokens", 32768)),
         max_iterations=int(config.get("orchestration", "max_iterations", 2)),
         parallelism=int(config.get("orchestration", "parallelism", 3)),
         detail_level=str(config.get("orchestration", "detail_level", "high")),
         depth_policy=str(config.get("orchestration", "depth_policy", "adaptive")),
         max_results_per_query=int(
-            config.get("orchestration", "max_results_per_query", 5)
+            config.get("orchestration", "max_results_per_query", 8)
         ),
-        max_pages_per_task=int(config.get("orchestration", "max_pages_per_task", 3)),
+        max_pages_per_task=int(config.get("orchestration", "max_pages_per_task", 6)),
     )
 
 
@@ -86,21 +86,21 @@ def save_configuration(
     max_results_per_query: object,
     max_pages_per_task: object,
 ) -> str:
-    model_text = str(model or "").strip() or "deepseek/deepseek-v4-flash"
+    model_text = str(model or "").strip() or DEFAULT_MODEL
     env_text = str(api_key_env or "").strip()
     key_text = str(api_key_value or "").strip()
 
     resolved_env = env_text or infer_api_key_env_name(model_text)
     runtime_before = _runtime_snapshot()
     config.set("api", "model", model_text)
-    config.set("api", "api_key_env", resolved_env)
+    config.set("api", "api_key_env", env_text)
     if key_text:
         config.set("api", "api_key", key_text)
     config.set(
         "api", "temperature", float(temperature) if temperature is not None else 0.2
     )
     config.set(
-        "api", "max_tokens", int(max_tokens) if max_tokens is not None else 16384
+        "api", "max_tokens", int(max_tokens) if max_tokens is not None else 32768
     )
     config.set(
         "orchestration",
@@ -117,37 +117,18 @@ def save_configuration(
     config.set(
         "orchestration",
         "max_results_per_query",
-        int(max_results_per_query) if max_results_per_query is not None else 5,
+        int(max_results_per_query) if max_results_per_query is not None else 8,
     )
     config.set(
         "orchestration",
         "max_pages_per_task",
-        int(max_pages_per_task) if max_pages_per_task is not None else 3,
+        int(max_pages_per_task) if max_pages_per_task is not None else 6,
     )
     config.save()
     if _runtime_snapshot() != runtime_before:
         reset_bootstrap()
     config.apply_provider_api_key()
-    return f"Saved configuration for `{model_text}` using env key `{resolved_env}`."
-
-
-def persist_report_markdown(run_id: str, markdown: str) -> str | None:
-    text = markdown.strip()
-    if not text:
-        return None
-    try:
-        storage = Path(str(config.get("runtime", "storage_dir", ".blackgeorge")))
-        export_dir = storage / "exports"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        safe_run = (
-            "".join(char if char.isalnum() else "_" for char in run_id).strip("_")
-            or "report"
-        )
-        file_path = export_dir / f"{safe_run}.md"
-        file_path.write_text(text, encoding="utf-8")
-        return str(file_path)
-    except Exception:
-        return None
+    return f"Saved configuration: model {model_text}, env key {resolved_env}."
 
 
 _resolved_detail_level = resolved_detail_level

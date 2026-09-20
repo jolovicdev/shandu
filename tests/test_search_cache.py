@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 from shandu.services.search import SearchService
 
@@ -69,9 +68,10 @@ def test_search_cache_expires_after_ttl(monkeypatch):
 
     monkeypatch.setattr("shandu.services.search._resolve_ddgs", lambda: MinimalDDGS)
     service = SearchService()
-    service._cache_ttl = 0.01
+    service._cache_ttl = 60.0
 
     asyncio.run(service.search("test", 3))
-    time.sleep(0.02)
-    cached = service._get_cached(service._cache_key("test", 3))
-    assert cached is None
+    key = service._cache_key("test", 3)
+    stored_at, hits = service._cache[key]
+    service._cache[key] = (stored_at - 61.0, hits)
+    assert service._get_cached(key) is None

@@ -3,11 +3,10 @@
 Shandu is a Python deep research agent: ask a question, and a team of LLM agents
 plans research loops, runs web searches, scrapes pages and documents, scores every
 source for credibility, and writes a long-form markdown report with numbered
-citations. It covers the same ground as hosted deep-research tools (OpenAI Deep
-Research, Perplexity, Gemini), but it is open source and runs on your own machine
-with any model LiteLLM supports: DeepSeek, OpenRouter, Anthropic, OpenAI, or a
-local endpoint. Built on the Blackgeorge agent framework, usable from a terminal
-CLI or a Gradio web GUI.
+citations. It is open source and runs on your own machine with any model
+LiteLLM supports: DeepSeek, OpenRouter, Anthropic, OpenAI, or a local endpoint.
+Built on the Blackgeorge agent framework, usable from a terminal CLI or a
+Gradio web GUI.
 
 - Architecture deep dive: [`ARCH.md`](ARCH.md)
 - Example long-form output: see the `examples` directory.
@@ -17,7 +16,7 @@ CLI or a Gradio web GUI.
 
 - Lead orchestrator plans iterative research loops (plan, search, synthesize, repeat).
 - Parallel search subagents run web search and evidence extraction concurrently.
-- Citation subagent builds the final reference ledger.
+- Citation ledger built deterministically from evidence URLs.
 - SQLite-backed memory tracks run context across steps.
 - Rich CLI control deck renders run metrics and timeline.
 - Gradio GUI control room provides live telemetry, task views, and report download.
@@ -54,9 +53,9 @@ cp .env.example .env
 
 ## API Key Configuration (LiteLLM Style)
 
-`shandu configure` now asks for:
+`shandu configure` asks for:
 
-- `Default model` (example: `deepseek/deepseek-v4-flash`, `openrouter/minimax/minimax-m2.5`)
+- `Default model` (example: `deepseek/deepseek-flash`, `openrouter/minimax/minimax-m2.5`)
 - `API key env var name` (example: `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `ANYSUPPORTED_API_KEY`)
 - `API key value` (hidden input)
 
@@ -67,7 +66,7 @@ Examples:
 ```bash
 # DeepSeek
 shandu configure
-# model: deepseek/deepseek-v4-flash
+# model: deepseek/deepseek-flash
 # env var name: DEEPSEEK_API_KEY
 # key value: <your key>
 
@@ -90,7 +89,7 @@ If you prefer not to use interactive configuration, set env vars directly.
 
 Provider/model:
 
-- `SHANDU_MODEL` (primary model selector, example `deepseek/deepseek-v4-flash`)
+- `SHANDU_MODEL` (primary model selector, example `deepseek/deepseek-flash`)
 - `OPENAI_MODEL_NAME` (compatibility fallback if `SHANDU_MODEL` is not set)
 
 Provider API key routing:
@@ -109,7 +108,7 @@ Direct LiteLLM-style provider key env vars (examples):
 Generation/runtime controls:
 
 - `SHANDU_TEMPERATURE` (default `0.2`)
-- `SHANDU_MAX_TOKENS` (default `16384`)
+- `SHANDU_MAX_TOKENS` (default `32768`)
 - `SHANDU_STORAGE_DIR` (default `.blackgeorge`)
 - `SHANDU_PROXY` (optional proxy for scraping)
 
@@ -129,14 +128,14 @@ shandu run "Who is the current president of the United States?" \
   --output report.md
 ```
 
-`--parallelism` controls the maximum number of subagent tasks that execute concurrently inside each iteration. If set to `2`, the lead planner creates at least two independent tasks when possible, and the orchestrator runs up to two tasks at the same time.
+`--parallelism` caps how many subagent tasks execute concurrently inside each iteration.
 
 During `shandu run`, progress events stream live in the terminal:
 
 - `BOOTSTRAP` / `PLAN` / `SEARCH` / `SYNTHESIZE` / `CITE` / `REPORT` / `COMPLETE`
 - Per-task search events (`Task <id> started` and `Task <id> completed`) with metrics
 - Iteration index and task IDs for long-running model calls
-- Run summary includes model call count across lead/subagents/citation
+- Run summary includes model call count across lead, subagents, and extraction
 - Metered calls/tokens/cost appear when provider exposes billing/usage metrics
 
 ```bash
@@ -147,8 +146,8 @@ shandu aisearch "latest state of open-source browser automation in 2026" \
   --output aisearch.md
 ```
 
-`aisearch` is the quick mode: a single Perplexity-style answer built from live web
-search, with source citations, when a full deep-research run is more than you need.
+`aisearch` is the quick mode: a single answer built from live web search, with
+source citations, when a full deep-research run is more than you need.
 
 Citation behavior:
 
@@ -236,10 +235,9 @@ uv run pytest -q
 
 ## Source-Quality Enforcement
 
-A research agent is only as good as what it cites. Shandu grades every page it
-reads instead of treating all search results as equal, so reports lean on primary
-sources and peer-reviewed work rather than SEO farms, undated blogs, and
-marketing pages.
+Shandu grades every page it reads instead of treating all search results as
+equal, so reports lean on primary sources and peer-reviewed work rather than
+undated blogs and marketing pages.
 
 - The per-page extractor classifies each source on the existing extraction call (primary, official, peer-reviewed, journalism, corporate, community, personal blog, advocacy/marketing, aggregator, social profile, or unknown) and records authorship, dating, and whether the page only summarizes work it does not contain.
 - Each evidence record carries a `source_class`, a `credibility_score` derived from those signals, and `quality_flags` such as `undated`, `no_author`, `promotional`, `snippet_only`, or `unassessed`.

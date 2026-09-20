@@ -5,8 +5,13 @@ import io
 
 import aiohttp
 import fitz
+import time
+from bs4 import BeautifulSoup
 from docx import Document
 from openpyxl import Workbook
+from unittest import mock
+
+import pytest
 
 from shandu.services.scrape import ScrapeService
 from shandu.services.scrape.extraction import (
@@ -21,7 +26,10 @@ from shandu.services.scrape.extraction import (
     _parse_pdf,
     _parse_plaintext,
     _parse_xlsx,
+    _soup_to_blocks,
+    _trafilatura_xml_to_blocks,
 )
+from shandu.services.scrape.scheduler import _DomainScheduler
 
 
 def _long_html(title: str = "Title", words: int = 100) -> str:
@@ -29,41 +37,39 @@ def _long_html(title: str = "Title", words: int = 100) -> str:
     return f"<html><head><title>{title}</title></head><body><article><h1>{title}</h1><p>{text}</p><p>{text}</p></article></body></html>"
 
 
-# ---------------------------------------------------------------------------
-# Article extractors
-# ---------------------------------------------------------------------------
 
-def test_trafilatura_extracts_title_text_and_blocks() -> None:
-    html = _long_html("Trafilatura Article", words=100)
-    result = _extract_with_trafilatura(html)
+@pytest.mark.parametrize(
+    "extract,title",
+    [
+        (_extract_with_trafilatura, "Trafilatura Article"),
+        (_extract_with_readability, "Readability Article"),
+        (_extract_with_bs4, "BS4 Article"),
+    ],
+)
+def test_extract_backends_return_title_text_and_blocks(extract, title) -> None:
+    result = extract(_long_html(title, words=100))
     assert result is not None
-    assert result.title == "Trafilatura Article"
+    assert result.title == title
     assert len(result.text.split()) >= 100
     assert len(result.blocks) > 0
 
 
-def test_readability_extracts_title_text_and_blocks() -> None:
-    html = _long_html("Readability Article", words=100)
-    result = _extract_with_readability(html)
-    assert result is not None
-    assert result.title == "Readability Article"
-    assert len(result.text.split()) >= 100
-    assert len(result.blocks) > 0
+def test_extract_html_captures_og_site_name() -> None:
+    html = (
+        '<html><head><title>Article</title>'
+        '<meta property="og:site_name" content="Example News" />'
+        "</head><body><article><h1>Article</h1>"
+        f"<p>{' '.join(['word'] * 120)}</p></article></body></html>"
+    )
 
-
-def test_bs4_fallback_extracts_title_text_and_blocks() -> None:
-    html = _long_html("BS4 Article", words=100)
-    result = _extract_with_bs4(html)
-    assert result.title == "BS4 Article"
-    assert len(result.text.split()) >= 100
-    assert len(result.blocks) > 0
+    assert _extract_html(html).site_name == "Example News"
+    assert _extract_html(_long_html("No Site Name", words=120)).site_name is None
 
 
 def test_extract_cascade_prefers_trafilatura_then_readability_then_bs4() -> None:
-    service = ScrapeService()
-    title, text = service._extract(_long_html("Cascade", words=120))
-    assert title == "Cascade"
-    assert len(text.split()) >= 120
+    result = _extract_html(_long_html("Cascade", words=120))
+    assert result.title == "Cascade"
+    assert len(result.text.split()) >= 120
 
 
 def test_trafilatura_returns_none_for_short_content() -> None:
@@ -76,9 +82,62 @@ def test_readability_returns_none_for_short_content() -> None:
     assert _extract_with_readability(html) is None
 
 
-# ---------------------------------------------------------------------------
-# Document parsers
-# ---------------------------------------------------------------------------
+def test_soup_to_blocks_emits_nested_text_once() -> None:
+    soup = BeautifulSoup(
+        "<article>"
+        "<ul><li><p>list item text</p></li></ul>"
+        "<blockquote><p>quoted text</p></blockquote>"
+        "<pre><code>code text</code></pre>"
+        "<table><tr><td><p>cell text</p></td></tr></table>"
+        "</article>",
+        "lxml",
+    )
+
+    texts = [block.text for block in _soup_to_blocks(soup)]
+
+    assert texts == [
+        "list item text",
+        "quoted text",
+        "code text",
+        "cell text",
+    ]
+
+
+def test_trafilatura_xml_to_blocks_skips_nested_nodes() -> None:
+    xml_str = (
+        "<doc><main>"
+        "<quote><p>quoted text</p></quote>"
+        "<table><row><cell><p>cell text</p></cell></row></table>"
+        "</main></doc>"
+    )
+
+    blocks = _trafilatura_xml_to_blocks(xml_str)
+
+    assert [(block.type, block.text) for block in blocks] == [
+        ("blockquote", "quoted text"),
+        ("table", "cell text"),
+    ]
+
+
+def test_trafilatura_extracts_title_date_and_blocks_in_one_pass() -> None:
+    filler = " ".join(["word"] * 80)
+    xml_str = (
+        '<doc title="Mocked Title" date="2026-03-01"><main>'
+        "<head>Mocked Title</head>"
+        f"<p>{filler}</p>"
+        "</main></doc>"
+    )
+    with mock.patch("trafilatura.extract", return_value=xml_str) as extract:
+        result = _extract_with_trafilatura("<html></html>")
+
+    assert extract.call_count == 1
+    assert result is not None
+    assert result.title == "Mocked Title"
+    assert result.published_at == "2026-03-01"
+    assert [block.type for block in result.blocks] == ["heading", "paragraph"]
+    assert len(result.text.split()) >= 80
+
+
 
 def test_parse_pdf_extracts_title_and_text() -> None:
     doc = fitz.open()
@@ -91,6 +150,19 @@ def test_parse_pdf_extracts_title_and_text() -> None:
     assert "body text" in result.text
 
 
+def test_parse_pdf_prefers_largest_type_for_title_and_reads_creation_date() -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 60), "Proceedings of the 2025 Conference, pages 1-17", fontsize=8)
+    page.insert_text((72, 110), "Lookahead Caching for Long Contexts", fontsize=18)
+    page.insert_text((300, 500), "preprint:2405.14366v2 7 Sep 2024", fontsize=24, rotate=90)
+    page.insert_text((72, 150), "This is the body text of the paper.")
+    doc.set_metadata({"creationDate": "D:20251029105853-04'00'"})
+    result = _parse_pdf(doc.tobytes())
+    assert result.title == "Lookahead Caching for Long Contexts"
+    assert result.published_at == "2025-10-29"
+
+
 def test_parse_docx_extracts_title_and_text() -> None:
     document = Document()
     document.add_heading("DOCX Title", 0)
@@ -101,6 +173,34 @@ def test_parse_docx_extracts_title_and_text() -> None:
     result = _parse_docx(buffer.read())
     assert result.title == "DOCX Title"
     assert "paragraph" in result.text
+
+
+def _docx_bytes(build) -> bytes:
+    document = Document()
+    build(document)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def test_parse_docx_keeps_paragraphs_and_tables_in_order() -> None:
+    def build(document: Document) -> None:
+        document.add_paragraph("Intro paragraph here.")
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "Name"
+        table.cell(0, 1).text = "Value"
+        table.cell(1, 0).text = "Alice"
+        table.cell(1, 1).text = "100"
+        document.add_paragraph("Closing paragraph here.")
+
+    result = _parse_docx(_docx_bytes(build))
+
+    assert result.text.splitlines() == [
+        "Intro paragraph here.",
+        "Name | Value",
+        "Alice | 100",
+        "Closing paragraph here.",
+    ]
 
 
 def test_parse_xlsx_extracts_rows() -> None:
@@ -122,81 +222,87 @@ def test_parse_csv_extracts_rows() -> None:
 
 
 def test_parse_plaintext_extracts_text() -> None:
-    result = _parse_plaintext(b"Hello world", "text/plain")
+    result = _parse_plaintext(b"Hello world")
     assert result.text == "Hello world"
 
 
-# ---------------------------------------------------------------------------
-# Date extraction
-# ---------------------------------------------------------------------------
 
-def test_extract_published_at_finds_new_meta_names() -> None:
-    html = (
-        '<html><head>'
-        '<meta name="prism.publicationDate" content="2024-03-01">'
-        '<meta name="sailthru.date" content="2024-03-02">'
-        '</head><body></body></html>'
-    )
-    assert _extract_published_at(html) == "2024-03-01"
-
-
-def test_extract_published_at_finds_dc_date_issued() -> None:
-    html = '<html><head><meta name="dc.date.issued" content="2024-04-01"></head><body></body></html>'
-    assert _extract_published_at(html) == "2024-04-01"
-
-
-def test_extract_published_at_finds_parsely_pub_date() -> None:
-    html = '<html><head><meta name="parsely-pub-date" content="2024-05-01"></head><body></body></html>'
-    assert _extract_published_at(html) == "2024-05-01"
-
-
-def test_extract_published_at_finds_upload_date() -> None:
-    html = (
-        '<html><head>'
-        '<script type="application/ld+json">{"uploadDate":"2024-06-01"}</script>'
-        '</head><body></body></html>'
-    )
-    assert _extract_published_at(html) == "2024-06-01"
+@pytest.mark.parametrize(
+    "head,expected",
+    [
+        (
+            '<meta name="prism.publicationDate" content="2024-03-01">'
+            '<meta name="sailthru.date" content="2024-03-02">',
+            "2024-03-01",
+        ),
+        (
+            '<meta name="dc.date.issued" content="2024-04-01">',
+            "2024-04-01",
+        ),
+        (
+            '<meta name="parsely-pub-date" content="2024-05-01">',
+            "2024-05-01",
+        ),
+        (
+            '<script type="application/ld+json">{"uploadDate":"2024-06-01"}</script>',
+            "2024-06-01",
+        ),
+    ],
+)
+def test_extract_published_at_finds_known_sources(head, expected) -> None:
+    html = f"<html><head>{head}</head><body></body></html>"
+    assert _extract_published_at(html) == expected
 
 
-# ---------------------------------------------------------------------------
-# Paywall / blocked detection
-# ---------------------------------------------------------------------------
 
 def test_detect_fetch_error_detects_paywall() -> None:
     html = '<html><body><div class="paywall">Subscribe to read more.</div></body></html>'
-    assert _detect_fetch_error(html, 200, "") == "paywall"
+    assert _detect_fetch_error(html, "") == "paywall"
 
 
 def test_detect_fetch_error_detects_captcha() -> None:
     html = '<html><body><div class="g-recaptcha"></div></body></html>'
-    assert _detect_fetch_error(html, 200, "") == "captcha"
+    assert _detect_fetch_error(html, "") == "captcha"
 
 
 def test_detect_fetch_error_detects_empty_js_shell() -> None:
     html = '<html><body>' + ' ' * 9000 + '<div id="root"></div></body></html>'
-    assert _detect_fetch_error(html, 200, "") == "empty_js_shell"
+    assert _detect_fetch_error(html, "") == "empty_js_shell"
 
 
-def test_detect_fetch_error_returns_none_for_normal_page() -> None:
-    html = '<html><body><p>This is a normal page with plenty of content.</p></body></html>'
-    assert _detect_fetch_error(html, 200, "normal content here") is None
+@pytest.mark.parametrize(
+    "html,text",
+    [
+        (
+            "<html><body><p>This is a normal page with plenty of content.</p></body></html>",
+            "normal content here",
+        ),
+        (
+            "<html><body><article><p>"
+            + " ".join(["word"] * 120)
+            + "</p></article><script>g-recaptcha</script></body></html>",
+            " ".join(["word"] * 120),
+        ),
+    ],
+)
+def test_detect_fetch_error_returns_none_for_benign_pages(html, text) -> None:
+    assert _detect_fetch_error(html, text) is None
 
 
-def test_detect_fetch_error_ignores_captcha_marker_when_text_is_strong() -> None:
-    html = '<html><body><article><p>' + " ".join(["word"] * 120) + '</p></article><script>g-recaptcha</script></body></html>'
-    assert _detect_fetch_error(html, 200, " ".join(["word"] * 120)) is None
+def test_extract_html_dates_arxiv_paper_from_version_stamp() -> None:
+    html = _long_html("Streaming Models", words=200).replace(
+        "<body>", "<body><div>arXiv:2309.17453v4 [cs.CL] 07 Apr 2024</div>", 1
+    )
+    assert "arXiv:2309" in html
+    assert _extract_html(html).published_at == "2024-04-07"
 
 
 def test_extract_html_caps_long_successful_extraction() -> None:
-    html = _long_html("Long Article", words=5000)
+    html = _long_html("Long Article", words=30000)
     result = _extract_html(html)
-    assert len(result.text) <= 18000
+    assert len(result.text) <= 120_000
 
 
-# ---------------------------------------------------------------------------
-# Retry policy
-# ---------------------------------------------------------------------------
 
 def test_scrape_retries_on_429_and_eventually_succeeds() -> None:
     service = ScrapeService()
@@ -227,7 +333,6 @@ def test_scrape_retries_on_429_and_eventually_succeeds() -> None:
     result = asyncio.run(service.scrape("https://example.com", session=fake))
     assert result.fetch_error is None
     assert call_count == 3
-    assert service._retry_count == 2
 
 
 def test_scrape_retries_on_transient_client_error() -> None:
@@ -260,7 +365,6 @@ def test_scrape_retries_on_transient_client_error() -> None:
     result = asyncio.run(service.scrape("https://example.com", session=fake))
     assert result.fetch_error is None
     assert call_count == 2
-    assert service._retry_count == 1
 
 
 def test_scrape_does_not_retry_404() -> None:
@@ -292,12 +396,8 @@ def test_scrape_does_not_retry_404() -> None:
     result = asyncio.run(service.scrape("https://example.com", session=fake))
     assert result.fetch_error == "scrape_failed"
     assert call_count == 1
-    assert service._retry_count == 0
 
 
-# ---------------------------------------------------------------------------
-# Content type / format detection
-# ---------------------------------------------------------------------------
 
 def test_scrape_service_detects_pdf_from_content_type() -> None:
     service = ScrapeService()
@@ -395,9 +495,6 @@ def test_scrape_service_rejects_oversized_html_before_decoding() -> None:
     assert result.fetch_error == "non_text_content"
 
 
-# ---------------------------------------------------------------------------
-# Structured blocks
-# ---------------------------------------------------------------------------
 
 def test_extract_produces_structured_blocks() -> None:
     long_para = " ".join(["word"] * 60)
@@ -430,3 +527,65 @@ def test_scraped_page_defaults_blocks_to_empty_list() -> None:
         domain="example.com",
     )
     assert page.blocks == []
+
+
+def test_domain_scheduler_staggers_concurrent_slots() -> None:
+    scheduler = _DomainScheduler(max_concurrent_per_domain=2, base_delay=0.2)
+
+    async def timed_acquire() -> float:
+        await scheduler.acquire("d.example")
+        return time.monotonic()
+
+    async def run_all() -> list[float]:
+        stamps = await asyncio.gather(timed_acquire(), timed_acquire())
+        await scheduler.release("d.example")
+        await scheduler.release("d.example")
+        return sorted(stamps)
+
+    first, second = asyncio.run(run_all())
+
+    assert second - first >= 0.15
+
+
+def test_fetch_acquires_scheduler_slot_for_hop_domain() -> None:
+    service = ScrapeService()
+    acquired: list[str] = []
+
+    class RecordingScheduler:
+        async def acquire(self, domain: str) -> None:
+            acquired.append(domain)
+
+        async def release(self, domain: str) -> None:
+            del domain
+
+        def bump_backoff(self, domain: str) -> None:
+            del domain
+
+        def reset_backoff(self, domain: str) -> None:
+            del domain
+
+    service._domain_scheduler = RecordingScheduler()
+
+    class HopSession:
+        def get(self, *args, **kwargs):
+            del args, kwargs
+
+            class HopResponse:
+                status = 404
+                headers: dict[str, str] = {}
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    del args
+
+            return HopResponse()
+
+    asyncio.run(
+        service._fetch_single_request(
+            "https://orig.example/y", "https://hop.example/x", HopSession(), 0, 1
+        )
+    )
+
+    assert acquired == ["hop.example"]

@@ -18,8 +18,5 @@ class MemoryService:
     def read(self, scope: str, key: str) -> Any | None:
         return self._store.read(key, scope)
 
-    def search(self, scope: str, query: str) -> list[tuple[str, Any]]:
-        return self._store.search(query, scope)
-
     def reset(self, scope: str) -> None:
         self._store.reset(scope)

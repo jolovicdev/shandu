@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from concurrent import futures
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import gradio as gr
 
 from ...contracts import ResearchRequest, ResearchRunResult, RunEvent
 from ...engine import ShanduEngine
+from ...runtime import get_async_runner
 from .constants import (
     CITATION_HEADERS,
     DEPTH_POLICIES,
@@ -16,9 +18,9 @@ from .constants import (
     TIMELINE_HEADERS,
     TRACE_HEADERS,
 )
+from ...services.report import persist_report_markdown
 from .settings import (
     load_defaults,
-    persist_report_markdown,
     resolved_depth_policy,
     resolved_detail_level,
     save_configuration,
@@ -62,6 +64,7 @@ def build_gui() -> gr.Blocks:
             )
             with gr.Row(elem_classes=["shandu-run-actions"]):
                 run_button = gr.Button("Start Research", variant="primary", size="lg")
+                stop_button = gr.Button("Stop", variant="stop", size="lg")
             gr.Examples(
                 examples=[
                     "Map likely labor-market shifts in Southeast Europe by 2035 and justify assumptions.",
@@ -228,9 +231,11 @@ def build_gui() -> gr.Blocks:
             fn=_save_action,
             inputs=config_inputs,
             outputs=[save_message],
+            concurrency_id="shandu_runtime",
+            concurrency_limit=1,
         )
 
-        run_button.click(
+        run_event = run_button.click(
             fn=_run_action,
             inputs=[query] + config_inputs,
             outputs=[
@@ -246,7 +251,10 @@ def build_gui() -> gr.Blocks:
                 payload,
                 download_report,
             ],
+            concurrency_id="shandu_runtime",
+            concurrency_limit=1,
         )
+        stop_button.click(fn=None, inputs=None, outputs=None, cancels=[run_event])
 
     demo.queue(default_concurrency_limit=1, max_size=12)
     return demo
@@ -331,6 +339,7 @@ def _run_action(
     event_queue: queue.Queue[RunEvent | None] = queue.Queue()
     result_box: dict[str, Any] = {}
     error_box: dict[str, str] = {}
+    stop_event = threading.Event()
 
     def on_event(event: RunEvent) -> None:
         event_queue.put(event)
@@ -339,7 +348,19 @@ def _run_action(
         engine = None
         try:
             engine = ShanduEngine.from_config()
-            result_box["result"] = engine.run_sync(request, progress_callback=on_event)
+            future = get_async_runner().submit(
+                engine.run(request, progress_callback=on_event)
+            )
+            while True:
+                if stop_event.is_set():
+                    future.cancel()
+                try:
+                    result_box["result"] = future.result(timeout=0.1)
+                except futures.TimeoutError:
+                    continue
+                break
+        except futures.CancelledError:
+            error_box["error"] = "Run cancelled."
         except Exception as exc:
             error_box["error"] = str(exc)
         finally:
@@ -349,11 +370,14 @@ def _run_action(
 
     threading.Thread(target=run_worker, daemon=True).start()
 
-    while True:
-        done = _apply_next_event_batch(event_queue=event_queue, state=state)
-        if done:
-            break
-        yield _outputs(state=state, running=True, download_path=None)
+    try:
+        while True:
+            done = _apply_next_event_batch(event_queue=event_queue, state=state)
+            if done:
+                break
+            yield _outputs(state=state, running=True, download_path=None)
+    finally:
+        stop_event.set()
 
     if "error" in error_box:
         state.apply_error(error_box["error"])

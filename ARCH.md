@@ -1,6 +1,6 @@
-# Shandu 3.0 Architecture
+# Shandu 3.2 Architecture
 
-This document describes how Shandu 3.0 executes research runs end-to-end.
+This document describes how Shandu 3.2 executes research runs end-to-end.
 
 ## 1) System Topology
 
@@ -81,7 +81,7 @@ flowchart TD
 ## 5) Parallelism Model
 
 - `--parallelism` is the hard upper bound for concurrent subagent task execution per iteration.
-- The planner attempts to generate enough independent tasks to use requested parallelism.
+- The planner returns roughly parallelism tasks, capped by what the query needs.
 - The orchestrator enforces concurrency with an async semaphore.
 
 ```mermaid
@@ -113,7 +113,9 @@ flowchart TD
 - Engine: public runtime entrypoint (`run`, `stream`, `inspect`, `ai_search`).
 - Orchestrator: iterative loop control, task fan-out, progress events, and result assembly.
 - Lead agent: planning, synthesis, and final report drafting.
-- Search subagents: concurrent search queries and per-page extraction for each planned task.
+- Search subagents: concurrent search queries, model-ranked selection of which hits to open
+  (search-rank order when the ranking call fails), and whole-document extraction for each
+  planned task.
   The extractor classifies every source (class, authorship, promotional intent, secondhand
   summaries) and a pure scoring function derives `credibility_score` and `quality_flags`;
   the synthesizer, reporter, and adaptive loop consume them.
@@ -126,7 +128,8 @@ flowchart TD
   captcha, empty JS shell, blocked), per-domain rate limiting with exponential backoff,
   status-aware retries with jitter (timeouts capped at one retry), one shared HTTP session
   per service, in-flight request deduplication, LRU-bounded cross-task URL caching,
-  publication-date extraction from OpenGraph/JSON-LD/meta/time tags, redirect-aware
+  publication-date extraction from OpenGraph/JSON-LD/meta/time tags, PDF creation dates,
+  and arXiv version stamps, full-paper fetch for arXiv abstract URLs, redirect-aware
   provenance tracking, and search-snippet fallback evidence when scraping fails.
 - Memory service: persistent run memory and retrieval.
 - Report service: citation normalization and final markdown rendering.

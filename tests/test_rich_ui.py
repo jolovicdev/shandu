@@ -56,3 +56,13 @@ def test_event_line_renders_trace_query_and_url() -> None:
     assert "query_completed" in line.plain
     assert "future of multimodal agents" in line.plain
     assert "https://example.com/article" in line.plain
+
+
+def test_banner_derives_major_version() -> None:
+    from shandu import __version__
+
+    console = Console(record=True, width=100)
+    ui = ShanduUI(console=console)
+    ui.print_banner()
+
+    assert f"SHANDU V{__version__.split('.')[0]}" in console.export_text()

@@ -28,28 +28,15 @@ class AsyncRunner:
             self._thread = threading.Thread(target=runner, daemon=True)
             self._thread.start()
 
-    def run(self, awaitable: Any) -> Any:
+    def submit(self, awaitable: Any) -> Future[Any]:
         self._start()
         self._ready.wait()
         if self._loop is None:
             raise RuntimeError("Async runner loop is not initialized")
-        future: Future[Any] = asyncio.run_coroutine_threadsafe(awaitable, self._loop)
-        return future.result()
+        return asyncio.run_coroutine_threadsafe(awaitable, self._loop)
 
-    def shutdown(self) -> None:
-        with self._lock:
-            if self._loop is None or self._thread is None:
-                return
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            self._thread.join(timeout=5.0)
-            if self._thread.is_alive():
-                # Loop still draining a coroutine; keep the refs so run() does
-                # not spawn a second loop/thread while this one is alive.
-                return
-            self._loop.close()
-            self._loop = None
-            self._thread = None
-            self._ready.clear()
+    def run(self, awaitable: Any) -> Any:
+        return self.submit(awaitable).result()
 
 
 _runner: AsyncRunner | None = None

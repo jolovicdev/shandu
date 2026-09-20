@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import time
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -12,6 +13,8 @@ from pydantic import BaseModel
 
 from ..config import config
 
+logger = logging.getLogger(__name__)
+
 # ddgs 9.x text backends. A comma-delimited entry queries those engines in
 # parallel threads and merges URL-deduped results, so the primary entry gets
 # per-query source diversity and survives either engine having a bad day;
@@ -20,6 +23,8 @@ from ..config import config
 # is blocked (HTTP 403) as of ddgs 9.10.
 _TEXT_BACKENDS: tuple[str, ...] = ("brave,duckduckgo", "auto")
 _SEARCH_CACHE_MAX = 256
+_SEARCH_CONCURRENCY = 4
+_SEARCH_RETRY_DELAY_SECONDS = 1.0
 
 
 class SearchHit(BaseModel):
@@ -64,6 +69,14 @@ class SearchService:
         self._cache: OrderedDict[str, tuple[float, list[SearchHit]]] = OrderedDict()
         self._cache_ttl = 300.0
         self._inflight: dict[str, asyncio.Task[list[SearchHit]]] = {}
+        self._search_semaphore = asyncio.Semaphore(_SEARCH_CONCURRENCY)
+        self.last_error: str | None = None
+        self._errors: dict[str, str] = {}
+
+    def last_error_for(self, query: str, max_results: int) -> str | None:
+        # last_error holds the latest outcome only; concurrent callers need
+        # the error of their own query.
+        return self._errors.get(self._cache_key(query, max_results))
 
     def _cache_key(self, query: str, max_results: int) -> str:
         return f"{query}:{max_results}:{self._region}:{self._safesearch}"
@@ -105,16 +118,20 @@ class SearchService:
             self._inflight.pop(key, None)
 
     async def _do_search(self, key: str, query: str, max_results: int) -> list[SearchHit]:
-        raw: list[Mapping[str, Any]] | None = None
-        for backend in _TEXT_BACKENDS:
-            try:
-                raw = await asyncio.to_thread(self._fetch_backend, query, max_results, backend)
-            except Exception:
-                raw = None
-            if raw:
-                break
+        self._errors.pop(key, None)
+        async with self._search_semaphore:
+            raw, backend_errors = await self._try_backends(query, max_results)
+            if not raw and backend_errors:
+                await asyncio.sleep(_SEARCH_RETRY_DELAY_SECONDS)
+                raw, backend_errors = await self._try_backends(query, max_results)
         if not raw:
+            if len(backend_errors) == len(_TEXT_BACKENDS):
+                self.last_error = self._errors[key] = "; ".join(backend_errors)[:300]
+                logger.warning("All search backends failed for query %r", query)
+            else:
+                self.last_error = None
             return []
+        self.last_error = None
 
         hits: list[SearchHit] = []
         seen: set[str] = set()
@@ -136,6 +153,24 @@ class SearchService:
 
         self._set_cached(key, hits)
         return hits
+
+    async def _try_backends(
+        self, query: str, max_results: int
+    ) -> tuple[list[Mapping[str, Any]] | None, list[str]]:
+        raw: list[Mapping[str, Any]] | None = None
+        backend_errors: list[str] = []
+        for backend in _TEXT_BACKENDS:
+            try:
+                raw = await asyncio.to_thread(
+                    self._fetch_backend, query, max_results, backend
+                )
+            except Exception as exc:
+                raw = None
+                backend_errors.append(f"{backend}: {exc}")
+                logger.warning("Search backend %s failed", backend, exc_info=True)
+            if raw:
+                break
+        return raw, backend_errors
 
     def _fetch_backend(
         self,

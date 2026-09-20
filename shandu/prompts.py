@@ -342,6 +342,35 @@ def extractor_job(payload: dict[str, Any]) -> str:
     )
 
 
+def selector_instructions() -> str:
+    return (
+        "You are SourceSelector for a research subagent. Your output is parsed as "
+        "structured data, so return only schema-valid data.\n\n"
+        "You see web search hits (title, url, snippet) for one research task and "
+        "choose which pages are worth opening. Judge each hit by whether the page "
+        "is likely to contain the evidence the task expects.\n\n"
+        "Selection rules:\n"
+        "- Prefer primary papers, official documentation, release notes, technical "
+        "reports, datasets, and benchmark repositories over blogs, listicles, "
+        "aggregators, and vendor marketing.\n"
+        "- Cover the task's named entities, methods, and metrics: pick pages that "
+        "together span them instead of several pages about the same one.\n"
+        "- Prefer a full-text page over an abstract or landing page for the same "
+        "work, and never pick two URLs for the same work.\n"
+        "- Prefer recent sources when the task is time-sensitive."
+    )
+
+
+def selector_job(payload: dict[str, Any]) -> str:
+    return (
+        "Rank the candidates for this task.\n\n"
+        "Return ranked_ids: candidate ids ordered from most to least useful. "
+        "Include at least `select` ids when that many candidates are relevant; "
+        "leave out candidates that are off-topic.\n\n"
+        f"Input JSON:\n{_payload_json(payload)}"
+    )
+
+
 def aisearch_instructions() -> str:
     return (
         "You are AISearchAnalyst, a one-shot source-grounded analyst. Answer the "

@@ -596,6 +596,31 @@ def test_execute_task_ranks_already_extracted_urls_last() -> None:
     ]
 
 
+def test_execute_task_scrapes_model_ranked_urls_first() -> None:
+    from shandu.agents.search_subagent import _SelectionPayload
+
+    subagent = SearchSubagent(
+        runtime=_ModelRuntime(_StaticDesk(_SelectionPayload(ranked_ids=[14, 4, 99, 4, 9]))),
+        search_service=_DisjointSearch(),
+        scrape_service=EmptyScrapeService(),
+    )
+    task = SubagentTask(
+        task_id="t",
+        focus="focus",
+        search_queries=["q1", "q2", "q3"],
+        expected_output="out",
+    )
+    request = ResearchRequest(query="q", max_pages_per_task=3, max_results_per_query=5)
+
+    evidence = asyncio.run(subagent.execute_task("run:1", task, request))
+
+    assert [item.requested_url for item in evidence] == [
+        "https://q3.example/p4",
+        "https://q2.example/p1",
+        "https://q1.example/p3",
+    ]
+
+
 def test_execute_task_caps_queries_per_task_at_six() -> None:
     class CapturingSearch:
         def __init__(self) -> None:

@@ -18,7 +18,12 @@ from ..interfaces import (
     ScrapeServiceLike,
     SearchServiceLike,
 )
-from ..prompts import extractor_instructions, extractor_job
+from ..prompts import (
+    extractor_instructions,
+    extractor_job,
+    selector_instructions,
+    selector_job,
+)
 from ..runtime.costing import collect_llm_usage
 
 logger = logging.getLogger(__name__)
@@ -47,6 +52,10 @@ class _ExtractionPayload(BaseModel):
     authorship: Literal["named", "organizational", "anonymous"] = "anonymous"
     is_promotional: bool = False
     summarizes_inaccessible_source: bool = False
+
+
+class _SelectionPayload(BaseModel):
+    ranked_ids: list[int] = Field(default_factory=list)
 
 
 def assess_source_quality(
@@ -205,6 +214,9 @@ class SearchSubagent:
             for entry in interleaved
             if (self._canonicalize_url(entry["url"]) or entry["url"]) in known
         ]
+        unseen = await self._rank_candidates(
+            task, unseen, request.max_pages_per_task, progress_callback
+        )
         all_hits = unseen + already_seen
 
         urls = [entry["url"] for entry in all_hits[: request.max_pages_per_task]]
@@ -427,6 +439,77 @@ class SearchSubagent:
         result = callback(trace_type, payload)
         if isinstance(result, Awaitable):
             await result
+
+    async def _rank_candidates(
+        self,
+        task: SubagentTask,
+        candidates: list[dict[str, str]],
+        limit: int,
+        progress_callback: SearchTraceCallback | None = None,
+    ) -> list[dict[str, str]]:
+        """Order candidates by expected value for the task.
+
+        Search rank says little about which hit carries the evidence the task
+        needs, so the model picks from titles and snippets. The incoming
+        order is kept when the pick is unnecessary or the call fails.
+        """
+        if len(candidates) <= limit:
+            return candidates
+        payload = {
+            "task_focus": task.focus,
+            "task_expected_output": task.expected_output,
+            "select": limit,
+            "candidates": [
+                {
+                    "id": index,
+                    "url": entry["url"],
+                    "title": entry["title"],
+                    "snippet": entry["snippet"][:300],
+                }
+                for index, entry in enumerate(candidates)
+            ],
+        }
+        worker = Worker(
+            name="SubagentSelector",
+            model=self._runtime.settings.model,
+            instructions=selector_instructions(),
+        )
+        job = Job(input=selector_job(payload), response_schema=_SelectionPayload)
+        ranked = candidates
+        llm_usage: dict[str, Any] | None = None
+        try:
+            report = await self._runtime.desk.arun(worker, job)
+            llm_usage = collect_llm_usage(report)
+            if report.status == "completed" and isinstance(report.data, _SelectionPayload):
+                picked = [
+                    index
+                    for index in dict.fromkeys(report.data.ranked_ids)
+                    if 0 <= index < len(candidates)
+                ]
+                chosen = set(picked)
+                ranked = [candidates[index] for index in picked] + [
+                    entry
+                    for index, entry in enumerate(candidates)
+                    if index not in chosen
+                ]
+            else:
+                logger.warning(
+                    "URL selection did not complete for %s: %s",
+                    task.task_id,
+                    _report_reason(report),
+                )
+        except Exception:
+            logger.warning("URL selection failed for %s", task.task_id, exc_info=True)
+
+        trace_payload: dict[str, Any] = {
+            "task_id": task.task_id,
+            "candidates": len(candidates),
+            "selected": [entry["url"] for entry in ranked[:limit]],
+        }
+        if llm_usage:
+            trace_payload["llm_usage"] = llm_usage
+        await self._emit_trace(progress_callback, "urls_ranked", trace_payload)
+        return ranked
 
     async def _extract(
         self,

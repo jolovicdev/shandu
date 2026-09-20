@@ -113,7 +113,9 @@ flowchart TD
 - Engine: public runtime entrypoint (`run`, `stream`, `inspect`, `ai_search`).
 - Orchestrator: iterative loop control, task fan-out, progress events, and result assembly.
 - Lead agent: planning, synthesis, and final report drafting.
-- Search subagents: concurrent search queries and per-page extraction for each planned task.
+- Search subagents: concurrent search queries, model-ranked selection of which hits to open
+  (search-rank order when the ranking call fails), and whole-document extraction for each
+  planned task.
   The extractor classifies every source (class, authorship, promotional intent, secondhand
   summaries) and a pure scoring function derives `credibility_score` and `quality_flags`;
   the synthesizer, reporter, and adaptive loop consume them.

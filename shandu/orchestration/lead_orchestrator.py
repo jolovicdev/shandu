@@ -216,7 +216,7 @@ class LeadOrchestrator:
                         payload: dict[str, Any],
                     ) -> None:
                         nonlocal agent_model_calls, extraction_fallbacks
-                        if trace_type == "extract_started":
+                        if trace_type in ("extract_started", "urls_ranked"):
                             agent_model_calls += 1
                         elif trace_type == "extraction_fallback":
                             extraction_fallbacks += 1
@@ -645,6 +645,10 @@ class LeadOrchestrator:
                 metrics["query"] = query
             if "hits" in payload:
                 metrics["hits"] = payload["hits"]
+        elif trace_type == "urls_ranked":
+            message = f"Task {task_id} ranked sources" if task_id else "Ranked sources"
+            if "candidates" in payload:
+                metrics["candidates"] = payload["candidates"]
         elif trace_type == "scrape_started":
             message = f"Task {task_id} scraping pages" if task_id else "Scraping pages"
             if "url_count" in payload:

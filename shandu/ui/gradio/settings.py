@@ -45,7 +45,7 @@ def load_defaults() -> GuiDefaults:
     model = str(config.get("api", "model", DEFAULT_MODEL))
     return GuiDefaults(
         model=model,
-        api_key_env=config.get_api_key_env_name(model),
+        api_key_env=str(config.get("api", "api_key_env", "")),
         temperature=float(config.get("api", "temperature", 0.2)),
         max_tokens=int(config.get("api", "max_tokens", 16384)),
         max_iterations=int(config.get("orchestration", "max_iterations", 2)),
@@ -93,7 +93,7 @@ def save_configuration(
     resolved_env = env_text or infer_api_key_env_name(model_text)
     runtime_before = _runtime_snapshot()
     config.set("api", "model", model_text)
-    config.set("api", "api_key_env", resolved_env)
+    config.set("api", "api_key_env", env_text)
     if key_text:
         config.set("api", "api_key", key_text)
     config.set(

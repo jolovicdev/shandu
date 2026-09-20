@@ -7,6 +7,7 @@ from blackgeorge import Job, Worker
 from ..contracts import AISearchResult, AISearchSource
 from ..interfaces import DetailLevel, RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
 from ..prompts import aisearch_expected_output, aisearch_instructions, aisearch_job
+from ..runtime.costing import collect_llm_usage
 from .scrape.service import _canonicalize_url
 
 logger = logging.getLogger(__name__)
@@ -82,19 +83,24 @@ class AISearchService:
             input=aisearch_job(payload, min_words),
             expected_output=aisearch_expected_output(),
         )
+        llm_usage = None
         try:
             report = await self._runtime.desk.arun(worker, job)
+            llm_usage = collect_llm_usage(self._runtime, report)
             content = getattr(report, "content", None)
             if report.status == "completed" and isinstance(content, str) and content.strip():
+                stats: dict[str, object] = {
+                    "sources": len(sources),
+                    "scraped_pages": len(scraped_pages),
+                    "scrape_missed": scrape_missed,
+                }
+                if llm_usage:
+                    stats["llm_usage"] = llm_usage
                 return AISearchResult(
                     query=query,
                     answer_markdown=content.strip(),
                     sources=sources,
-                    run_stats={
-                        "sources": len(sources),
-                        "scraped_pages": len(scraped_pages),
-                        "scrape_missed": scrape_missed,
-                    },
+                    run_stats=stats,
                 )
             errors = getattr(report, "errors", None) or []
             detail = "; ".join(str(item) for item in errors if str(item).strip())
@@ -114,16 +120,19 @@ class AISearchService:
         fallback_lines.extend(["## Sources", ""])
         for idx, source in enumerate(sources, start=1):
             fallback_lines.append(f"[{idx}] {source.title} - {source.url}")
+        fallback_stats: dict[str, object] = {
+            "sources": len(sources),
+            "scraped_pages": len(scraped_pages),
+            "scrape_missed": scrape_missed,
+            "fallback_reason": reason,
+        }
+        if llm_usage:
+            fallback_stats["llm_usage"] = llm_usage
         return AISearchResult(
             query=query,
             answer_markdown="\n".join(fallback_lines).strip(),
             sources=sources,
-            run_stats={
-                "sources": len(sources),
-                "scraped_pages": len(scraped_pages),
-                "scrape_missed": scrape_missed,
-                "fallback_reason": reason,
-            },
+            run_stats=fallback_stats,
         )
 
     @staticmethod

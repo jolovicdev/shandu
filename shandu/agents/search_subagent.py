@@ -18,6 +18,7 @@ from ..interfaces import (
     SearchServiceLike,
 )
 from ..prompts import extractor_instructions, extractor_job
+from ..runtime.costing import collect_llm_usage
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ class SearchSubagent:
                     "title": page.title,
                 },
             )
-            extraction, assessed = await self._extract(
+            extraction, assessed, extract_usage = await self._extract(
                 task, page.url, page.title, page.text, progress_callback
             )
             source_type, extraction_method = self._source_metadata(page.content_type, page.url)
@@ -267,16 +268,19 @@ class SearchSubagent:
             else:
                 source_class = None
                 credibility, quality_flags = None, ["unassessed"]
+            completed_payload: dict[str, Any] = {
+                "task_id": task.task_id,
+                "url": page.url,
+                "title": page.title,
+                "confidence": extraction.confidence,
+                "credibility": credibility,
+            }
+            if extract_usage:
+                completed_payload["llm_usage"] = extract_usage
             await self._emit_trace(
                 progress_callback,
                 "extract_completed",
-                {
-                    "task_id": task.task_id,
-                    "url": page.url,
-                    "title": page.title,
-                    "confidence": extraction.confidence,
-                    "credibility": credibility,
-                },
+                completed_payload,
             )
             return EvidenceRecord(
                 evidence_id=new_id(),
@@ -393,7 +397,7 @@ class SearchSubagent:
         title: str,
         text: str,
         progress_callback: SearchTraceCallback | None = None,
-    ) -> tuple[_ExtractionPayload, bool]:
+    ) -> tuple[_ExtractionPayload, bool, dict[str, Any] | None]:
         payload = {
             "task_focus": task.focus,
             "task_expected_output": task.expected_output,
@@ -410,20 +414,30 @@ class SearchSubagent:
             input=extractor_job(payload),
             response_schema=_ExtractionPayload,
         )
+        llm_usage: dict[str, Any] | None = None
         try:
             report = await self._runtime.desk.arun(worker, job)
+            llm_usage = collect_llm_usage(self._runtime, report)
             if report.status == "completed" and isinstance(report.data, _ExtractionPayload):
-                return report.data, True
+                return report.data, True, llm_usage
             reason = _report_reason(report)
             logger.warning("Extraction call did not complete for %s: %s", url, reason)
         except Exception:
             reason = "extractor raised before completing"
             logger.warning("Extraction call failed for %s", url, exc_info=True)
 
+        fallback_payload: dict[str, Any] = {
+            "task_id": task.task_id,
+            "url": url,
+            "title": title,
+            "reason": reason,
+        }
+        if llm_usage:
+            fallback_payload["llm_usage"] = llm_usage
         await self._emit_trace(
             progress_callback,
             "extraction_fallback",
-            {"task_id": task.task_id, "url": url, "title": title, "reason": reason},
+            fallback_payload,
         )
 
         fallback_snippet = text[:320].strip()
@@ -435,4 +449,5 @@ class SearchSubagent:
                 confidence=0.45,
             ),
             False,
+            llm_usage,
         )

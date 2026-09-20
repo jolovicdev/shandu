@@ -393,38 +393,31 @@ def test_orchestrator_forwards_subagent_trace_events() -> None:
     )
 
 
-class FakeCostTracker:
-    def snapshot(self):
-        from shandu.runtime.cost_tracker import CostSnapshot
-
-        return CostSnapshot()
-
-    def delta_since(self, baseline):
-        del baseline
-        from shandu.runtime.cost_tracker import CostSnapshot
-
-        return CostSnapshot(
-            llm_calls=5, cost_events=2, total_cost_usd=0.045, total_tokens=3200
-        )
-
-
 def test_orchestrator_adds_cost_stats_when_available() -> None:
+    lead = FakeLeadAgent()
+    lead.last_llm_usage = {
+        "prompt_tokens": 2000,
+        "completion_tokens": 1000,
+        "total_tokens": 3000,
+        "cost_usd": 0.02,
+        "llm_calls": 2,
+        "cost_events": 1,
+    }
     orchestrator = LeadOrchestrator(
-        lead_agent=FakeLeadAgent(),
+        lead_agent=lead,
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
         memory_service=MemoryService(InMemoryMemoryStore()),
         report_service=FakeReportService(),
-        cost_tracker=FakeCostTracker(),
     )
     request = ResearchRequest(query="cost-test", max_iterations=1, parallelism=1)
     result = asyncio.run(orchestrator.run(request))
 
     assert result.run_stats["agent_model_calls"] == 4
-    assert result.run_stats["metered_calls"] == 5
+    assert result.run_stats["metered_calls"] == 6
     assert result.run_stats["cost_coverage"] == "full"
-    assert result.run_stats["llm_tokens"] == 3200
-    assert result.run_stats["usd_spent"] == 0.045
+    assert result.run_stats["llm_tokens"] == 9000
+    assert result.run_stats["usd_spent"] == 0.06
 
 
 def test_run_stats_include_source_class_and_dated_summary() -> None:

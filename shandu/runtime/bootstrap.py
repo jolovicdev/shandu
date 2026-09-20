@@ -92,6 +92,10 @@ class RuntimeBootstrap:
         record = self.desk.run_store.get_run(run_id)
         if record is not None:
             events = self.desk.run_store.get_events(run_id)
+            usage_tracker = CostTracker()
+            for event in events:
+                usage_tracker.handle_event(event)
+            usage_snapshot = usage_tracker.snapshot()
             return {
                 "exists": True,
                 "run_id": record.run_id,
@@ -101,6 +105,14 @@ class RuntimeBootstrap:
                 "input": record.input,
                 "output": record.output,
                 "output_json": record.output_json,
+                "usage": {
+                    "prompt_tokens": usage_snapshot.prompt_tokens,
+                    "completion_tokens": usage_snapshot.completion_tokens,
+                    "total_tokens": usage_snapshot.total_tokens,
+                    "cost_usd": usage_snapshot.total_cost_usd,
+                    "llm_calls": usage_snapshot.llm_calls,
+                    "cost_events": usage_snapshot.cost_events,
+                },
                 "events": [
                     {
                         "type": event.type,

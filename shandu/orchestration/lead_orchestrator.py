@@ -25,7 +25,6 @@ from ..interfaces import (
     SearchSubagentLike,
 )
 from ..services.memory import MemoryService
-from ..runtime.cost_tracker import CostTracker, CostSnapshot
 
 
 class LeadOrchestrator:
@@ -36,14 +35,12 @@ class LeadOrchestrator:
         citation_agent: CitationAgentLike,
         memory_service: MemoryService,
         report_service: ReportServiceLike,
-        cost_tracker: CostTracker | None = None,
     ) -> None:
         self._lead = lead_agent
         self._search_subagent = search_subagent
         self._citation = citation_agent
         self._memory = memory_service
         self._report = report_service
-        self._cost_tracker = cost_tracker
         self._channel = Channel()
         self._blackboard = Blackboard()
 
@@ -57,9 +54,6 @@ class LeadOrchestrator:
         started = time.perf_counter()
         started_at = datetime.now(timezone.utc).isoformat()
         event_log: list[dict[str, Any]] = []
-        cost_start = (
-            self._cost_tracker.snapshot() if self._cost_tracker is not None else None
-        )
 
         async def emit(event: RunEvent) -> None:
             event_log.append(event.model_dump(mode="json"))
@@ -84,6 +78,35 @@ class LeadOrchestrator:
         lead_fallbacks = self._lead.fallback_count
         extraction_fallbacks = 0
         fallback_reasons: list[str] = []
+        llm_totals: dict[str, Any] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
+            "llm_calls": 0,
+            "cost_events": 0,
+        }
+        saw_llm_usage = False
+
+        def absorb_llm_usage(usage: Any) -> dict[str, Any] | None:
+            nonlocal saw_llm_usage
+            if not isinstance(usage, dict) or not usage:
+                return None
+            saw_llm_usage = True
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = usage.get(key, 0)
+                if isinstance(value, (int, float)):
+                    llm_totals[key] += value
+            cost = usage.get("cost_usd", 0)
+            if isinstance(cost, (int, float)):
+                llm_totals["cost_usd"] += cost
+            calls = usage.get("llm_calls", 1)
+            if isinstance(calls, int):
+                llm_totals["llm_calls"] += calls
+            cost_hits = usage.get("cost_events", 1 if "cost_usd" in usage else 0)
+            if isinstance(cost_hits, int):
+                llm_totals["cost_events"] += cost_hits
+            return usage
 
         def with_model_call_count(
             metrics: dict[str, Any] | None = None,
@@ -101,6 +124,9 @@ class LeadOrchestrator:
                 iteration=iteration,
                 prior_summaries=iteration_summaries,
                 memory_context=memory_context,
+            )
+            plan_usage = absorb_llm_usage(
+                getattr(self._lead, "last_llm_usage", None)
             )
             if self._lead.fallback_count > lead_fallbacks:
                 lead_fallbacks = self._lead.fallback_count
@@ -121,12 +147,17 @@ class LeadOrchestrator:
                 plan.model_dump(mode="json"),
                 author="lead",
             )
+            plan_metrics = with_model_call_count(
+                {"tasks": len(plan.subagent_tasks)}
+            )
+            if plan_usage:
+                plan_metrics["llm_usage"] = plan_usage
             await emit(
                 RunEvent(
                     stage="plan",
                     message=f"Iteration {iteration + 1} plan ready",
                     iteration=iteration,
-                    metrics=with_model_call_count({"tasks": len(plan.subagent_tasks)}),
+                    metrics=plan_metrics,
                 ),
             )
 
@@ -170,12 +201,15 @@ class LeadOrchestrator:
                         trace_reason = payload.get("reason")
                         if trace_reason:
                             fallback_reasons.append(str(trace_reason)[:300])
+                    trace_usage = absorb_llm_usage(payload.get("llm_usage"))
                     trace_event = self._build_search_trace_event(
                         iteration=iteration,
                         trace_type=trace_type,
                         payload=payload,
                     )
                     trace_event.metrics = with_model_call_count(trace_event.metrics)
+                    if trace_usage:
+                        trace_event.metrics["llm_usage"] = trace_usage
                     await emit(trace_event)
 
                 try:
@@ -274,6 +308,9 @@ class LeadOrchestrator:
                 ],
                 prior_summaries=iteration_summaries,
             )
+            synthesis_usage = absorb_llm_usage(
+                getattr(self._lead, "last_llm_usage", None)
+            )
             if self._lead.fallback_count > lead_fallbacks:
                 lead_fallbacks = self._lead.fallback_count
                 await emit(
@@ -294,20 +331,23 @@ class LeadOrchestrator:
                 synthesis.model_dump(mode="json"),
                 author="lead",
             )
+            synthesis_metrics = with_model_call_count(
+                {
+                    "continue_loop": synthesis.continue_loop,
+                    "coverage_score": synthesis.coverage.coverage_score
+                    if synthesis.coverage
+                    else None,
+                    "depth_policy": request.depth_policy,
+                }
+            )
+            if synthesis_usage:
+                synthesis_metrics["llm_usage"] = synthesis_usage
             await emit(
                 RunEvent(
                     stage="synthesize",
                     message=f"Iteration {iteration + 1} synthesized",
                     iteration=iteration,
-                    metrics=with_model_call_count(
-                        {
-                            "continue_loop": synthesis.continue_loop,
-                            "coverage_score": synthesis.coverage.coverage_score
-                            if synthesis.coverage
-                            else None,
-                            "depth_policy": request.depth_policy,
-                        }
-                    ),
+                    metrics=synthesis_metrics,
                     payload={"stop_reason": synthesis.stop_reason or ""},
                 ),
             )
@@ -329,11 +369,17 @@ class LeadOrchestrator:
 
         agent_model_calls += 1
         citations = await self._citation.build_citations(request.query, all_evidence)
+        citation_usage = absorb_llm_usage(
+            getattr(self._citation, "last_llm_usage", None)
+        )
+        citation_metrics = with_model_call_count({"citations": len(citations)})
+        if citation_usage:
+            citation_metrics["llm_usage"] = citation_usage
         await emit(
             RunEvent(
                 stage="cite",
                 message="Citation subagent completed",
-                metrics=with_model_call_count({"citations": len(citations)}),
+                metrics=citation_metrics,
             ),
         )
 
@@ -357,13 +403,19 @@ class LeadOrchestrator:
         rendered_report = self._report.render_result(request, draft, citations)
         report_markdown = rendered_report.markdown
         report_citations = rendered_report.citations
+        report_usage = absorb_llm_usage(
+            getattr(self._lead, "last_llm_usage", None)
+        )
+        report_metrics = with_model_call_count(
+            {"report_words": len(report_markdown.split())}
+        )
+        if report_usage:
+            report_metrics["llm_usage"] = report_usage
         await emit(
             RunEvent(
                 stage="report",
                 message="Lead researcher completed final report draft",
-                metrics=with_model_call_count(
-                    {"report_words": len(report_markdown.split())}
-                ),
+                metrics=report_metrics,
             ),
         )
 
@@ -379,8 +431,25 @@ class LeadOrchestrator:
         }
         if fallback_reasons:
             run_stats["fallback_reasons"] = list(fallback_reasons)
+        if saw_llm_usage:
+            run_stats["llm_usage"] = dict(llm_totals)
+        if llm_totals["llm_calls"] > 0:
+            run_stats["metered_calls"] = llm_totals["llm_calls"]
+        if llm_totals["total_tokens"] > 0:
+            run_stats["llm_tokens"] = llm_totals["total_tokens"]
+        if llm_totals["cost_events"] > 0:
+            run_stats["usd_spent"] = round(llm_totals["cost_usd"], 6)
+        model_calls = run_stats.get("agent_model_calls")
+        if (
+            isinstance(model_calls, int)
+            and model_calls > 0
+            and llm_totals["llm_calls"] > 0
+        ):
+            if llm_totals["llm_calls"] < model_calls:
+                run_stats["cost_coverage"] = "partial"
+            else:
+                run_stats["cost_coverage"] = "full"
         run_stats.update(self._quality_summary(all_evidence))
-        self._append_cost_stats(run_stats, cost_start)
 
         result = ResearchRunResult(
             run_id=run_id,
@@ -501,27 +570,6 @@ class LeadOrchestrator:
                 dated += 1
         fraction = round(dated / len(evidence), 3) if evidence else 0.0
         return {"source_class_counts": counts, "dated_evidence_fraction": fraction}
-
-    def _append_cost_stats(
-        self,
-        run_stats: dict[str, Any],
-        baseline: CostSnapshot | None,
-    ) -> None:
-        if self._cost_tracker is None or baseline is None:
-            return
-        delta = self._cost_tracker.delta_since(baseline)
-        model_calls = run_stats.get("agent_model_calls")
-        if delta.llm_calls > 0:
-            run_stats["metered_calls"] = delta.llm_calls
-        if delta.total_tokens > 0:
-            run_stats["llm_tokens"] = delta.total_tokens
-        if delta.cost_events > 0:
-            run_stats["usd_spent"] = round(delta.total_cost_usd, 6)
-        if isinstance(model_calls, int) and model_calls > 0 and delta.llm_calls > 0:
-            if delta.llm_calls < model_calls:
-                run_stats["cost_coverage"] = "partial"
-            else:
-                run_stats["cost_coverage"] = "full"
 
     def _build_search_trace_event(
         self,

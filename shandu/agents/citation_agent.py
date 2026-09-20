@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from ..contracts import CitationEntry, EvidenceRecord
 from ..interfaces import RuntimeExecutionLike
 from ..prompts import citation_instructions, citation_job
+from ..runtime.costing import collect_llm_usage
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class _CitationBundle(BaseModel):
 class CitationAgent:
     def __init__(self, runtime: RuntimeExecutionLike) -> None:
         self._runtime = runtime
+        self.last_llm_usage: dict | None = None
 
     async def build_citations(
         self,
@@ -70,8 +72,10 @@ class CitationAgent:
             input=citation_job(query, evidence_json),
             response_schema=_CitationBundle,
         )
+        self.last_llm_usage = None
         try:
             report = await self._runtime.desk.arun(worker, job)
+            self.last_llm_usage = collect_llm_usage(self._runtime, report)
             if report.status == "completed" and isinstance(report.data, _CitationBundle):
                 normalized = self._normalize(report.data.citations, citable)
                 if normalized:

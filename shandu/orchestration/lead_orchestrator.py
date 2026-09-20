@@ -176,8 +176,8 @@ class LeadOrchestrator:
                     ),
                 )
 
-                if iteration > 0 and not plan.continue_loop:
-                    break
+                # Planned tasks always run; continue_loop=False ends the loop
+                # after them. A planner stops early by returning no tasks.
                 if not plan.subagent_tasks:
                     break
 

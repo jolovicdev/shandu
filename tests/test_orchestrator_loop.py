@@ -774,12 +774,12 @@ class _CountingSearchSubagent(FakeSearchSubagent):
         )
 
 
-def test_orchestrator_honors_plan_stop_before_fanout_after_iteration_one() -> None:
+def test_orchestrator_runs_final_plan_tasks_then_stops() -> None:
     subagent = _CountingSearchSubagent()
     result = _run_with(_PlanStoppingLead(), subagent, 3)
 
-    assert result.run_stats["iterations"] == 1
-    assert subagent.calls == 1
+    assert result.run_stats["iterations"] == 2
+    assert subagent.calls == 2
 
 
 class _ContextCapturingLead(FakeLeadAgent):

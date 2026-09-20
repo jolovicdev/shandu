@@ -42,10 +42,6 @@ def _resolve_depth_policy(value: str | None, fallback: DepthPolicy) -> DepthPoli
     return fallback
 
 
-def _run_query_line(query: str) -> str:
-    return f"[brand]Running:[/] [accent]{escape(query)}[/]"
-
-
 @click.group()
 def cli() -> None:
     pass
@@ -76,10 +72,7 @@ def info() -> None:
         ("Default Iterations", config.get("orchestration", "max_iterations")),
         ("Default Parallelism", config.get("orchestration", "parallelism")),
     ]
-    table = ui.inspect_panel({"run_id": "config", "status": "active", "created_at": "-", "updated_at": "-", "events": []})
-    console.print(table)
-    for label, value in rows:
-        console.print(f"[label]{label}:[/] [accent]{escape(str(value))}[/]")
+    console.print(ui.key_values("Configuration", [(label, str(value)) for label, value in rows]))
 
 
 @cli.command()
@@ -238,9 +231,9 @@ def run_command(
 
     def on_event(event: RunEvent) -> None:
         snapshot.apply(event)
-        diag.print(ui.event_line(event))
+        ui.print_event(event, diag)
 
-    diag.print(_run_query_line(request.query))
+    diag.print(ui.query_line(request.query))
     future = get_async_runner().submit(
         engine.run(request, progress_callback=on_event)
     )
@@ -258,9 +251,9 @@ def run_command(
         engine.close()
 
     if verbose:
-        diag.print(ui.dashboard(snapshot))
+        diag.print(ui.recap(snapshot))
 
-    diag.print(ui.result_panels(result))
+    diag.print(ui.result_summary(result))
 
     if output:
         path = Path(output)
@@ -269,16 +262,16 @@ def run_command(
             path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
         else:
             path.write_text(result.report_markdown, encoding="utf-8")
-        diag.print(ui.success(f"Output saved to {path}"))
+        diag.print(ui.success(f"Output saved to {path}"), soft_wrap=True)
     elif json_output:
         console.print_json(result.model_dump_json(indent=2))
     else:
-        diag.print(ui.markdown_panel("Final Report", result.report_markdown))
+        diag.print(ui.document("Final Report", result.report_markdown))
 
     if not output:
         export_path = persist_report_markdown(result.run_id, result.report_markdown)
         if export_path:
-            diag.print(ui.success(f"Report saved to {export_path}"))
+            diag.print(ui.success(f"Report saved to {export_path}"), soft_wrap=True)
 
 
 @cli.command("aisearch")
@@ -316,15 +309,15 @@ def ai_search_command(
             path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
         else:
             path.write_text(result.answer_markdown, encoding="utf-8")
-        diag.print(ui.success(f"Output saved to {path}"))
+        diag.print(ui.success(f"Output saved to {path}"), soft_wrap=True)
         return
 
     if json_output:
         console.print_json(result.model_dump_json(indent=2))
         return
 
-    diag.print(ui.markdown_panel("AISearch Answer", result.answer_markdown))
-    diag.print(ui.ai_sources_panel(result))
+    diag.print(ui.document("Answer", result.answer_markdown))
+    diag.print(ui.sources(result))
 
 
 @cli.command()
@@ -336,7 +329,7 @@ def inspect(run_id: str) -> None:
     if not payload.get("exists"):
         console.print(ui.warning(f"Run {run_id} not found."))
         return
-    console.print(ui.inspect_panel(payload))
+    console.print(ui.inspect_summary(payload))
 
 
 @cli.command()

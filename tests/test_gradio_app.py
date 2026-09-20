@@ -67,8 +67,9 @@ def test_gradio_model_calls_update_from_live_events() -> None:
         )
     )
 
-    assert "Model calls" in state.lane_html()
-    assert "<dd>1</dd>" in state.lane_html()
+    strip = state.strip_html(running=True)
+    assert "model calls" in strip
+    assert "<b>1</b>" in strip
 
 
 def test_persist_report_markdown_writes_export_file() -> None:
@@ -81,8 +82,8 @@ def test_persist_report_markdown_writes_export_file() -> None:
 
 def test_gradio_run_output_contract_stays_aligned() -> None:
     state = GuiRunState(query="q")
-    assert len(state.render(running=False).as_tuple()) == 10
-    assert len(_outputs(state=state, running=False, download_path=None)) == 11
+    assert len(state.render(running=False).as_tuple()) == 7
+    assert len(_outputs(state=state, running=False, download_path=None)) == 12
 
 
 def test_run_generator_close_stops_worker(monkeypatch) -> None:

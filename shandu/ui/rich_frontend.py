@@ -1,22 +1,47 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from textwrap import shorten
 from typing import Any
 
-from rich import box
-from rich.columns import Columns
-from rich.console import Console, Group
-from rich.layout import Layout
+from rich.console import Console, Group, RenderableType
+from rich.constrain import Constrain
 from rich.markdown import Markdown
 from rich.markup import escape
-from rich.panel import Panel
+from rich.padding import Padding
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
 from .. import __version__
 from ..contracts import AISearchResult, ResearchRequest, ResearchRunResult, RunEvent
+
+# Long-form markdown is unreadable at full terminal width; cap the measure.
+_READING_WIDTH = 88
+
+_STAGE_WIDTH = 11
+_TASK_WIDTH = 15
+
+# Metrics that describe a single trace event, not the run so far.
+_EVENT_ONLY_METRICS = frozenset(
+    {
+        "trace_type",
+        "query",
+        "url",
+        "hits",
+        "scraped",
+        "missed",
+        "credibility",
+        "confidence",
+        "task_index",
+        "task_total",
+        "max_results",
+        "url_count",
+    }
+)
+
 
 def _inspect_result_summary(output: object) -> list[tuple[str, str]]:
     if not isinstance(output, dict):
@@ -62,15 +87,24 @@ class ShanduUI:
     def __init__(self, console: Console | None = None) -> None:
         theme = Theme(
             {
-                "brand": "bold #10b981",
-                "accent": "bold #0ea5e9",
-                "muted": "#94a3b8",
-                "ok": "bold #22c55e",
-                "warn": "bold #f59e0b",
-                "danger": "bold #ef4444",
-                "label": "bold #14b8a6",
-                "panel": "#0f766e",
-                "title": "bold #34d399",
+                "brand": "bold #c2683f",
+                "markdown.h1": "bold",
+                "markdown.h2": "bold",
+                "markdown.h3": "bold",
+                "markdown.item.bullet": "dim",
+                "markdown.item.number": "dim",
+                "markdown.link": "#c2683f",
+                "markdown.link_url": "dim",
+                "markdown.code": "dim",
+                "markdown.block_quote": "dim",
+                "accent": "default",
+                "muted": "dim",
+                "label": "dim",
+                "title": "bold",
+                "ok": "#3f8f5f",
+                "warn": "#b58d2a",
+                "danger": "#c0564f",
+                "panel": "dim",
             }
         )
         self.theme = theme
@@ -80,251 +114,216 @@ class ShanduUI:
             console.push_theme(theme)
             self.console = console
 
-    def banner_panel(self) -> Panel:
-        top = Text(f" SHANDU V{__version__.split('.')[0]} ", style="bold black on #10b981")
-        sub = Text("LeadResearcher · Subagents · Memory · CitationAgent", style="muted")
-        return Panel(
-            Group(top, sub),
-            border_style="panel",
-            box=box.HEAVY,
-            padding=(1, 2),
+    def banner(self) -> RenderableType:
+        line = Text.assemble(
+            ("shandu", "brand"),
+            (f" {__version__}", "muted"),
+            ("   deep research agent", "muted"),
         )
+        return Group(line, Rule(style="panel"))
 
     def print_banner(self, target: Console | None = None) -> None:
-        (target or self.console).print(self.banner_panel())
+        (target or self.console).print(self.banner())
 
     def new_snapshot(self, request: ResearchRequest, model: str) -> RunSnapshot:
         return RunSnapshot(request=request, model=model)
 
-    def dashboard(self, snapshot: RunSnapshot) -> Layout:
-        layout = Layout()
-        layout.split(
-            Layout(name="header", size=6),
-            Layout(name="body"),
-            Layout(name="footer", size=10),
-        )
-        layout["body"].split_row(Layout(name="left", ratio=2), Layout(name="right", ratio=3))
-        layout["footer"].split_row(Layout(name="footer_left", ratio=2), Layout(name="footer_right", ratio=3))
-
-        header_table = Table.grid(padding=(0, 1))
-        header_table.add_column(style="label", no_wrap=True)
-        header_table.add_column(style="accent")
-        header_table.add_row("Run ID", escape(snapshot.run_id))
-        header_table.add_row("Stage", escape(snapshot.current_stage))
-        header_table.add_row("Message", escape(snapshot.current_message))
-        header_table.add_row("Model", escape(snapshot.model))
-        header_table.add_row("Iteration", str(snapshot.iteration + 1))
-
-        layout["header"].update(
-            Panel(header_table, title="Control Plane", border_style="panel", box=box.ROUNDED)
+    def key_values(self, title: str, rows: list[tuple[str, str]]) -> RenderableType:
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="label", no_wrap=True)
+        table.add_column(style="accent", overflow="fold")
+        for label, value in rows:
+            table.add_row(escape(label), escape(str(value)))
+        return Group(
+            Text(title, style="title"),
+            Padding(table, (0, 0, 1, 2)),
         )
 
-        task_table = Table(box=box.SIMPLE_HEAVY, border_style="panel")
-        task_table.add_column("#", style="muted", width=4)
-        task_table.add_column("Stage", style="title", width=12)
-        task_table.add_column("Task", style="label", width=16)
-        task_table.add_column("Trace", style="muted", width=16)
-        task_table.add_column("Message", style="accent")
-        for idx, event in enumerate(snapshot.events[-10:], start=1):
-            task_id = str(event.payload.get("task_id", "")).strip()
-            trace_type = str(event.metrics.get("trace_type", "")).strip()
-            message = event.message
-            query = str(event.payload.get("query", "") or event.metrics.get("query", "")).strip()
-            if query:
-                message = f"{message} | q={shorten(query, width=42, placeholder='...')}"
-            url = str(event.payload.get("url", "")).strip()
-            if url:
-                message = f"{message} | {shorten(url, width=52, placeholder='...')}"
-            task_table.add_row(
-                str(idx),
-                escape(event.stage),
-                escape(task_id),
-                escape(trace_type),
-                escape(message),
-            )
-        if task_table.row_count == 0:
-            task_table.add_row("-", "bootstrap", "-", "-", "No events yet")
-
-        layout["left"].update(
-            Panel(task_table, title="Execution Timeline", border_style="panel", box=box.ROUNDED)
-        )
-
-        metrics_table = Table(box=box.SIMPLE_HEAVY, border_style="panel")
-        metrics_table.add_column("Metric", style="label", no_wrap=True)
-        metrics_table.add_column("Value", style="accent")
-        metrics_table.add_row("Query", escape(snapshot.request.query))
-        metrics_table.add_row("Max Iterations", str(snapshot.request.max_iterations))
-        metrics_table.add_row("Parallelism", str(snapshot.request.parallelism))
-        metrics_table.add_row("Detail", escape(snapshot.request.detail_level))
-        for key, value in snapshot.metrics.items():
-            metrics_table.add_row(escape(str(key)), escape(str(value)))
-
-        layout["right"].update(
-            Panel(metrics_table, title="Run Metrics", border_style="panel", box=box.ROUNDED)
-        )
-
-        footer_notes = Table(box=box.SIMPLE)
-        footer_notes.add_column(style="muted")
-        footer_notes.add_row("1. User query enters LeadResearcher.")
-        footer_notes.add_row("2. LeadResearcher plans and fans out subagent tasks.")
-        footer_notes.add_row("3. Subagents emit query/scrape/extract traces.")
-        footer_notes.add_row("4. Lead synthesizes loop and decides continue/exit.")
-        footer_notes.add_row("5. CitationAgent normalizes references.")
-
-        trace_table = Table(box=box.SIMPLE_HEAVY, border_style="panel")
-        trace_table.add_column("Task", style="label", width=16)
-        trace_table.add_column("Trace", style="muted", width=16)
-        trace_table.add_column("Details", style="accent")
-        for event in reversed(snapshot.events):
-            trace_type = str(event.metrics.get("trace_type", "")).strip()
-            if not trace_type:
-                continue
-            task_id = str(event.payload.get("task_id", "")).strip()
-            query = str(event.payload.get("query", "") or event.metrics.get("query", "")).strip()
-            url = str(event.payload.get("url", "")).strip()
-            details = query or url or event.message
-            trace_table.add_row(
-                escape(task_id),
-                escape(trace_type),
-                escape(shorten(details, width=70, placeholder="...")),
-            )
-            if trace_table.row_count >= 6:
-                break
-        if trace_table.row_count == 0:
-            trace_table.add_row("-", "-", "No trace events yet")
-
-        layout["footer_left"].update(
-            Panel(footer_notes, title="System Topology", border_style="panel", box=box.ROUNDED)
-        )
-        layout["footer_right"].update(
-            Panel(trace_table, title="Subagent Trace Feed", border_style="panel", box=box.ROUNDED)
-        )
-
-        return layout
-
-    def result_panels(self, result: ResearchRunResult) -> Columns:
-        summary = Table.grid(padding=(0, 1))
-        summary.add_column(style="label")
-        summary.add_column(style="accent")
-        summary.add_row("Run ID", escape(result.run_id))
-        summary.add_row("Iterations", str(result.run_stats.get("iterations", 0)))
-        summary.add_row("Evidence", str(result.run_stats.get("evidence_count", 0)))
-        summary.add_row("Citations", str(result.run_stats.get("citation_count", 0)))
-        summary.add_row("Elapsed", f"{result.run_stats.get('elapsed_seconds', 0)}s")
-        model_calls = result.run_stats.get("agent_model_calls")
-        if isinstance(model_calls, int) and model_calls > 0:
-            summary.add_row("Model Calls", str(model_calls))
-        metered_calls = result.run_stats.get("metered_calls", result.run_stats.get("llm_calls"))
-        coverage = str(result.run_stats.get("cost_coverage", "")).strip()
-        if coverage not in {"partial", "full"}:
-            if isinstance(metered_calls, int) and metered_calls > 0 and isinstance(model_calls, int) and model_calls > 0:
-                coverage = "partial" if metered_calls < model_calls else "full"
-        if isinstance(metered_calls, int) and metered_calls > 0:
-            if isinstance(model_calls, int) and model_calls > 0:
-                if coverage == "partial":
-                    summary.add_row("Cost Coverage", f"partial ({metered_calls}/{model_calls})")
-                else:
-                    summary.add_row("Cost Coverage", f"full ({metered_calls}/{model_calls})")
-            else:
-                summary.add_row("Metered Calls", str(metered_calls))
-        llm_tokens = result.run_stats.get("llm_tokens")
-        if isinstance(llm_tokens, int) and llm_tokens > 0:
-            summary.add_row("LLM Tokens", str(llm_tokens))
-        usd_spent = result.run_stats.get("usd_spent")
-        if isinstance(usd_spent, (int, float)) and float(usd_spent) > 0:
-            if coverage == "partial":
-                summary.add_row("Metered Cost", f"${float(usd_spent):.6f}")
-            else:
-                summary.add_row("USD Spent", f"${float(usd_spent):.6f}")
-
-        citations = Table(box=box.SIMPLE, border_style="panel")
-        citations.add_column("#", style="muted", width=4)
-        citations.add_column("Publisher", style="label")
-        citations.add_column("Title", style="accent")
-        for item in result.citations[:8]:
-            citations.add_row(
-                str(item.citation_id), escape(item.publisher), escape(item.title)
-            )
-        if citations.row_count == 0:
-            citations.add_row("-", "none", "No citations")
-
-        return Columns(
-            [
-                Panel(summary, title="Run Summary", border_style="panel", box=box.ROUNDED),
-                Panel(citations, title="Citation Ledger", border_style="panel", box=box.ROUNDED),
-            ],
-            expand=True,
-        )
-
-    def markdown_panel(self, title: str, content: str) -> Panel:
-        return Panel(
-            Markdown(content),
-            title=title,
-            border_style="panel",
-            box=box.ROUNDED,
-        )
-
-    def inspect_panel(self, payload: dict[str, object]) -> Panel:
-        table = Table(box=box.SIMPLE_HEAVY, border_style="panel")
-        table.add_column("Field", style="label")
-        table.add_column("Value", style="accent")
-        for key in ["run_id", "status", "created_at", "updated_at"]:
-            table.add_row(key, escape(str(payload.get(key, ""))))
-        events = payload.get("events", [])
-        table.add_row("events", str(len(events) if isinstance(events, list) else 0))
-        for label, value in _inspect_result_summary(payload.get("output_json")):
-            table.add_row(label, escape(value))
-        return Panel(table, title="Run Inspection", border_style="panel", box=box.ROUNDED)
-
-    def ai_sources_panel(self, result: AISearchResult) -> Panel:
-        table = Table(box=box.SIMPLE_HEAVY, border_style="panel")
-        table.add_column("#", style="muted", width=4)
-        table.add_column("Title", style="label")
-        table.add_column("URL", style="accent")
-        for idx, source in enumerate(result.sources[:10], start=1):
-            table.add_row(str(idx), escape(source.title), escape(source.url))
-        if table.row_count == 0:
-            table.add_row("-", "No sources", "-")
-        return Panel(table, title="AISearch Sources", border_style="panel", box=box.ROUNDED)
+    def query_line(self, query: str) -> Text:
+        return Text.assemble(("researching  ", "label"), (query, "accent"))
 
     def event_line(self, event: RunEvent) -> Text:
-        parts: list[str] = [f"[label]{event.stage.upper()}[/]"]
-        if event.iteration is not None:
-            parts.append(f"[muted]iter={event.iteration + 1}[/]")
+        # One event, one line: a wrapped stream loses the column alignment.
+        line = Text(no_wrap=True, overflow="ellipsis")
+        line.append(datetime.now().strftime("%H:%M:%S "), style="muted")
+        line.append(event.stage.ljust(_STAGE_WIDTH), style="label")
         task_id = str(event.payload.get("task_id", "")).strip()
-        if task_id:
-            parts.append(f"[muted]task={escape(task_id)}[/]")
+        line.append(task_id.ljust(_TASK_WIDTH), style="muted")
+        message = event.message
+        prefix = f"Task {task_id} "
+        if task_id and message.startswith(prefix):
+            message = message[len(prefix) :]
+        line.append(message, style="accent")
+
+        details: list[str] = []
+        if event.iteration is not None:
+            details.append(f"iter {event.iteration + 1}")
         trace_type = str(event.metrics.get("trace_type", "")).strip()
         if trace_type:
-            parts.append(f"[muted]trace={escape(trace_type)}[/]")
-        parts.append(f"[accent]{escape(event.message)}[/]")
-        query = str(event.payload.get("query", "") or event.metrics.get("query", "")).strip()
+            details.append(trace_type)
+        query = str(
+            event.payload.get("query", "") or event.metrics.get("query", "")
+        ).strip()
         if query:
-            parts.append(
-                f"[muted]q={escape(shorten(query, width=48, placeholder='...'))}[/]"
-            )
+            details.append(f'"{shorten(query, width=48, placeholder="...")}"')
         url = str(event.payload.get("url", "")).strip()
         if url:
-            parts.append(
-                f"[muted]url={escape(shorten(url, width=68, placeholder='...'))}[/]"
-            )
+            details.append(shorten(url, width=68, placeholder="..."))
         urls = event.payload.get("urls")
         if isinstance(urls, list) and urls:
-            parts.append(f"[muted]urls={len(urls)}[/]")
-        if event.metrics:
-            metrics_text = ", ".join(
-                f"{escape(str(key))}={escape(str(value))}"
-                for key, value in sorted(event.metrics.items(), key=lambda item: item[0])
+            details.append(f"urls={len(urls)}")
+        metrics = " ".join(
+            f"{key}={value}"
+            for key, value in sorted(event.metrics.items())
+            if key not in ("trace_type", "query")
+        )
+        if metrics:
+            details.append(metrics)
+        if details:
+            line.append("  " + " · ".join(details), style="muted")
+        return line
+
+    def print_event(self, event: RunEvent, target: Console | None = None) -> None:
+        (target or self.console).print(
+            self.event_line(event), no_wrap=True, overflow="ellipsis", crop=True
+        )
+
+    def recap(self, snapshot: RunSnapshot) -> RenderableType:
+        rows = [
+            ("run", snapshot.run_id),
+            ("model", snapshot.model),
+            ("stage", snapshot.current_stage),
+            ("iteration", str(snapshot.iteration + 1)),
+            ("query", snapshot.request.query),
+            ("detail", snapshot.request.detail_level),
+            ("parallelism", str(snapshot.request.parallelism)),
+        ]
+        rows.extend(
+            (str(key), str(value))
+            for key, value in sorted(snapshot.metrics.items())
+            if key not in _EVENT_ONLY_METRICS
+        )
+
+        timeline = Table.grid(padding=(0, 2))
+        timeline.add_column(style="label", no_wrap=True)
+        timeline.add_column(style="muted", no_wrap=True)
+        timeline.add_column(style="accent", overflow="ellipsis")
+        for event in snapshot.events[-12:]:
+            timeline.add_row(
+                escape(event.stage),
+                escape(str(event.payload.get("task_id", "")).strip()),
+                escape(event.message),
             )
-            if metrics_text:
-                parts.append(f"[muted]{metrics_text}[/]")
-        return Text.from_markup(" ".join(parts))
+        if timeline.row_count == 0:
+            timeline.add_row("", "", "No events recorded")
 
-    def success(self, message: str) -> Panel:
-        return Panel(escape(message), border_style="ok", box=box.ROUNDED)
+        return Group(
+            Rule(style="panel"),
+            self.key_values("Run detail", rows),
+            Text("Last events", style="title"),
+            Padding(timeline, (0, 0, 1, 2)),
+        )
 
-    def warning(self, message: str) -> Panel:
-        return Panel(escape(message), border_style="warn", box=box.ROUNDED)
+    def result_summary(self, result: ResearchRunResult) -> RenderableType:
+        stats = result.run_stats
+        rows = [
+            ("run", result.run_id),
+            ("iterations", str(stats.get("iterations", 0))),
+            ("evidence", str(stats.get("evidence_count", 0))),
+            ("citations", str(stats.get("citation_count", 0))),
+            ("elapsed", f"{stats.get('elapsed_seconds', 0)}s"),
+        ]
+        model_calls = stats.get("agent_model_calls")
+        if isinstance(model_calls, int) and model_calls > 0:
+            rows.append(("Model Calls", str(model_calls)))
+        metered_calls = stats.get("metered_calls", stats.get("llm_calls"))
+        coverage = self._cost_coverage(stats, metered_calls, model_calls)
+        if isinstance(metered_calls, int) and metered_calls > 0:
+            if isinstance(model_calls, int) and model_calls > 0:
+                rows.append(
+                    ("Cost Coverage", f"{coverage} ({metered_calls}/{model_calls})")
+                )
+            else:
+                rows.append(("Metered Calls", str(metered_calls)))
+        llm_tokens = stats.get("llm_tokens")
+        if isinstance(llm_tokens, int) and llm_tokens > 0:
+            rows.append(("LLM Tokens", f"{llm_tokens:,}"))
+        usd_spent = stats.get("usd_spent")
+        if isinstance(usd_spent, (int, float)) and float(usd_spent) > 0:
+            label = "Metered Cost" if coverage == "partial" else "USD Spent"
+            rows.append((label, f"${float(usd_spent):.6f}"))
 
-    def error(self, message: str) -> Panel:
-        return Panel(escape(message), border_style="danger", box=box.ROUNDED)
+        sources = Table.grid(padding=(0, 2))
+        sources.add_column(style="muted", no_wrap=True, justify="right")
+        sources.add_column(style="label", no_wrap=True)
+        sources.add_column(style="accent", overflow="ellipsis")
+        for item in result.citations[:8]:
+            sources.add_row(
+                f"[{item.citation_id}]", escape(item.publisher), escape(item.title)
+            )
+        remainder = len(result.citations) - 8
+        if remainder > 0:
+            sources.add_row("", "", f"and {remainder} more")
+        if sources.row_count == 0:
+            sources.add_row("", "", "No citations")
+
+        return Group(
+            Rule(style="panel"),
+            self.key_values("Run summary", rows),
+            Text("Sources", style="title"),
+            Padding(sources, (0, 0, 1, 2)),
+        )
+
+    def document(self, title: str, content: str) -> RenderableType:
+        return Group(
+            Rule(Text(title, style="title"), style="panel", align="left"),
+            Padding(Constrain(Markdown(content), _READING_WIDTH), (1, 2)),
+        )
+
+    def inspect_summary(self, payload: dict[str, object]) -> RenderableType:
+        events = payload.get("events", [])
+        rows = [
+            (key, str(payload.get(key, "")))
+            for key in ("run_id", "status", "created_at", "updated_at")
+        ]
+        rows.append(("events", str(len(events) if isinstance(events, list) else 0)))
+        rows.extend(_inspect_result_summary(payload.get("output_json")))
+        return self.key_values("Run inspection", rows)
+
+    def sources(self, result: AISearchResult) -> RenderableType:
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="muted", no_wrap=True, justify="right")
+        table.add_column(style="accent", overflow="ellipsis")
+        table.add_column(style="label", overflow="fold")
+        for index, source in enumerate(result.sources[:10], start=1):
+            table.add_row(f"[{index}]", escape(source.title), escape(source.url))
+        if table.row_count == 0:
+            table.add_row("", "No sources", "")
+        return Group(
+            Text("Sources", style="title"),
+            Padding(table, (0, 0, 1, 2)),
+        )
+
+    def success(self, message: str) -> Text:
+        return Text.assemble(("ok     ", "ok"), (message, "accent"))
+
+    def warning(self, message: str) -> Text:
+        return Text.assemble(("warn   ", "warn"), (message, "accent"))
+
+    def error(self, message: str) -> Text:
+        return Text.assemble(("error  ", "danger"), (message, "accent"))
+
+    def _cost_coverage(
+        self, stats: dict[str, Any], metered_calls: object, model_calls: object
+    ) -> str:
+        coverage = str(stats.get("cost_coverage", "")).strip()
+        if coverage in ("partial", "full"):
+            return coverage
+        if (
+            isinstance(metered_calls, int)
+            and metered_calls > 0
+            and isinstance(model_calls, int)
+            and model_calls > 0
+        ):
+            return "partial" if metered_calls < model_calls else "full"
+        return ""

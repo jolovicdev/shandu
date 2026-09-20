@@ -18,8 +18,8 @@ Gradio web GUI.
 - Parallel search subagents run web search and evidence extraction concurrently.
 - Citation ledger built deterministically from evidence URLs.
 - SQLite-backed memory tracks run context across steps.
-- Rich CLI control deck renders run metrics and timeline.
-- Gradio GUI control room provides live telemetry, task views, and report download.
+- CLI streams one aligned line per event, then prints the report at reading width.
+- Web GUI shows the run while it happens and the finished report with its references.
 - Scraper pipeline normalizes URLs, strips boilerplate HTML, and favors main-content blocks.
 
 ## Installation
@@ -176,27 +176,28 @@ shandu gui --host 127.0.0.1 --port 7860
 
 GUI features:
 
-- live run stage timeline (`BOOTSTRAP` through `COMPLETE`)
-- per-subagent task board (status, focus, last query, evidence)
-- search/scrape trace stream (query start/finish, hit counts, URLs scraped, extraction/fallback signals)
-- final report + citation ledger panels
-- one-click markdown download button after run completion
-- run cost display (`usd_spent`) when provider exposes cost metrics
-- runtime configuration editing (model, provider env var name, key, iteration/parallelism/search limits)
+- one screen that moves through three states: ask, watch the run, read the report
+- run strip with stage, iteration progress, evidence, pages read, model calls, cost, and run id
+- stage sequence (plan, search, synthesize, cite, write) marking the step in flight
+- activity feed and a subagent board (focus, last query, hits, pages, evidence)
+- report set at one reading measure, with a contents list and its reference list
+- markdown download, plus recent reports listed with their question, citations, and cost
+- settings in a sidebar (model, key env var, key, iterations, parallelism, detail, depth, search limits)
+- light and dark, following the browser setting; `?__theme=dark` forces one
 
 ### GUI Preview
 
-#### Main Screen
+#### Running a query
 
-![Shandu GUI Main Screen](assets/main.png)
+![Shandu GUI during a run](assets/main.png)
 
-#### Report View
+#### Reading the report
 
-![Shandu GUI Report View](assets/report.png)
+![Shandu GUI report view](assets/report.png)
 
-#### Citation Ledger
+#### References
 
-![Shandu GUI Citation Ledger](assets/citations.png)
+![Shandu GUI reference list](assets/citations.png)
 
 ## Python API
 

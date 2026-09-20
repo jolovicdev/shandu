@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from rich.console import Console
 from rich.text import Text
 
-from shandu.cli import _run_query_line
 from shandu.contracts import (
     AISearchResult,
     AISearchSource,
@@ -40,7 +39,7 @@ def test_event_line_escapes_markup_in_external_fields() -> None:
     assert "[/notopen]" in line.plain
 
 
-def test_dashboard_renders_markup_in_events() -> None:
+def test_recap_renders_markup_in_events() -> None:
     ui, console = _ui()
     snapshot = ui.new_snapshot(ResearchRequest(query=POISON), model="m")
     snapshot.apply(
@@ -53,12 +52,12 @@ def test_dashboard_renders_markup_in_events() -> None:
         )
     )
 
-    console.print(ui.dashboard(snapshot))
+    console.print(ui.recap(snapshot))
 
     assert "[/notopen]" in console.export_text()
 
 
-def test_result_and_source_panels_escape_web_text() -> None:
+def test_result_and_source_views_escape_web_text() -> None:
     ui, console = _ui()
     result = ResearchRunResult(
         run_id="run-1",
@@ -86,17 +85,17 @@ def test_result_and_source_panels_escape_web_text() -> None:
         ],
     )
 
-    console.print(ui.result_panels(result))
-    console.print(ui.ai_sources_panel(ai_result))
-    console.print(ui.inspect_panel({"run_id": POISON, "status": POISON}))
+    console.print(ui.result_summary(result))
+    console.print(ui.sources(ai_result))
+    console.print(ui.inspect_summary({"run_id": POISON, "status": POISON}))
     console.print(ui.warning(POISON))
 
     assert "[/notopen]" in console.export_text()
 
 
-def test_cli_query_echo_escapes_markup() -> None:
-    _, console = _ui()
+def test_query_echo_escapes_markup() -> None:
+    ui, console = _ui()
 
-    console.print(_run_query_line(POISON))
+    console.print(ui.query_line(POISON))
 
     assert "[/notopen]" in console.export_text()

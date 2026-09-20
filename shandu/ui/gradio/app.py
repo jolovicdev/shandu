@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ...config import config
 from .layout import build_gui
-from .theme import CSS, build_theme
+from .theme import CSS, HEAD, build_theme
 
 
 def launch_gui(
@@ -26,6 +26,7 @@ def launch_gui(
         show_error=True,
         theme=build_theme(),
         css=CSS,
+        head=HEAD,
         footer_links=["gradio", "settings"],
         auth=auth,
         allowed_paths=[export_dir],

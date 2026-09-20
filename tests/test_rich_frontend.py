@@ -9,14 +9,15 @@ from shandu.contracts import CitationEntry, ResearchRequest, ResearchRunResult
 from shandu.ui.rich_frontend import ShanduUI
 
 
-def test_result_panels_render() -> None:
+def test_recap_renders_without_events() -> None:
     console = Console(record=True, width=140)
     ui = ShanduUI(console=console)
     request = ResearchRequest(query="q")
     snapshot = ui.new_snapshot(request, model="deepseek/deepseek-v4-flash")
-    console.print(ui.dashboard(snapshot))
+    console.print(ui.recap(snapshot))
     output = console.export_text()
-    assert "Control Plane" in output
+    assert "deepseek/deepseek-v4-flash" in output
+    assert "No events recorded" in output
 
 
 @pytest.mark.parametrize(
@@ -39,7 +40,7 @@ def test_result_panels_render() -> None:
         ),
     ],
 )
-def test_result_panels_show_cost_only_when_available(
+def test_result_summary_shows_cost_only_when_available(
     extra_stats, present, absent
 ) -> None:
     console = Console(record=True, width=160)
@@ -70,7 +71,7 @@ def test_result_panels_show_cost_only_when_available(
         iteration_summaries=[],
         run_stats=run_stats,
     )
-    console.print(ui.result_panels(result))
+    console.print(ui.result_summary(result))
     output = console.export_text()
 
     for text in present:
@@ -79,7 +80,7 @@ def test_result_panels_show_cost_only_when_available(
         assert text not in output
 
 
-def test_inspect_panel_shows_run_id_and_summary() -> None:
+def test_inspect_summary_shows_run_id_and_stats() -> None:
     console = Console(record=True, width=200)
     ui = ShanduUI(console=console)
     payload = {
@@ -93,7 +94,7 @@ def test_inspect_panel_shows_run_id_and_summary() -> None:
         "events": [{"type": "llm.completed", "payload": {"x": "y" * 200}}] * 50,
     }
 
-    console.print(ui.inspect_panel(payload))
+    console.print(ui.inspect_summary(payload))
     text = console.export_text()
 
     assert "run-abc-123" in text

@@ -6,7 +6,7 @@ from shandu.contracts import ResearchRequest, RunEvent
 from shandu.ui.rich_frontend import ShanduUI
 
 
-def test_dashboard_renders_sections() -> None:
+def test_recap_renders_run_detail_and_events() -> None:
     console = Console(record=True, width=160)
     ui = ShanduUI(console=console)
 
@@ -15,13 +15,13 @@ def test_dashboard_renders_sections() -> None:
     snapshot.apply(RunEvent(stage="plan", message="Plan ready", iteration=0, metrics={"tasks": 2}))
     snapshot.apply(RunEvent(stage="search", message="Search complete", iteration=0, metrics={"evidence": 4}))
 
-    console.print(ui.dashboard(snapshot))
+    console.print(ui.recap(snapshot))
     output = console.export_text()
 
-    assert "Control Plane" in output
-    assert "Execution Timeline" in output
-    assert "Run Metrics" in output
-    assert "System Topology" in output
+    assert "deepseek/deepseek-v4-flash" in output
+    assert "Distributed retrieval" in output
+    assert "Search complete" in output
+    assert "evidence" in output
 
 
 def test_event_line_renders_stage_and_task() -> None:
@@ -34,8 +34,9 @@ def test_event_line_renders_stage_and_task() -> None:
         payload={"task_id": "iter_1_task_1"},
     )
     line = ui.event_line(event)
-    assert "SEARCH" in line.plain
+    assert "search" in line.plain
     assert "iter_1_task_1" in line.plain
+    assert "started" in line.plain
 
 
 def test_event_line_renders_trace_query_and_url() -> None:
@@ -58,11 +59,11 @@ def test_event_line_renders_trace_query_and_url() -> None:
     assert "https://example.com/article" in line.plain
 
 
-def test_banner_derives_major_version() -> None:
+def test_banner_shows_version() -> None:
     from shandu import __version__
 
     console = Console(record=True, width=100)
     ui = ShanduUI(console=console)
     ui.print_banner()
 
-    assert f"SHANDU V{__version__.split('.')[0]}" in console.export_text()
+    assert __version__ in console.export_text()

@@ -2,937 +2,1014 @@ from __future__ import annotations
 
 import gradio as gr
 
+HEAD = """
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+"""
+
+_PAPER = "#faf9f6"
+_SURFACE = "#ffffff"
+_INK = "#1c1b19"
+_INK_2 = "#3c3a35"
+_INK_3 = "#6b6861"
+_LINE = "#e3dfd7"
+_ACCENT = "#9a3b23"
+
+_PAPER_DARK = "#13120f"
+_SURFACE_DARK = "#201d18"
+_INK_DARK = "#efeae1"
+_INK_2_DARK = "#d8d2c6"
+_INK_3_DARK = "#9a9488"
+_LINE_DARK = "#35302a"
+_ACCENT_DARK = "#d96a45"
+
 
 def build_theme() -> gr.Theme:
-    return gr.themes.Soft(
-        primary_hue=gr.themes.colors.green,
-        secondary_hue=gr.themes.colors.teal,
-        neutral_hue=gr.themes.colors.zinc,
-        font=("Inter", "system-ui", "sans-serif"),
-        font_mono=("JetBrains Mono", "ui-monospace", "SFMono-Regular", "monospace"),
-        radius_size=gr.themes.sizes.radius_sm,
+    return gr.themes.Base(
+        primary_hue=gr.themes.colors.orange,
+        secondary_hue=gr.themes.colors.stone,
+        neutral_hue=gr.themes.colors.stone,
+        font=("IBM Plex Sans", "system-ui", "sans-serif"),
+        font_mono=("IBM Plex Mono", "ui-monospace", "monospace"),
+        radius_size=gr.themes.sizes.radius_none,
         spacing_size=gr.themes.sizes.spacing_md,
         text_size=gr.themes.sizes.text_md,
     ).set(
-        body_background_fill="#070A08",
-        body_background_fill_dark="#070A08",
-        body_text_color="#F2F5EF",
-        body_text_color_dark="#F2F5EF",
-        background_fill_primary="#0D130F",
-        background_fill_primary_dark="#0D130F",
-        background_fill_secondary="#111813",
-        background_fill_secondary_dark="#111813",
-        border_color_primary="#26312B",
-        border_color_primary_dark="#26312B",
-        border_color_accent="#2F6F4E",
-        border_color_accent_dark="#2F6F4E",
-        block_background_fill="#101611",
-        block_background_fill_dark="#101611",
-        block_border_color="#27332C",
-        block_border_color_dark="#27332C",
-        block_border_width="1px",
-        block_info_text_color="#9BA89E",
-        block_info_text_color_dark="#9BA89E",
-        block_label_background_fill="#151D17",
-        block_label_background_fill_dark="#151D17",
-        block_label_text_color="#C9D4CB",
-        block_label_text_color_dark="#C9D4CB",
-        block_padding="12px",
-        block_radius="8px",
+        body_background_fill=_PAPER,
+        body_background_fill_dark=_PAPER_DARK,
+        body_text_color=_INK,
+        body_text_color_dark=_INK_DARK,
+        body_text_color_subdued=_INK_3,
+        body_text_color_subdued_dark=_INK_3_DARK,
+        background_fill_primary=_PAPER,
+        background_fill_primary_dark=_PAPER_DARK,
+        background_fill_secondary=_SURFACE,
+        background_fill_secondary_dark=_SURFACE_DARK,
+        border_color_primary=_LINE,
+        border_color_primary_dark=_LINE_DARK,
+        border_color_accent=_ACCENT,
+        border_color_accent_dark=_ACCENT_DARK,
+        color_accent=_ACCENT,
+        color_accent_soft="rgba(154, 59, 35, 0.09)",
+        color_accent_soft_dark="rgba(224, 128, 85, 0.14)",
+        block_background_fill=_PAPER,
+        block_background_fill_dark=_PAPER_DARK,
+        block_border_width="0px",
+        block_label_text_color=_INK_3,
+        block_label_text_color_dark=_INK_3_DARK,
+        block_label_background_fill="transparent",
+        block_label_background_fill_dark="transparent",
+        block_info_text_color=_INK_3,
+        block_info_text_color_dark=_INK_3_DARK,
+        block_padding="0px",
         block_shadow="none",
         block_shadow_dark="none",
-        input_background_fill="#0B100D",
-        input_background_fill_dark="#0B100D",
-        input_background_fill_focus="#0E1510",
-        input_background_fill_focus_dark="#0E1510",
-        input_border_color="#2A352E",
-        input_border_color_dark="#2A352E",
-        input_border_color_focus="#39D98A",
-        input_border_color_focus_dark="#39D98A",
-        input_placeholder_color="#6E7A72",
-        input_placeholder_color_dark="#6E7A72",
-        input_radius="8px",
-        button_primary_background_fill="#39D98A",
-        button_primary_background_fill_dark="#39D98A",
-        button_primary_background_fill_hover="#51E39A",
-        button_primary_background_fill_hover_dark="#51E39A",
-        button_primary_border_color="#39D98A",
-        button_primary_border_color_dark="#39D98A",
-        button_primary_text_color="#07100B",
-        button_primary_text_color_dark="#07100B",
-        button_secondary_background_fill="#151D17",
-        button_secondary_background_fill_dark="#151D17",
-        button_secondary_background_fill_hover="#1C271F",
-        button_secondary_background_fill_hover_dark="#1C271F",
-        button_secondary_border_color="#2A352E",
-        button_secondary_border_color_dark="#2A352E",
-        button_secondary_text_color="#E4ECE5",
-        button_secondary_text_color_dark="#E4ECE5",
-        table_border_color="#26312B",
-        table_border_color_dark="#26312B",
-        table_even_background_fill="#0B100D",
-        table_even_background_fill_dark="#0B100D",
-        table_odd_background_fill="#101611",
-        table_odd_background_fill_dark="#101611",
-        table_text_color="#E7EEE8",
-        table_text_color_dark="#E7EEE8",
-        panel_background_fill="#0D130F",
-        panel_background_fill_dark="#0D130F",
-        panel_border_color="#26312B",
-        panel_border_color_dark="#26312B",
+        block_title_text_color=_INK_2,
+        block_title_text_color_dark=_INK_2_DARK,
+        block_title_text_weight="500",
+        panel_background_fill=_PAPER,
+        panel_background_fill_dark=_PAPER_DARK,
+        panel_border_width="0px",
+        input_background_fill=_SURFACE,
+        input_background_fill_dark=_SURFACE_DARK,
+        input_background_fill_focus=_SURFACE,
+        input_background_fill_focus_dark=_SURFACE_DARK,
+        input_border_color=_LINE,
+        input_border_color_dark="#575046",
+        input_border_color_focus=_ACCENT,
+        input_border_color_focus_dark=_ACCENT_DARK,
+        input_border_width="1px",
+        input_placeholder_color=_INK_3,
+        input_placeholder_color_dark=_INK_3_DARK,
+        input_shadow="none",
+        input_shadow_focus="none",
+        button_large_radius="2px",
+        button_small_radius="2px",
+        button_primary_background_fill=_INK,
+        button_primary_background_fill_dark="#d8d1c4",
+        button_primary_background_fill_hover=_ACCENT,
+        button_primary_background_fill_hover_dark=_ACCENT_DARK,
+        button_primary_border_color=_INK,
+        button_primary_border_color_dark="#d8d1c4",
+        button_primary_text_color=_PAPER,
+        button_primary_text_color_dark=_PAPER_DARK,
+        button_secondary_background_fill="transparent",
+        button_secondary_background_fill_dark="transparent",
+        button_secondary_background_fill_hover=_SURFACE,
+        button_secondary_background_fill_hover_dark=_SURFACE_DARK,
+        button_secondary_border_color=_LINE,
+        button_secondary_border_color_dark=_LINE_DARK,
+        button_secondary_text_color=_INK_2,
+        button_secondary_text_color_dark=_INK_2_DARK,
+        table_border_color=_LINE,
+        table_border_color_dark=_LINE_DARK,
+        table_even_background_fill=_PAPER,
+        table_even_background_fill_dark=_PAPER_DARK,
+        table_odd_background_fill=_PAPER,
+        table_odd_background_fill_dark=_PAPER_DARK,
+        table_text_color=_INK_2,
+        table_text_color_dark=_INK_2_DARK,
+        accordion_text_color=_INK_2,
+        accordion_text_color_dark=_INK_2_DARK,
     )
 
 
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
 :root {
-  --shandu-bg: #070a08;
-  --shandu-panel: #101611;
-  --shandu-panel-2: #141c16;
-  --shandu-rail: #0d130f;
-  --shandu-border: #26312b;
-  --shandu-border-strong: #355241;
-  --shandu-text: #f2f5ef;
-  --shandu-muted: #9ba89e;
-  --shandu-dim: #68756d;
-  --shandu-green: #39d98a;
-  --shandu-teal: #2dd4bf;
-  --shandu-amber: #f5b74f;
-  --shandu-red: #f66a6a;
-  --shandu-section-gap: 12px;
-  --shandu-panel-gap: 10px;
-  --shandu-panel-padding: 12px;
+  --sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --serif: 'Source Serif 4', Charter, 'Iowan Old Style', Georgia, serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --paper: #faf9f6;
+  --surface: #ffffff;
+  --sunken: #f3f1ec;
+  --ink: #1c1b19;
+  --ink-2: #3c3a35;
+  --ink-3: #6b6861;
+  --line: #e3dfd7;
+  --line-strong: #cfc9be;
+  --accent: #9a3b23;
+  --accent-soft: rgba(154, 59, 35, 0.35);
+  --ok: #3f6b4e;
+  --warn: #8a6520;
+  --err: #9b3030;
+  --measure: 34rem;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-html,
-body {
-  overflow-x: hidden;
+body.dark,
+.dark {
+  --paper: #13120f;
+  --surface: #201d18;
+  --sunken: #232019;
+  --ink: #efeae1;
+  --ink-2: #d8d2c6;
+  --ink-3: #9a9488;
+  --line: #35302a;
+  --line-strong: #575046;
+  --accent: #d96a45;
+  --accent-soft: rgba(217, 106, 69, 0.5);
+  --ok: #7fae8b;
+  --warn: #cfa055;
+  --err: #d98080;
 }
 
 .gradio-container {
-  background: var(--shandu-bg) !important;
-  font-size: 14px !important;
+  font-family: var(--sans) !important;
+  font-size: 15px !important;
+}
+
+.gradio-container footer {
+  color: var(--ink-3) !important;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
 }
 
 .gradio-container main.contain {
-  width: min(calc(100% - 112px), 1320px) !important;
-  max-width: 1320px !important;
+  width: min(calc(100% - 64px), 820px) !important;
+  max-width: 820px !important;
   margin: 0 auto !important;
+  padding-bottom: 96px !important;
 }
 
-.gradio-container label,
-.gradio-container input,
-.gradio-container select,
-.gradio-container textarea,
-.gradio-container button {
-  font-size: 0.95rem !important;
+.gradio-container .block,
+.gradio-container .form,
+.gradio-container .panel {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 
-.shandu-shell,
-.gradio-container.shandu-shell {
-  box-sizing: border-box;
-  width: 100% !important;
-  max-width: none;
+.shandu-plain,
+.shandu-plain > .wrap,
+.shandu-plain .html-container {
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+}
+
+.shandu-plain:empty,
+.shandu-plain .html-container:empty {
+  display: none !important;
+}
+
+/* Masthead */
+
+.shandu-masthead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 24px;
+  padding: 56px 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.shandu-masthead h1 {
   margin: 0;
-  padding-left: 0 !important;
-  padding-right: 0 !important;
-  overflow-x: hidden;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 1.9rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-.shandu-topbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 16px;
-  align-items: end;
-  padding: 16px 0 12px;
-  border-bottom: 1px solid var(--shandu-border);
-}
-
-.shandu-brand-kicker,
-.shandu-eyebrow,
-.shandu-feed header span,
-.shandu-status-pill,
-.shandu-lane-card h3 {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.shandu-brand h1 {
-  margin: 0;
-  color: var(--shandu-text);
-  font-size: 2.32rem;
-  line-height: 0.95;
-  letter-spacing: 0;
-  font-weight: 800;
-}
-
-.shandu-brand p {
-  max-width: 720px;
-  margin: 8px 0 0;
-  color: var(--shandu-muted);
-  font-size: 0.94rem;
+.shandu-masthead p {
+  margin: 6px 0 0;
+  max-width: 54ch;
+  color: var(--ink-3);
+  font-size: 0.92rem;
   line-height: 1.55;
 }
 
-.shandu-brand-kicker {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  margin-bottom: 10px;
-  color: var(--shandu-teal);
-  font-size: 0.72rem;
-  font-weight: 600;
+.shandu-masthead code {
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 0.78rem;
 }
 
-.shandu-brand-kicker::before {
-  content: '';
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--shandu-green);
-  box-shadow: 0 0 0 5px rgba(57, 217, 138, 0.1);
+/* Composer */
+
+.shandu-composer {
+  margin-top: 30px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
 }
 
-.shandu-header-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(80px, 1fr));
-  gap: 8px;
-  min-width: 300px;
+.dark .shandu-download button,
+.dark .shandu-prose code {
+  border: 1px solid var(--line-strong) !important;
 }
 
-.shandu-header-metrics div {
-  border: 1px solid var(--shandu-border);
-  border-radius: 8px;
-  padding: 8px;
-  background: var(--shandu-rail);
+.dark .shandu-prose blockquote {
+  border-left-color: var(--accent) !important;
 }
 
-.shandu-header-metrics span {
-  display: block;
-  color: var(--shandu-dim);
-  font-size: 0.72rem;
+.shandu-settings .sidebar-content {
+  background: var(--surface) !important;
+  border-left: 1px solid var(--line-strong);
 }
 
-.shandu-header-metrics b {
-  display: block;
-  margin-top: 6px;
-  color: var(--shandu-text);
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 0.92rem;
-  font-weight: 600;
+.shandu-composer:focus-within {
+  border-color: var(--ink-3);
 }
 
-.shandu-runner,
-.shandu-run-panel {
-  margin-top: 12px;
+.shandu-question textarea {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 20px 20px 14px !important;
+  font-family: var(--serif) !important;
+  font-size: 1.16rem !important;
+  line-height: 1.55 !important;
+  color: var(--ink) !important;
+  resize: none !important;
 }
 
-.shandu-run-panel,
-.shandu-config-panel {
-  min-width: 0;
-  max-width: 100%;
-  border: 1px solid var(--shandu-border);
-  border-radius: 8px;
-  background: var(--shandu-panel);
-  padding: var(--shandu-panel-padding);
+.shandu-question textarea:focus {
+  box-shadow: none !important;
+  outline: none !important;
 }
 
-.shandu-run-panel textarea {
-  min-height: 96px !important;
-  font-size: 0.95rem !important;
-  line-height: 1.48 !important;
+.shandu-composer:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-.shandu-run-actions {
-  align-items: end;
+#shandu-examples {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  padding: 0 !important;
 }
 
-.shandu-run-actions button {
-  min-height: 38px !important;
-  font-weight: 800 !important;
-  cursor: pointer !important;
+#shandu-examples .label,
+#shandu-examples label {
+  display: none !important;
 }
 
-.shandu-config-panel {
-  margin-top: 10px;
-  background: var(--shandu-rail);
+.shandu-library label,
+.shandu-first-run h3 {
+  color: var(--ink-3) !important;
+  font-size: 0.78rem !important;
+  font-weight: 500 !important;
 }
 
-.shandu-run-panel,
-.shandu-config-panel {
-  width: 100%;
+.gradio-container .label svg {
+  display: none !important;
 }
 
-.shandu-config-panel .wrap {
+#shandu-examples .gallery {
   gap: 8px !important;
 }
 
-.shandu-html-reset,
-.shandu-html-reset > .wrap,
-.shandu-html-reset .html-container {
-  border: 0 !important;
-  background: transparent !important;
-  padding: 0 !important;
-  box-shadow: none !important;
+#shandu-examples button,
+#shandu-examples .gallery-item {
+  width: fit-content !important;
+  max-width: 100% !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: 999px !important;
+  background: var(--sunken) !important;
+  padding: 4px 12px !important;
+  color: var(--ink-2) !important;
+  font-size: 0.82rem !important;
+  font-weight: 400 !important;
+  text-align: left !important;
+  white-space: nowrap !important;
 }
 
-.shandu-section-title {
-  margin: 0;
-  color: var(--shandu-text);
-  font-size: 1.22rem;
-  line-height: 1.15;
-  letter-spacing: 0;
-  font-weight: 800;
+#shandu-examples button:hover,
+#shandu-examples .gallery-item:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
 }
 
-.shandu-section-bar,
-.shandu-section-bar > .wrap {
-  min-height: 0 !important;
-  border: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  padding: 0 !important;
-  gap: 12px !important;
+.shandu-actions {
+  margin-top: 4px !important;
+  padding: 10px 20px !important;
+  border-top: 1px solid var(--line) !important;
+  gap: 10px !important;
   align-items: center !important;
+  justify-content: flex-end !important;
+  flex-wrap: nowrap !important;
 }
 
-.shandu-section-bar > .wrap {
-  justify-content: space-between !important;
+.shandu-actions button.secondary {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
 }
 
-.shandu-download-action {
+.shandu-actions button {
+  min-width: 0 !important;
+  min-height: 38px !important;
+  padding: 0 20px !important;
+  font-size: 0.9rem !important;
+  font-weight: 500 !important;
   flex: 0 0 auto !important;
   width: auto !important;
-  margin-left: auto !important;
+  cursor: pointer !important;
 }
 
-.shandu-save-note {
-  min-height: 32px;
+.shandu-settings label span {
+  color: var(--ink-3) !important;
+  font-size: 0.78rem !important;
+  font-weight: 500 !important;
 }
 
-.shandu-examples {
-  margin-top: 12px;
-}
+/* Run strip */
 
-.shandu-status-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-  gap: 14px;
-  margin: var(--shandu-section-gap) 0 0;
-  padding: var(--shandu-panel-padding);
-  border: 1px solid var(--shandu-border-strong);
-  border-radius: 8px;
-  background: linear-gradient(135deg, rgba(57, 217, 138, 0.11), rgba(16, 22, 17, 0.96) 42%);
-  max-width: 100%;
-}
-
-.shandu-status-panel h2 {
-  margin: 8px 0 5px;
-  color: var(--shandu-text);
-  font-size: 1.16rem;
-  letter-spacing: 0;
-}
-
-.shandu-status-panel p {
-  margin: 0;
-  color: var(--shandu-muted);
-  line-height: 1.55;
-}
-
-.shandu-status-panel dl,
-.shandu-lane-card dl {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-}
-
-.shandu-status-panel dl {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.shandu-status-panel dt,
-.shandu-lane-card dt {
-  color: var(--shandu-dim);
-  font-size: 0.72rem;
-}
-
-.shandu-status-panel dd,
-.shandu-lane-card dd {
-  margin: 2px 0 0;
-  color: var(--shandu-text);
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 0.94rem;
-  overflow-wrap: anywhere;
-}
-
-.shandu-status-pill {
-  display: inline-flex;
-  width: fit-content;
-  padding: 4px 8px;
-  border-radius: 999px;
-  color: #07100b;
-  background: var(--shandu-green);
-  font-size: 0.7rem;
-  font-weight: 700;
-}
-
-.shandu-status-pill.is-error {
-  background: var(--shandu-red);
-}
-
-.shandu-status-pill.is-complete {
-  background: var(--shandu-teal);
-}
-
-.shandu-status-errors {
-  grid-column: 1 / -1;
-  margin: 0;
-  padding: 10px 14px 10px 28px;
-  border: 1px solid rgba(246, 106, 106, 0.35);
-  border-radius: 8px;
-  color: #ffd8d8;
-  background: rgba(246, 106, 106, 0.1);
-}
-
-.shandu-lane-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 10px;
-  margin: var(--shandu-section-gap) 0 0;
-}
-
-.shandu-lane-card {
-  min-height: 116px;
-  min-width: 0;
-  border: 1px solid var(--shandu-border);
-  border-radius: 8px;
-  background: var(--shandu-panel);
-  padding: 10px;
-}
-
-.shandu-lane-card header {
+.shandu-strip {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 28px;
+  margin-top: 32px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.shandu-strip .stage {
+  display: inline-flex;
+  align-items: baseline;
   gap: 9px;
-  margin-bottom: 10px;
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 500;
 }
 
-.shandu-lane-card header span {
-  width: 8px;
-  height: 24px;
+.shandu-strip .stage::before {
+  content: '';
+  align-self: center;
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
-  background: var(--shandu-green);
+  background: var(--ink-3);
 }
 
-.shandu-lane-card h3 {
-  margin: 0;
-  color: var(--shandu-muted);
-  font-size: 0.72rem;
-  font-weight: 700;
+.shandu-strip.is-running .stage::before {
+  background: var(--accent);
+  animation: shandu-pulse 1.6s ease-in-out infinite;
 }
 
-.lane-search header span {
-  background: var(--shandu-teal);
+.shandu-strip.is-error .stage::before {
+  background: var(--err);
 }
 
-.lane-scrape header span {
-  background: var(--shandu-amber);
+.shandu-strip.is-complete .stage::before {
+  background: var(--ok);
 }
 
-.lane-cite header span {
-  background: var(--shandu-red);
-}
-
-.shandu-main-stack {
-  margin-top: var(--shandu-section-gap);
-  gap: var(--shandu-section-gap) !important;
-}
-
-.shandu-main-stack > .wrap {
-  gap: var(--shandu-section-gap) !important;
-}
-
-.shandu-report-panel,
-.shandu-telemetry-panel {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.shandu-report-panel,
-.shandu-telemetry-panel {
-  border: 1px solid var(--shandu-border);
-  border-radius: 8px;
-  background: #0c120e;
-  padding: var(--shandu-panel-padding);
-}
-
-.shandu-telemetry-panel {
-  background: var(--shandu-panel);
-}
-
-.shandu-report-panel > .wrap,
-.shandu-telemetry-panel > .wrap {
-  gap: var(--shandu-panel-gap) !important;
-}
-
-.shandu-report-copy,
-.shandu-report-copy > .wrap,
-.shandu-report-copy .prose,
-.shandu-report-copy .markdown {
-  border: 0 !important;
-  background: transparent !important;
-  padding: 0 !important;
-  box-shadow: none !important;
-}
-
-.shandu-report-copy p {
-  margin: 0 !important;
-}
-
-.shandu-report-copy .markdown h2,
-.shandu-report-copy .prose h2 {
-  margin: 18px 0 8px !important;
-  color: var(--shandu-text) !important;
-  font-size: 1.1rem !important;
-}
-
-.shandu-report-copy .markdown ul,
-.shandu-report-copy .prose ul {
-  display: grid;
-  gap: 7px;
-  margin: 8px 0 0 !important;
-  padding: 0 !important;
-  list-style: none;
-}
-
-.shandu-report-copy .markdown li,
-.shandu-report-copy .prose li {
-  margin: 0 !important;
-  padding: 8px 10px;
-  border: 1px solid var(--shandu-border);
-  border-radius: 8px;
-  background: var(--shandu-rail);
-  color: var(--shandu-muted);
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.shandu-report-copy .markdown li strong,
-.shandu-report-copy .prose li strong {
-  color: var(--shandu-text);
-}
-
-.shandu-report-copy .markdown a,
-.shandu-report-copy .prose a {
-  color: var(--shandu-teal) !important;
-  text-decoration-color: rgba(45, 212, 191, 0.45) !important;
-}
-
-.shandu-citations-panel {
-  margin-top: 0 !important;
-  overflow: hidden !important;
-  padding: 0 !important;
-}
-
-.shandu-citations-panel > .label-wrap,
-.shandu-citations-panel button.label-wrap {
-  min-height: 34px !important;
-  padding: 7px 12px !important;
-  border-bottom: 0 !important;
-  background: rgba(16, 22, 17, 0.96) !important;
-  color: var(--shandu-text) !important;
-  font-size: 0.94rem !important;
-  font-weight: 700 !important;
-}
-
-.shandu-citations-panel > .wrap {
-  padding: 10px 12px 12px !important;
-  border-top: 1px solid var(--shandu-border) !important;
-}
-
-.shandu-citations-panel > .wrap > .block {
-  margin: 0 !important;
-}
-
-.shandu-citations-panel .table-wrap {
-  margin: 0 !important;
-}
-
-.shandu-telemetry-grid {
-  align-items: flex-start;
-}
-
-.shandu-telemetry-grid > .column {
-  align-self: flex-start !important;
-}
-
-.shandu-task-panel {
-  min-width: 0;
-  min-height: 184px;
-  border: 1px solid var(--shandu-border);
-  border-radius: 8px;
-  background: var(--shandu-rail);
-  overflow: hidden;
-  padding: 0;
-}
-
-.shandu-task-panel::before {
-  content: 'Tasks';
-  display: block;
-  margin: 0;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--shandu-border);
-  background: rgba(16, 22, 17, 0.96);
-  color: var(--shandu-text);
-  font-size: 0.94rem;
-  font-weight: 700;
-}
-
-.shandu-task-panel > .wrap {
-  padding: 0 !important;
-}
-
-.shandu-task-board {
-  max-height: 320px;
-  overflow: auto;
-}
-
-.shandu-task-board.empty p {
-  margin: 0;
-  padding: 14px 12px;
-  color: var(--shandu-muted);
-}
-
-.shandu-task-board ol {
-  display: grid;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.shandu-task-board li {
-  display: grid;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(38, 49, 43, 0.72);
-}
-
-.shandu-task-board li:last-child {
-  border-bottom: 0;
-}
-
-.shandu-task-board li:nth-child(even) {
-  background: rgba(255, 255, 255, 0.015);
-}
-
-.task-row-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 10px;
-  align-items: center;
-}
-
-.shandu-task-board .task-id,
-.shandu-task-board time,
-.shandu-task-board .task-status {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-}
-
-.shandu-task-board .task-id {
-  color: var(--shandu-teal);
-  font-size: 0.72rem;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.shandu-task-board time {
-  color: var(--shandu-dim);
-  font-size: 0.72rem;
-}
-
-.shandu-task-board p {
-  margin: 0;
-  color: var(--shandu-text);
-  font-size: 0.94rem;
-  line-height: 1.42;
-}
-
-.shandu-task-board dl {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(3, minmax(54px, auto));
-  gap: 8px;
-  margin: 0;
-}
-
-.shandu-task-board dt {
-  color: var(--shandu-dim);
-  font-size: 0.72rem;
-}
-
-.shandu-task-board dd {
-  margin: 2px 0 0;
-  color: var(--shandu-muted);
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 0.72rem;
-  overflow-wrap: anywhere;
-}
-
-.task-status {
+.shandu-strip .field {
   display: inline-flex;
-  width: fit-content;
-  max-width: 100%;
-  padding: 3px 7px;
-  border-radius: 999px;
-  color: #07100b;
-  background: var(--shandu-green);
-  font-size: 0.7rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--ink-3);
+  font-size: 0.78rem;
 }
 
-.task-status.is-idle {
-  color: var(--shandu-muted);
-  background: #172119;
+.shandu-strip .field b {
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 400;
 }
 
-.task-status.is-error {
-  background: var(--shandu-red);
+.shandu-strip .field.run b {
+  overflow-wrap: anywhere;
 }
 
-.shandu-report-panel .prose,
-.shandu-report-panel .markdown {
-  color: var(--shandu-text) !important;
+.shandu-fault {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-left: 2px solid var(--err);
+  background: var(--sunken);
+  color: var(--ink-2);
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
-.shandu-feed {
-  min-height: 184px;
-  max-height: 320px;
-  overflow: auto;
-  border: 1px solid var(--shandu-border);
-  border-radius: 8px;
-  background: var(--shandu-rail);
-}
-
-.shandu-feed header {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+.shandu-steps {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--shandu-border);
-  background: rgba(16, 22, 17, 0.96);
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  width: 100%;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-3);
+  font-size: 0.78rem;
 }
 
-.shandu-feed h3 {
-  margin: 0;
-  color: var(--shandu-text);
-  font-size: 0.94rem;
+.shandu-steps .is-done {
+  color: var(--ink-2);
 }
 
-.shandu-feed header span {
-  color: var(--shandu-dim);
-  font-size: 0.72rem;
+.shandu-steps .is-live {
+  color: var(--accent);
+  font-weight: 500;
 }
 
-.shandu-feed.empty p {
-  margin: 14px 12px;
-  color: var(--shandu-muted);
+@keyframes shandu-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 
-.shandu-feed ol {
+/* Activity */
+
+.shandu-activity {
   display: grid;
-  gap: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 40px;
+  margin-top: 4px;
+}
+
+.shandu-activity h3 {
+  margin: 0 0 4px;
+  padding: 18px 0 8px;
+  color: var(--ink-3);
+  font-size: 0.78rem;
+  font-weight: 500;
+  border-bottom: 1px solid var(--line);
+}
+
+.shandu-activity ol {
+  max-height: 420px;
+  overflow: auto;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.shandu-activity li {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.shandu-activity li:last-child {
+  border-bottom: 0;
 }
 
 .shandu-feed li {
   display: grid;
-  grid-template-columns: 60px 78px minmax(0, 1fr);
-  gap: 8px 10px;
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(38, 49, 43, 0.72);
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 2px 12px;
 }
 
 .shandu-feed time,
-.shandu-feed b,
-.shandu-feed span,
-.shandu-feed small {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 0.72rem;
-}
-
-.shandu-feed time {
-  color: var(--shandu-dim);
-}
-
-.shandu-feed b {
-  color: var(--shandu-green);
-}
-
-.shandu-feed span {
-  color: var(--shandu-teal);
+.shandu-tasks time,
+.shandu-feed .meta,
+.shandu-tasks dd {
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 0.74rem;
 }
 
 .shandu-feed p {
-  grid-column: 3;
+  grid-column: 2;
   margin: 0;
-  color: var(--shandu-text);
-  line-height: 1.45;
-}
-
-.shandu-feed small {
-  grid-column: 3;
-  color: var(--shandu-dim);
+  color: var(--ink-2);
+  font-size: 0.86rem;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-.shandu-tabs {
-  margin-top: var(--shandu-section-gap);
+.shandu-feed p em {
+  color: var(--ink-3);
+  font-style: normal;
 }
 
-.shandu-advanced {
-  border: 1px solid var(--shandu-border);
-  border-radius: 8px;
+.shandu-feed .meta {
+  grid-column: 2;
+  overflow-wrap: anywhere;
 }
 
-.shandu-report-panel .table-wrap,
-.shandu-telemetry-panel .table-wrap,
-.shandu-tabs .table-wrap {
-  overflow-x: auto !important;
+.shandu-tasks .head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
 }
 
-.shandu-report-panel table,
-.shandu-tabs table {
+.shandu-tasks .id {
+  color: var(--ink-3);
+  font-size: 0.8rem;
+}
+
+.shandu-tasks .state {
+  color: var(--ink-3);
+  font-size: 0.74rem;
+}
+
+.shandu-tasks .state.is-running {
+  color: var(--accent);
+}
+
+.shandu-tasks .state.is-complete {
+  color: var(--ok);
+}
+
+.shandu-tasks .state.is-error {
+  color: var(--err);
+}
+
+.shandu-tasks p {
+  margin: 5px 0 0;
+  color: var(--ink-2);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.shandu-tasks dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 6px 0 0;
+}
+
+.shandu-tasks div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.shandu-tasks dt {
+  color: var(--ink-3);
+  font-size: 0.74rem;
+}
+
+.shandu-tasks dd {
+  margin: 0;
+}
+
+.shandu-tasks .meta {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink-3);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.shandu-tasks .state time {
+  margin-left: 7px;
+}
+
+/* Gradio marks streaming blocks with an accent border; the run strip and the
+   feed update on every event, so the border would strobe. */
+.gradio-container .generating,
+.gradio-container .pending {
+  border: 0 !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
+/* Recent reports */
+
+.shandu-library {
+  margin-top: 48px;
+}
+
+.shandu-library .table-wrap,
+.shandu-library table {
+  width: 100% !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.shandu-library thead {
+  display: none !important;
+}
+
+.shandu-library tr {
+  cursor: pointer !important;
+  border-bottom: 1px solid var(--line) !important;
+}
+
+.shandu-library tr:hover td {
+  color: var(--accent) !important;
+}
+
+.shandu-library td {
+  padding: 11px 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--ink-2) !important;
+  font-size: 0.92rem !important;
+}
+
+.shandu-library td,
+.shandu-library td > div {
+  max-width: none !important;
+  width: auto !important;
+  text-align: left !important;
+  white-space: normal !important;
+}
+
+.shandu-library td:nth-child(2) {
+  width: 1%;
+  white-space: nowrap;
+  color: var(--ink-3) !important;
+  font-size: 0.8rem !important;
+}
+
+.shandu-library td:last-child {
+  width: 1%;
+  white-space: nowrap;
+  color: var(--ink-3) !important;
+  font-family: var(--mono);
+  font-size: 0.76rem !important;
+  text-align: right !important;
+}
+
+/* Recent reports and first run */
+
+.shandu-first-run {
+  margin-top: 46px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.shandu-first-run h3 {
+  margin: 0;
+}
+
+.shandu-first-run ol {
+  margin: 12px 0 0;
+  padding-left: 20px;
+}
+
+.shandu-first-run li {
+  margin: 0 0 7px;
+  color: var(--ink-2);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.shandu-first-run li::marker {
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+/* Report */
+
+.shandu-report {
+  margin-top: 40px;
+}
+
+.shandu-report:has(.md:empty) {
+  display: none !important;
+}
+
+.shandu-prose.padded {
+  padding: 0 !important;
+}
+
+.shandu-report-head {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  max-width: var(--measure);
+  margin: 0 auto 30px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.shandu-download {
+  flex: 0 0 auto !important;
+  width: auto !important;
+}
+
+.shandu-download button {
+  min-height: 32px !important;
+  padding: 0 14px !important;
+  font-size: 0.8rem !important;
+  font-weight: 400 !important;
+}
+
+.shandu-prose {
+  max-width: var(--measure);
+  margin: 0 auto !important;
+}
+
+.shandu-prose .prose,
+.shandu-prose .md {
+  font-family: var(--serif) !important;
+  font-size: 1.12rem !important;
+  line-height: 1.68 !important;
+  color: var(--ink-2) !important;
+}
+
+.shandu-prose h1,
+.shandu-prose h2,
+.shandu-prose h3 {
+  font-family: var(--serif) !important;
+  color: var(--ink) !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+}
+
+.shandu-prose h1 {
+  margin: 0 0 28px !important;
+  padding-bottom: 18px !important;
+  border-bottom: 1px solid var(--line) !important;
+  font-size: 2rem !important;
+  line-height: 1.2 !important;
+}
+
+.shandu-prose h2 {
+  margin: 44px 0 12px !important;
+  font-size: 1.32rem !important;
+}
+
+.shandu-prose h3 {
+  margin: 30px 0 10px !important;
+  font-size: 1.08rem !important;
+}
+
+.shandu-prose p,
+.shandu-prose li {
+  margin: 0 0 18px !important;
+  color: var(--ink-2) !important;
+}
+
+.shandu-prose strong {
+  color: var(--ink) !important;
+  font-weight: 600 !important;
+}
+
+.shandu-prose ol,
+.shandu-prose ul {
+  margin: 0 0 18px !important;
+  padding-left: 22px !important;
+}
+
+.shandu-prose li {
+  margin: 0 0 10px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.shandu-prose li::marker {
+  color: var(--ink-3) !important;
+}
+
+.shandu-prose a {
+  color: var(--accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid var(--accent-soft) !important;
+  overflow-wrap: anywhere;
+}
+
+.shandu-prose a:hover {
+  border-bottom-color: var(--accent) !important;
+}
+
+.shandu-prose blockquote {
+  margin: 0 0 18px !important;
+  padding-left: 18px !important;
+  border-left: 2px solid var(--line-strong) !important;
+  color: var(--ink-3) !important;
+}
+
+.shandu-prose hr {
+  margin: 36px 0 !important;
+  border: 0 !important;
+  border-top: 1px solid var(--line) !important;
+}
+
+.shandu-prose code {
+  font-family: var(--mono) !important;
+  font-size: 0.86em !important;
+  background: var(--sunken) !important;
+  color: var(--ink-2) !important;
+  padding: 1px 4px !important;
+}
+
+.shandu-prose table {
+  font-family: var(--sans) !important;
   font-size: 0.9rem !important;
 }
 
-.shandu-report-panel th,
-.shandu-report-panel td,
-.shandu-tabs th,
-.shandu-tabs td {
-  padding: 8px 10px !important;
-  line-height: 1.35 !important;
+.shandu-prose th,
+.shandu-prose td {
+  padding: 8px 12px 8px 0 !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--line) !important;
+  text-align: left !important;
 }
 
-button,
-.gr-button {
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease !important;
+/* The citation ledger is appended last; set it as a reference list with a
+   hanging indent so the numbers form a column. */
+.shandu-prose .md > ul:last-child {
+  padding-left: 0 !important;
+  list-style: none !important;
+}
+
+.shandu-prose .md > ul:last-child li {
+  margin: 0 0 9px !important;
+  padding-left: 2.4em !important;
+  text-indent: -2.4em !important;
+  font-size: 0.95rem !important;
+  line-height: 1.55 !important;
+  color: var(--ink-2) !important;
+}
+
+.shandu-prose .md > ul:last-child li strong {
+  font-weight: 600 !important;
+}
+
+.shandu-doc-title {
+  max-width: var(--measure);
+  margin: 0 auto 22px;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.shandu-contents {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 14px 0 4px;
+  border-top: 1px solid var(--line);
+}
+
+.shandu-contents h3 {
+  margin: 0 0 9px;
+  color: var(--ink-3);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.shandu-contents ol {
+  margin: 0;
+  padding: 0;
+  columns: 2;
+  column-gap: 34px;
+  list-style: none;
+  counter-reset: contents;
+}
+
+.shandu-contents li {
+  margin: 0 0 6px;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  break-inside: avoid;
+  counter-increment: contents;
+}
+
+.shandu-contents li::before {
+  content: counter(contents);
+  margin-right: 9px;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+}
+
+/* Settings */
+
+.shandu-settings .sidebar-content {
+  padding: 28px 24px 40px !important;
+}
+
+.shandu-settings .toggle-button {
+  width: auto !important;
+  height: 32px !important;
+  padding: 0 12px 0 8px !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: 999px !important;
+  background: var(--paper) !important;
+  box-shadow: none !important;
+  color: var(--ink-2) !important;
+  font-size: 0.8rem !important;
+}
+
+.shandu-settings .toggle-button::after {
+  content: 'Settings';
+  display: inline-block;
+  margin-left: 4px;
+  transform: rotate(180deg);
+}
+
+.shandu-settings h3 {
+  margin: 8px 0 16px;
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.shandu-settings input,
+.shandu-settings textarea,
+.shandu-settings select {
+  border-radius: 2px !important;
+  font-size: 0.88rem !important;
+}
+
+.shandu-settings .block {
+  margin-bottom: 14px !important;
+}
+
+.shandu-note {
+  color: var(--ink-3) !important;
+  font-size: 0.78rem !important;
+}
+
+.shandu-debug {
+  margin-top: 40px;
+}
+
+.shandu-debug .label-wrap span,
+.shandu-activity-toggle .label-wrap span {
+  color: var(--ink-3) !important;
+  font-size: 0.8rem !important;
+  font-weight: 500 !important;
+}
+
+.shandu-debug .label-wrap,
+.shandu-activity-toggle .label-wrap {
+  padding: 12px 0 !important;
+  border-bottom: 1px solid var(--line) !important;
 }
 
 button:focus-visible,
 textarea:focus-visible,
 input:focus-visible,
 select:focus-visible {
-  outline: 2px solid var(--shandu-green) !important;
+  outline: 2px solid var(--accent) !important;
   outline-offset: 2px !important;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 860px) {
   .gradio-container main.contain {
-    width: calc(100% - 40px) !important;
+    width: calc(100% - 32px) !important;
   }
 
-  .shandu-topbar,
-  .shandu-status-panel {
-    grid-template-columns: 1fr;
+  .shandu-masthead {
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 36px;
   }
 
-  .shandu-header-metrics {
-    min-width: 0;
+  .shandu-activity {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
   }
 
-  .shandu-runner,
-  .shandu-telemetry-grid {
-    flex-direction: column !important;
-  }
-
-  .shandu-runner > *,
-  .shandu-telemetry-grid > * {
-    width: 100% !important;
-    max-width: 100% !important;
-    flex: 1 1 auto !important;
-  }
-}
-
-@media (max-width: 640px) {
-  .gradio-container main.contain {
-    width: calc(100% - 24px) !important;
-  }
-
-  .shandu-topbar {
-    padding-top: 16px;
-  }
-
-  .shandu-brand h1 {
-    font-size: 2.05rem;
-  }
-
-  .shandu-header-metrics,
-  .shandu-status-panel dl {
-    grid-template-columns: 1fr;
-  }
-
-  .shandu-run-panel,
-  .shandu-config-panel,
-  .shandu-status-panel,
-  .shandu-report-panel,
-  .shandu-telemetry-panel,
-  .shandu-lane-card {
-    padding: 12px;
-  }
-
-  .shandu-run-panel textarea {
-    min-height: 96px !important;
-  }
-
-  .shandu-status-panel {
-    gap: 14px;
-  }
-
-  .shandu-feed li {
-    grid-template-columns: 56px minmax(0, 1fr);
-  }
-
-  .shandu-feed b,
-  .shandu-feed span,
-  .shandu-feed p,
-  .shandu-feed small {
-    grid-column: 2;
-  }
-
-  .task-row-head {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .shandu-task-board time {
-    grid-column: 1 / -1;
-  }
-
-  .shandu-task-board dl {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .shandu-task-board .task-query {
-    grid-column: 1 / -1;
+  .shandu-prose .prose,
+  .shandu-prose .md {
+    font-size: 1.06rem !important;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  button,
-  .gr-button {
-    transition: none !important;
+  .shandu-strip.is-running .stage::before {
+    animation: none;
   }
 }
 """

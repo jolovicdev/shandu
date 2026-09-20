@@ -1,6 +1,6 @@
 from .ai_search import AISearchService
 from .memory import MemoryService
-from .report import ReportService, persist_report_markdown
+from .report import ReportService, list_recent_reports, persist_report_markdown
 from .scrape import ScrapeService
 from .search import SearchHit, SearchService
 
@@ -11,5 +11,6 @@ __all__ = [
     "ScrapeService",
     "SearchHit",
     "SearchService",
+    "list_recent_reports",
     "persist_report_markdown",
 ]

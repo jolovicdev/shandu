@@ -113,8 +113,6 @@ class SearchSubagentLike(Protocol):
 
 
 class CitationAgentLike(Protocol):
-    last_llm_usage: dict[str, Any] | None
-
     async def build_citations(
         self,
         query: str,

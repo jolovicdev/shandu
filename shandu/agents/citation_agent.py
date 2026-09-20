@@ -18,10 +18,6 @@ _MIN_MERGE_TITLE_LEN = 12
 
 
 class CitationAgent:
-    def __init__(self) -> None:
-        # Deterministic ledger, no model calls; kept for the agent protocol.
-        self.last_llm_usage: dict | None = None
-
     async def build_citations(
         self,
         query: str,

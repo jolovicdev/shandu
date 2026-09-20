@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,12 +32,7 @@ class RuntimeBootstrap:
     def __init__(self, settings: RuntimeSettings) -> None:
         self.settings = settings
         self.cost_tracker = CostTracker()
-        config.apply_provider_api_key()
-        api_key_env = config.get_api_key_env_name(settings.model)
-        api_key_value = str(config.get("api", "api_key", "")).strip()
-        if api_key_env and api_key_value and not os.getenv(api_key_env):
-            os.environ[api_key_env] = api_key_value
-            config.record_exported_api_key(api_key_env, api_key_value)
+        config.apply_provider_api_key(settings.model)
         litellm.suppress_debug_info = True
         storage = Path(settings.storage_dir)
         storage.mkdir(parents=True, exist_ok=True)

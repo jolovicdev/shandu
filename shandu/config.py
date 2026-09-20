@@ -181,8 +181,8 @@ class Config:
         selected_model = model if model is not None else str(self.get("api", "model", ""))
         return infer_api_key_env_name(selected_model)
 
-    def apply_provider_api_key(self) -> None:
-        env_name = self.get_api_key_env_name()
+    def apply_provider_api_key(self, model: str | None = None) -> None:
+        env_name = self.get_api_key_env_name(model)
         if not env_name:
             return
         configured_key = str(self.get("api", "api_key", "")).strip()
@@ -198,9 +198,6 @@ class Config:
             return
         os.environ[env_name] = configured_key
         self._exported_api_keys[env_name] = configured_key
-
-    def record_exported_api_key(self, env_name: str, value: str) -> None:
-        self._exported_api_keys[env_name] = value
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
         return self._config.get(section, {}).get(key, default)

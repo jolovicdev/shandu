@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import logging
 import random
+import re
 import socket
 from collections import OrderedDict
 from typing import Any
@@ -182,6 +183,17 @@ def _canonicalize_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
+_ARXIV_ABSTRACT_URL = re.compile(r"^https?://(?:www\.)?arxiv\.org/abs/(?P<paper>[^?#]+)")
+
+
+def _fulltext_url(url: str) -> str:
+    # An arXiv abstract page holds only the abstract; the paper is the PDF.
+    match = _ARXIV_ABSTRACT_URL.match(url)
+    if match:
+        return f"https://arxiv.org/pdf/{match['paper']}"
+    return url
+
+
 def _safe_decode(data: bytes, charset: str | None) -> str:
     try:
         return data.decode(charset or "utf-8", errors="ignore")
@@ -325,7 +337,7 @@ class ScrapeService:
         session: aiohttp.ClientSession,
         attempt: int,
     ) -> _FetchResult:
-        request_url = url
+        request_url = _fulltext_url(url)
         hop = 0
         while True:
             outcome = await self._fetch_single_request(
@@ -462,6 +474,7 @@ class ScrapeService:
                                 text=result.text,
                                 blocks=result.blocks,
                                 domain=urlparse(final_url).netloc,
+                                published_at=result.published_at,
                                 content_type=content_type,
                                 http_status=status,
                             )

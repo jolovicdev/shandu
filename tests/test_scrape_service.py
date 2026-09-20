@@ -4,6 +4,7 @@ import asyncio
 
 from shandu.services.scrape import ScrapeService, ScrapedPage
 from shandu.services.scrape.extraction import _extract_html
+from shandu.services.scrape.models import _FetchResult
 from shandu.services.scrape.service import _canonicalize_url
 
 
@@ -43,6 +44,33 @@ def test_safe_decode_falls_back_on_unknown_charset() -> None:
     assert _safe_decode(data, "utf-8") == "<html><body>ok</body></html>"
     assert _safe_decode(data, "utf8mb4") == "<html><body>ok</body></html>"
     assert _safe_decode(data, None) == "<html><body>ok</body></html>"
+
+
+def test_arxiv_abstract_url_fetches_the_pdf() -> None:
+    service = ScrapeService()
+    fetched: list[tuple[str, str]] = []
+
+    async def fake_request(url, request_url, session, attempt, hop):
+        del session, attempt, hop
+        fetched.append((url, request_url))
+        return _FetchResult(
+            ScrapedPage(requested_url=url, url=request_url, title="t", text="t", domain="d"),
+            status=200,
+            fetch_error=None,
+            retryable=False,
+        )
+
+    service._fetch_single_request = fake_request  # type: ignore[assignment]
+
+    async def run() -> None:
+        await service._fetch_one("https://arxiv.org/abs/2405.14366v2", object(), 0)
+        await service._fetch_one("https://example.com/abs/2405.14366", object(), 0)
+
+    asyncio.run(run())
+    assert fetched == [
+        ("https://arxiv.org/abs/2405.14366v2", "https://arxiv.org/pdf/2405.14366v2"),
+        ("https://example.com/abs/2405.14366", "https://example.com/abs/2405.14366"),
+    ]
 
 
 def test_scrape_many_reuses_one_session() -> None:

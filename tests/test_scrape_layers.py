@@ -150,6 +150,19 @@ def test_parse_pdf_extracts_title_and_text() -> None:
     assert "body text" in result.text
 
 
+def test_parse_pdf_prefers_largest_type_for_title_and_reads_creation_date() -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 60), "Proceedings of the 2025 Conference, pages 1-17", fontsize=8)
+    page.insert_text((72, 110), "Lookahead Caching for Long Contexts", fontsize=18)
+    page.insert_text((300, 500), "preprint:2405.14366v2 7 Sep 2024", fontsize=24, rotate=90)
+    page.insert_text((72, 150), "This is the body text of the paper.")
+    doc.set_metadata({"creationDate": "D:20251029105853-04'00'"})
+    result = _parse_pdf(doc.tobytes())
+    assert result.title == "Lookahead Caching for Long Contexts"
+    assert result.published_at == "2025-10-29"
+
+
 def test_parse_docx_extracts_title_and_text() -> None:
     document = Document()
     document.add_heading("DOCX Title", 0)
@@ -274,6 +287,14 @@ def test_detect_fetch_error_detects_empty_js_shell() -> None:
 )
 def test_detect_fetch_error_returns_none_for_benign_pages(html, text) -> None:
     assert _detect_fetch_error(html, text) is None
+
+
+def test_extract_html_dates_arxiv_paper_from_version_stamp() -> None:
+    html = _long_html("Streaming Models", words=200).replace(
+        "<body>", "<body><div>arXiv:2309.17453v4 [cs.CL] 07 Apr 2024</div>", 1
+    )
+    assert "arXiv:2309" in html
+    assert _extract_html(html).published_at == "2024-04-07"
 
 
 def test_extract_html_caps_long_successful_extraction() -> None:

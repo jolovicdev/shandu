@@ -128,7 +128,8 @@ flowchart TD
   captcha, empty JS shell, blocked), per-domain rate limiting with exponential backoff,
   status-aware retries with jitter (timeouts capped at one retry), one shared HTTP session
   per service, in-flight request deduplication, LRU-bounded cross-task URL caching,
-  publication-date extraction from OpenGraph/JSON-LD/meta/time tags, redirect-aware
+  publication-date extraction from OpenGraph/JSON-LD/meta/time tags, PDF creation dates,
+  and arXiv version stamps, full-paper fetch for arXiv abstract URLs, redirect-aware
   provenance tracking, and search-snippet fallback evidence when scraping fails.
 - Memory service: persistent run memory and retrieval.
 - Report service: citation normalization and final markdown rendering.

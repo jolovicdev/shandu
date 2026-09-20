@@ -3,7 +3,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from collections.abc import Iterable
+from datetime import datetime
+from typing import Any
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
@@ -219,6 +222,24 @@ def _extract_with_bs4(html: str) -> _ExtractionResult:
     return _ExtractionResult(title=title, text=text, blocks=blocks)
 
 
+_ARXIV_STAMP = re.compile(
+    r"arXiv:\d{4}\.\d{4,5}(?:v\d+)?\s*\[[\w.-]+\]\s*(\d{1,2} [A-Z][a-z]{2} \d{4})"
+)
+
+
+def _arxiv_stamp_date(html: str) -> str | None:
+    # arXiv HTML papers carry no date metadata, only the version stamp
+    # "arXiv:2309.17453v4 [cs.CL] 07 Apr 2024"; without it the date falls to
+    # a guess from body text, which lands on dates inside the references.
+    match = _ARXIV_STAMP.search(html)
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%d %b %Y").date().isoformat()
+    except ValueError:
+        return None
+
+
 def _extract_html(html: str) -> _ExtractionResult:
     result = _extract_with_trafilatura(html)
     if result is None:
@@ -226,7 +247,41 @@ def _extract_html(html: str) -> _ExtractionResult:
     if result is None:
         result = _extract_with_bs4(html)
     result.site_name = _extract_site_name(html)
+    result.published_at = _arxiv_stamp_date(html) or result.published_at
     return result
+
+
+def _pdf_layout_title(page: Any) -> str:
+    """Title from the first-page block set in the largest horizontal type.
+
+    Horizontal only: preprint servers stamp a rotated identifier in the margin
+    in larger type than the title.
+    """
+    best_size = 0.0
+    best_text = ""
+    for block in page.get_text("dict").get("blocks", []):
+        spans = [
+            span
+            for line in block.get("lines", [])
+            if tuple(line.get("dir", (1, 0))) == (1, 0)
+            for span in line.get("spans", [])
+            if span.get("text", "").strip()
+        ]
+        if not spans:
+            continue
+        size = max(round(span["size"], 1) for span in spans)
+        if size > best_size:
+            best_size = size
+            best_text = " ".join(
+                span["text"].strip() for span in spans if round(span["size"], 1) == size
+            )
+    return best_text if 10 < len(best_text) < 300 else ""
+
+
+def _pdf_creation_date(metadata: dict[str, Any]) -> str | None:
+    # PDF dates look like D:20251029105853-04'00'.
+    match = re.match(r"D:(\d{4})(\d{2})(\d{2})", metadata.get("creationDate") or "")
+    return "-".join(match.groups()) if match else None
 
 
 def _parse_pdf(data: bytes) -> _ExtractionResult:
@@ -237,21 +292,19 @@ def _parse_pdf(data: bytes) -> _ExtractionResult:
         try:
             if doc.page_count > _MAX_PDF_PAGES:
                 raise _ParseError("non_text_content", f"PDF exceeds {_MAX_PDF_PAGES} pages")
-            title = (doc.metadata.get("title") or "").strip()
+            metadata = doc.metadata or {}
+            title = (metadata.get("title") or "").strip()
             if not title and len(doc) > 0:
-                blocks = doc[0].get_text("blocks")
-                for block in blocks:
-                    block_text = block[4].strip()
-                    if block_text and 10 < len(block_text) < 200:
-                        title = block_text
-                        break
+                title = _pdf_layout_title(doc[0])
             full_text: list[str] = []
             for page in doc:
                 full_text.append(page.get_text())
             text = _cap_text("\n".join(full_text))
             if not text:
                 raise _ParseError("pdf_parse_failed", "Empty PDF text")
-            return _ExtractionResult(title=title, text=text)
+            return _ExtractionResult(
+                title=title, text=text, published_at=_pdf_creation_date(metadata)
+            )
         finally:
             doc.close()
     except _ParseError:

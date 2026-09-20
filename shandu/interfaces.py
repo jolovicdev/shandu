@@ -72,6 +72,7 @@ class ScrapeServiceLike(Protocol):
 
 class LeadAgentLike(Protocol):
     fallback_count: int
+    last_fallback_reason: str | None
 
     async def create_iteration_plan(
         self,

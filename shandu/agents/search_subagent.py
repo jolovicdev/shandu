@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal
 from urllib.parse import urlparse, urlsplit, urlunsplit
@@ -18,10 +19,20 @@ from ..interfaces import (
 )
 from ..prompts import extractor_instructions, extractor_job
 
+logger = logging.getLogger(__name__)
+
 SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 _SNIPPET_FALLBACK_METHOD = "search_snippet_fallback"
 _SNIPPET_ONLY_CREDIBILITY = 0.20
+
+
+def _report_reason(report: Any) -> str:
+    errors = getattr(report, "errors", None) or []
+    detail = "; ".join(str(item) for item in errors if str(item).strip())
+    if detail:
+        return detail[:300]
+    return f"status={getattr(report, 'status', 'unknown')}"
 
 
 class _ExtractionPayload(BaseModel):
@@ -123,6 +134,17 @@ class SearchSubagent:
                 },
             )
             hits = await self._search.search(query, request.max_results_per_query)
+            search_error = getattr(self._search, "last_error", None)
+            if search_error:
+                await self._emit_trace(
+                    progress_callback,
+                    "search_failed",
+                    {
+                        "task_id": task.task_id,
+                        "query": query,
+                        "reason": search_error,
+                    },
+                )
             await self._emit_trace(
                 progress_callback,
                 "query_completed",
@@ -392,13 +414,16 @@ class SearchSubagent:
             report = await self._runtime.desk.arun(worker, job)
             if report.status == "completed" and isinstance(report.data, _ExtractionPayload):
                 return report.data, True
+            reason = _report_reason(report)
+            logger.warning("Extraction call did not complete for %s: %s", url, reason)
         except Exception:
-            pass
+            reason = "extractor raised before completing"
+            logger.warning("Extraction call failed for %s", url, exc_info=True)
 
         await self._emit_trace(
             progress_callback,
             "extraction_fallback",
-            {"task_id": task.task_id, "url": url, "title": title},
+            {"task_id": task.task_id, "url": url, "title": title, "reason": reason},
         )
 
         fallback_snippet = text[:320].strip()

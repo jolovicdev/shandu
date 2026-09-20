@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from blackgeorge import Job, Worker
 
 from ..contracts import AISearchResult, AISearchSource
 from ..interfaces import DetailLevel, RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
 from ..prompts import aisearch_expected_output, aisearch_instructions, aisearch_job
 from .scrape.service import _canonicalize_url
+
+logger = logging.getLogger(__name__)
 
 
 class AISearchService:
@@ -52,11 +56,15 @@ class AISearchService:
             )
 
         if not sources:
+            stats: dict[str, object] = {"sources": 0, "scraped_pages": 0}
+            search_error = getattr(self._search, "last_error", None)
+            if search_error:
+                stats["search_error"] = search_error
             return AISearchResult(
                 query=query,
                 answer_markdown=f"# {query}\n\nNo search results were returned for this query.",
                 sources=[],
-                run_stats={"sources": 0, "scraped_pages": 0},
+                run_stats=stats,
             )
 
         min_words = self._word_target(detail_level)
@@ -88,8 +96,13 @@ class AISearchService:
                         "scrape_missed": scrape_missed,
                     },
                 )
+            errors = getattr(report, "errors", None) or []
+            detail = "; ".join(str(item) for item in errors if str(item).strip())
+            reason = detail[:300] if detail else f"status={getattr(report, 'status', 'unknown')}"
+            logger.warning("AI search call did not complete: %s", reason)
         except Exception:
-            pass
+            reason = "aisearch raised before completing"
+            logger.warning("AI search call failed", exc_info=True)
 
         fallback_lines = [f"# {query}", "", "## Answer", ""]
         for idx, source in enumerate(sources[:8], start=1):
@@ -109,6 +122,7 @@ class AISearchService:
                 "sources": len(sources),
                 "scraped_pages": len(scraped_pages),
                 "scrape_missed": scrape_missed,
+                "fallback_reason": reason,
             },
         )
 

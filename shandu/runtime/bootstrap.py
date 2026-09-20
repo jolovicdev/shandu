@@ -38,7 +38,6 @@ class RuntimeBootstrap:
         api_key_value = str(config.get("api", "api_key", "")).strip()
         if api_key_env and api_key_value and not os.getenv(api_key_env):
             os.environ[api_key_env] = api_key_value
-        litellm.set_verbose = False
         litellm.suppress_debug_info = True
         storage = Path(settings.storage_dir)
         storage.mkdir(parents=True, exist_ok=True)
@@ -60,7 +59,7 @@ class RuntimeBootstrap:
         try:
             self.desk.event_bus.subscribe("llm.completed", self.cost_tracker.handle_event)
         except Exception:
-            pass
+            logger.warning("Failed to subscribe cost tracker to llm.completed", exc_info=True)
 
     def close(self) -> None:
         try:

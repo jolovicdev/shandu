@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
@@ -26,6 +27,16 @@ from ..prompts import (
     synthesizer_job,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def _failure_reason(report: Any, label: str) -> str:
+    errors = getattr(report, "errors", None) or []
+    detail = "; ".join(str(item) for item in errors if str(item).strip())
+    if detail:
+        return detail[:300]
+    return f"{label} status={getattr(report, 'status', 'unknown')}"
+
 
 class _PlanPayload(BaseModel):
     goals: list[str] = Field(default_factory=list)
@@ -51,6 +62,7 @@ class LeadAgent:
     def __init__(self, runtime: RuntimeExecutionLike) -> None:
         self._runtime = runtime
         self.fallback_count = 0
+        self.last_fallback_reason: str | None = None
 
     async def create_iteration_plan(
         self,
@@ -92,10 +104,14 @@ class LeadAgent:
                     continue_loop=report.data.continue_loop,
                     stop_reason=report.data.stop_reason,
                 )
+            reason = _failure_reason(report, "planner")
+            logger.warning("Lead planner call did not complete: %s", reason)
         except Exception:
-            pass
+            reason = "planner raised before completing"
+            logger.warning("Lead planner call failed", exc_info=True)
 
         self.fallback_count += 1
+        self.last_fallback_reason = reason
 
         return IterationPlan(
             iteration_index=iteration,
@@ -146,10 +162,14 @@ class LeadAgent:
                         should_continue=report.data.coverage_should_continue,
                     ),
                 )
+            reason = _failure_reason(report, "synthesizer")
+            logger.warning("Lead synthesizer call did not complete: %s", reason)
         except Exception:
-            pass
+            reason = "synthesizer raised before completing"
+            logger.warning("Lead synthesizer call failed", exc_info=True)
 
         self.fallback_count += 1
+        self.last_fallback_reason = reason
 
         fallback_summary = "No structured synthesis available; using deterministic fallback."
         continue_loop = iteration + 1 < request.max_iterations and bool(iteration_evidence)
@@ -197,10 +217,14 @@ class LeadAgent:
                     sections=[],
                     markdown=markdown,
                 )
+            reason = _failure_reason(report, "reporter")
+            logger.warning("Lead reporter call did not complete: %s", reason)
         except Exception:
-            pass
+            reason = "reporter raised before completing"
+            logger.warning("Lead reporter call failed", exc_info=True)
 
         self.fallback_count += 1
+        self.last_fallback_reason = reason
 
         findings = [
             item

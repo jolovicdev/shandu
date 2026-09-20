@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from urllib.parse import urlparse
 
@@ -10,6 +11,8 @@ from pydantic import BaseModel, Field
 from ..contracts import CitationEntry, EvidenceRecord
 from ..interfaces import RuntimeExecutionLike
 from ..prompts import citation_instructions, citation_job
+
+logger = logging.getLogger(__name__)
 
 # Evidence below this credibility stays out of the ledger so weak pages can
 # inform caveats without earning a reference entry. Snippet-only fallbacks
@@ -73,8 +76,14 @@ class CitationAgent:
                 normalized = self._normalize(report.data.citations, citable)
                 if normalized:
                     return normalized
+            errors = getattr(report, "errors", None) or []
+            detail = "; ".join(str(item) for item in errors if str(item).strip())
+            logger.warning(
+                "Citation call did not complete: %s",
+                detail[:300] if detail else f"status={getattr(report, 'status', 'unknown')}",
+            )
         except Exception:
-            pass
+            logger.warning("Citation call failed", exc_info=True)
 
         return self._fallback(citable)
 

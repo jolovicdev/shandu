@@ -4,7 +4,7 @@ import asyncio
 import time
 from collections.abc import Awaitable
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from blackgeorge.collaboration import Blackboard, Channel
 from blackgeorge.utils import new_id
@@ -83,6 +83,7 @@ class LeadOrchestrator:
         iteration_summaries: list[IterationSynthesis] = []
         lead_fallbacks = self._lead.fallback_count
         extraction_fallbacks = 0
+        fallback_reasons: list[str] = []
 
         def with_model_call_count(
             metrics: dict[str, Any] | None = None,
@@ -108,8 +109,11 @@ class LeadOrchestrator:
                         stage="error",
                         message="Lead planner fell back to deterministic plan",
                         iteration=iteration,
-                        payload={"method": "create_iteration_plan"},
+                        payload=self._fallback_payload("create_iteration_plan"),
                     ),
+                )
+                self._record_fallback_reason(
+                    fallback_reasons, "create_iteration_plan"
                 )
             self._memory.write(
                 scope,
@@ -163,6 +167,9 @@ class LeadOrchestrator:
                         agent_model_calls += 1
                     elif trace_type == "extraction_fallback":
                         extraction_fallbacks += 1
+                        trace_reason = payload.get("reason")
+                        if trace_reason:
+                            fallback_reasons.append(str(trace_reason)[:300])
                     trace_event = self._build_search_trace_event(
                         iteration=iteration,
                         trace_type=trace_type,
@@ -274,8 +281,11 @@ class LeadOrchestrator:
                         stage="error",
                         message="Lead synthesizer fell back to deterministic synthesis",
                         iteration=iteration,
-                        payload={"method": "synthesize_iteration"},
+                        payload=self._fallback_payload("synthesize_iteration"),
                     ),
+                )
+                self._record_fallback_reason(
+                    fallback_reasons, "synthesize_iteration"
                 )
             iteration_summaries.append(synthesis)
             self._memory.write(
@@ -340,9 +350,10 @@ class LeadOrchestrator:
                 RunEvent(
                     stage="error",
                     message="Lead reporter fell back to deterministic report",
-                    payload={"method": "build_final_report"},
+                    payload=self._fallback_payload("build_final_report"),
                 ),
             )
+            self._record_fallback_reason(fallback_reasons, "build_final_report")
         rendered_report = self._report.render_result(request, draft, citations)
         report_markdown = rendered_report.markdown
         report_citations = rendered_report.citations
@@ -366,6 +377,8 @@ class LeadOrchestrator:
             "agent_model_calls": agent_model_calls,
             "agent_fallbacks": lead_fallbacks + extraction_fallbacks,
         }
+        if fallback_reasons:
+            run_stats["fallback_reasons"] = list(fallback_reasons)
         run_stats.update(self._quality_summary(all_evidence))
         self._append_cost_stats(run_stats, cost_start)
 
@@ -420,6 +433,20 @@ class LeadOrchestrator:
         result = callback(event)
         if isinstance(result, Awaitable):
             await result
+
+    def _fallback_payload(self, method: str) -> dict[str, Any]:
+        payload: dict[str, Any] = {"method": method}
+        reason = getattr(self._lead, "last_fallback_reason", None)
+        if reason:
+            payload["reason"] = str(reason)[:300]
+        return payload
+
+    def _record_fallback_reason(
+        self, fallback_reasons: list[str], method: str
+    ) -> None:
+        reason = getattr(self._lead, "last_fallback_reason", None)
+        if reason:
+            fallback_reasons.append(f"{method}: {reason}"[:300])
 
     @staticmethod
     def _adaptive_should_continue(
@@ -506,6 +533,7 @@ class LeadOrchestrator:
         task_id = str(payload.get("task_id", ""))
         metrics: dict[str, Any] = {"trace_type": trace_type}
         message = f"Task {task_id} update" if task_id else "Subagent update"
+        stage: Literal["search", "error"] = "search"
 
         if trace_type == "query_started":
             query = str(payload.get("query", "")).strip()
@@ -563,9 +591,16 @@ class LeadOrchestrator:
             )
             if "url" in payload:
                 metrics["url"] = payload["url"]
+        elif trace_type == "search_failed":
+            stage = "error"
+            message = (
+                f"Task {task_id} search failed" if task_id else "Search failed"
+            )
+            if "query" in payload:
+                metrics["query"] = payload["query"]
 
         return RunEvent(
-            stage="search",
+            stage=stage,
             message=message,
             iteration=iteration,
             metrics=metrics,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import time
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -11,6 +12,8 @@ from typing import Any, Protocol, cast
 from pydantic import BaseModel
 
 from ..config import config
+
+logger = logging.getLogger(__name__)
 
 # ddgs 9.x text backends. A comma-delimited entry queries those engines in
 # parallel threads and merges URL-deduped results, so the primary entry gets
@@ -64,6 +67,7 @@ class SearchService:
         self._cache: OrderedDict[str, tuple[float, list[SearchHit]]] = OrderedDict()
         self._cache_ttl = 300.0
         self._inflight: dict[str, asyncio.Task[list[SearchHit]]] = {}
+        self.last_error: str | None = None
 
     def _cache_key(self, query: str, max_results: int) -> str:
         return f"{query}:{max_results}:{self._region}:{self._safesearch}"
@@ -106,15 +110,24 @@ class SearchService:
 
     async def _do_search(self, key: str, query: str, max_results: int) -> list[SearchHit]:
         raw: list[Mapping[str, Any]] | None = None
+        backend_errors: list[str] = []
         for backend in _TEXT_BACKENDS:
             try:
                 raw = await asyncio.to_thread(self._fetch_backend, query, max_results, backend)
-            except Exception:
+            except Exception as exc:
                 raw = None
+                backend_errors.append(f"{backend}: {exc}")
+                logger.warning("Search backend %s failed", backend, exc_info=True)
             if raw:
                 break
         if not raw:
+            if len(backend_errors) == len(_TEXT_BACKENDS):
+                self.last_error = "; ".join(backend_errors)[:300]
+                logger.warning("All search backends failed for query %r", query)
+            else:
+                self.last_error = None
             return []
+        self.last_error = None
 
         hits: list[SearchHit] = []
         seen: set[str] = set()

@@ -9,6 +9,7 @@ from rich.columns import Columns
 from rich.console import Console, Group
 from rich.layout import Layout
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -89,10 +90,10 @@ class ShanduUI:
         header_table = Table.grid(padding=(0, 1))
         header_table.add_column(style="label", no_wrap=True)
         header_table.add_column(style="accent")
-        header_table.add_row("Run ID", snapshot.run_id)
-        header_table.add_row("Stage", snapshot.current_stage)
-        header_table.add_row("Message", snapshot.current_message)
-        header_table.add_row("Model", snapshot.model)
+        header_table.add_row("Run ID", escape(snapshot.run_id))
+        header_table.add_row("Stage", escape(snapshot.current_stage))
+        header_table.add_row("Message", escape(snapshot.current_message))
+        header_table.add_row("Model", escape(snapshot.model))
         header_table.add_row("Iteration", str(snapshot.iteration + 1))
 
         layout["header"].update(
@@ -115,7 +116,13 @@ class ShanduUI:
             url = str(event.payload.get("url", "")).strip()
             if url:
                 message = f"{message} | {shorten(url, width=52, placeholder='...')}"
-            task_table.add_row(str(idx), event.stage, task_id, trace_type, message)
+            task_table.add_row(
+                str(idx),
+                escape(event.stage),
+                escape(task_id),
+                escape(trace_type),
+                escape(message),
+            )
         if task_table.row_count == 0:
             task_table.add_row("-", "bootstrap", "-", "-", "No events yet")
 
@@ -126,12 +133,12 @@ class ShanduUI:
         metrics_table = Table(box=box.SIMPLE_HEAVY, border_style="panel")
         metrics_table.add_column("Metric", style="label", no_wrap=True)
         metrics_table.add_column("Value", style="accent")
-        metrics_table.add_row("Query", snapshot.request.query)
+        metrics_table.add_row("Query", escape(snapshot.request.query))
         metrics_table.add_row("Max Iterations", str(snapshot.request.max_iterations))
         metrics_table.add_row("Parallelism", str(snapshot.request.parallelism))
-        metrics_table.add_row("Detail", snapshot.request.detail_level)
+        metrics_table.add_row("Detail", escape(snapshot.request.detail_level))
         for key, value in snapshot.metrics.items():
-            metrics_table.add_row(str(key), str(value))
+            metrics_table.add_row(escape(str(key)), escape(str(value)))
 
         layout["right"].update(
             Panel(metrics_table, title="Run Metrics", border_style="panel", box=box.ROUNDED)
@@ -157,7 +164,11 @@ class ShanduUI:
             query = str(event.payload.get("query", "") or event.metrics.get("query", "")).strip()
             url = str(event.payload.get("url", "")).strip()
             details = query or url or event.message
-            trace_table.add_row(task_id, trace_type, shorten(details, width=70, placeholder="..."))
+            trace_table.add_row(
+                escape(task_id),
+                escape(trace_type),
+                escape(shorten(details, width=70, placeholder="...")),
+            )
             if trace_table.row_count >= 6:
                 break
         if trace_table.row_count == 0:
@@ -176,7 +187,7 @@ class ShanduUI:
         summary = Table.grid(padding=(0, 1))
         summary.add_column(style="label")
         summary.add_column(style="accent")
-        summary.add_row("Run ID", result.run_id)
+        summary.add_row("Run ID", escape(result.run_id))
         summary.add_row("Iterations", str(result.run_stats.get("iterations", 0)))
         summary.add_row("Evidence", str(result.run_stats.get("evidence_count", 0)))
         summary.add_row("Citations", str(result.run_stats.get("citation_count", 0)))
@@ -212,7 +223,9 @@ class ShanduUI:
         citations.add_column("Publisher", style="label")
         citations.add_column("Title", style="accent")
         for item in result.citations[:8]:
-            citations.add_row(str(item.citation_id), item.publisher, item.title)
+            citations.add_row(
+                str(item.citation_id), escape(item.publisher), escape(item.title)
+            )
         if citations.row_count == 0:
             citations.add_row("-", "none", "No citations")
 
@@ -237,7 +250,7 @@ class ShanduUI:
         table.add_column("Field", style="label")
         table.add_column("Value", style="accent")
         for key in ["run_id", "status", "created_at", "updated_at"]:
-            table.add_row(key, str(payload.get(key, "")))
+            table.add_row(key, escape(str(payload.get(key, ""))))
         events = payload.get("events", [])
         table.add_row("events", str(len(events) if isinstance(events, list) else 0))
         return Panel(table, title="Run Inspection", border_style="panel", box=box.ROUNDED)
@@ -248,7 +261,7 @@ class ShanduUI:
         table.add_column("Title", style="label")
         table.add_column("URL", style="accent")
         for idx, source in enumerate(result.sources[:10], start=1):
-            table.add_row(str(idx), source.title, source.url)
+            table.add_row(str(idx), escape(source.title), escape(source.url))
         if table.row_count == 0:
             table.add_row("-", "No sources", "-")
         return Panel(table, title="AISearch Sources", border_style="panel", box=box.ROUNDED)
@@ -259,23 +272,27 @@ class ShanduUI:
             parts.append(f"[muted]iter={event.iteration + 1}[/]")
         task_id = str(event.payload.get("task_id", "")).strip()
         if task_id:
-            parts.append(f"[muted]task={task_id}[/]")
+            parts.append(f"[muted]task={escape(task_id)}[/]")
         trace_type = str(event.metrics.get("trace_type", "")).strip()
         if trace_type:
-            parts.append(f"[muted]trace={trace_type}[/]")
-        parts.append(f"[accent]{event.message}[/]")
+            parts.append(f"[muted]trace={escape(trace_type)}[/]")
+        parts.append(f"[accent]{escape(event.message)}[/]")
         query = str(event.payload.get("query", "") or event.metrics.get("query", "")).strip()
         if query:
-            parts.append(f"[muted]q={shorten(query, width=48, placeholder='...')}[/]")
+            parts.append(
+                f"[muted]q={escape(shorten(query, width=48, placeholder='...'))}[/]"
+            )
         url = str(event.payload.get("url", "")).strip()
         if url:
-            parts.append(f"[muted]url={shorten(url, width=68, placeholder='...')}[/]")
+            parts.append(
+                f"[muted]url={escape(shorten(url, width=68, placeholder='...'))}[/]"
+            )
         urls = event.payload.get("urls")
         if isinstance(urls, list) and urls:
             parts.append(f"[muted]urls={len(urls)}[/]")
         if event.metrics:
             metrics_text = ", ".join(
-                f"{key}={value}"
+                f"{escape(str(key))}={escape(str(value))}"
                 for key, value in sorted(event.metrics.items(), key=lambda item: item[0])
             )
             if metrics_text:
@@ -283,10 +300,10 @@ class ShanduUI:
         return Text.from_markup(" ".join(parts))
 
     def success(self, message: str) -> Panel:
-        return Panel(message, border_style="ok", box=box.ROUNDED)
+        return Panel(escape(message), border_style="ok", box=box.ROUNDED)
 
     def warning(self, message: str) -> Panel:
-        return Panel(message, border_style="warn", box=box.ROUNDED)
+        return Panel(escape(message), border_style="warn", box=box.ROUNDED)
 
     def error(self, message: str) -> Panel:
-        return Panel(message, border_style="danger", box=box.ROUNDED)
+        return Panel(escape(message), border_style="danger", box=box.ROUNDED)

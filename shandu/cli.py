@@ -7,6 +7,7 @@ from typing import cast
 
 import click
 from pydantic import ValidationError
+from rich.markup import escape
 
 from .config import config, infer_api_key_env_name
 from .contracts import ResearchRequest, RunEvent
@@ -38,6 +39,10 @@ def _resolve_depth_policy(value: str | None, fallback: DepthPolicy) -> DepthPoli
     return fallback
 
 
+def _run_query_line(query: str) -> str:
+    return f"[brand]Running:[/] [accent]{escape(query)}[/]"
+
+
 @click.group()
 def cli() -> None:
     ui.print_banner()
@@ -61,7 +66,7 @@ def info() -> None:
     table = ui.inspect_panel({"run_id": "config", "status": "active", "created_at": "-", "updated_at": "-", "events": []})
     console.print(table)
     for label, value in rows:
-        console.print(f"[label]{label}:[/] [accent]{value}[/]")
+        console.print(f"[label]{label}:[/] [accent]{escape(str(value))}[/]")
 
 
 @cli.command()
@@ -76,7 +81,7 @@ def configure() -> None:
     key_in_env = bool(os.getenv(api_key_env))
     if existing_key or key_in_env:
         console.print(
-            f"[muted]{api_key_env} already available (env or saved config). "
+            f"[muted]{escape(api_key_env)} already available (env or saved config). "
             "Leave value empty to keep current key.[/]"
         )
     api_key = click.prompt(
@@ -120,21 +125,39 @@ def configure() -> None:
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=7860, type=int, show_default=True)
 @click.option("--share", is_flag=True, help="Create a public gradio share URL.")
+@click.option("--auth", default=None, help="Basic auth credentials as user:pass.")
 @click.option("--browser/--no-browser", default=False, show_default=True)
-def gui_command(host: str, port: int, share: bool, browser: bool) -> None:
+def gui_command(host: str, port: int, share: bool, auth: str | None, browser: bool) -> None:
+    credentials = _parse_gui_auth(auth)
+    if share and credentials is None:
+        raise click.ClickException("--share requires --auth user:pass.")
+    if credentials is None and host not in ("127.0.0.1", "localhost", "::1"):
+        console.print(
+            ui.warning(f"GUI on {host} without --auth is open to the network.")
+        )
+
     try:
         from .ui.gradio_app import launch_gui
     except Exception as exc:
         console.print(ui.error(f"Failed to initialize GUI: {exc}"))
         return
 
-    console.print(f"[brand]Launching Shandu GUI[/] [muted]http://{host}:{port}[/]")
+    console.print(f"[brand]Launching Shandu GUI[/] [muted]http://{escape(host)}:{port}[/]")
     try:
-        launch_gui(host=host, port=port, share=share, inbrowser=browser)
+        launch_gui(host=host, port=port, share=share, inbrowser=browser, auth=credentials)
     except RuntimeError as exc:
         console.print(ui.error(str(exc)))
     except Exception as exc:
         console.print(ui.error(f"GUI runtime error: {exc}"))
+
+
+def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
+    if value is None:
+        return None
+    user, separator, password = value.partition(":")
+    if not separator or not user or not password:
+        raise click.ClickException("--auth must be user:pass.")
+    return user, password
 
 
 @cli.command("run")
@@ -198,7 +221,7 @@ def run_command(
         snapshot.apply(event)
         console.print(ui.event_line(event))
 
-    console.print(f"[brand]Running:[/] [accent]{request.query}[/]")
+    console.print(_run_query_line(request.query))
     try:
         result = engine.run_sync(request, progress_callback=on_event)
     finally:
@@ -281,24 +304,42 @@ def inspect(run_id: str) -> None:
 @cli.command()
 @click.option("--force", is_flag=True)
 def clean(force: bool) -> None:
-    runtime_dir = Path(str(config.get("runtime", "storage_dir", ".blackgeorge")))
-    config_dir = Path(os.path.expanduser("~/.shandu/cache"))
-
-    targets = [runtime_dir, config_dir]
-    existing = [str(path) for path in targets if path.exists()]
-    if not existing:
+    runtime_dir = Path(
+        str(config.get("runtime", "storage_dir", ".blackgeorge"))
+    ).expanduser().resolve()
+    if not runtime_dir.exists():
         console.print(ui.warning("No runtime artifacts found."))
         return
 
-    if not force and not click.confirm(f"Delete {', '.join(existing)}?"):
+    refusal = _refuse_clean_target(runtime_dir)
+    if refusal is not None:
+        raise click.ClickException(refusal)
+
+    if not force and not click.confirm(f"Delete {runtime_dir}?"):
         console.print(ui.warning("Cleanup cancelled."))
         return
 
-    for path in targets:
-        if path.exists():
-            shutil.rmtree(path)
-
+    shutil.rmtree(runtime_dir)
     console.print(ui.success("Runtime artifacts removed."))
+
+
+_CLEAN_MARKERS = ("blackgeorge.db", "memory.db")
+
+
+def _refuse_clean_target(target: Path) -> str | None:
+    if not target.is_dir():
+        return f"Refusing to delete {target}: not a directory."
+    home = Path(os.path.expanduser("~")).resolve()
+    if target == home:
+        return f"Refusing to delete home directory {target}."
+    if target == Path(target.anchor):
+        return f"Refusing to delete filesystem root {target}."
+    if not any((target / marker).exists() for marker in _CLEAN_MARKERS):
+        return (
+            f"Refusing to delete {target}: no storage marker "
+            f"({' or '.join(_CLEAN_MARKERS)}) found."
+        )
+    return None
 
 
 if __name__ == "__main__":

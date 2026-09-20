@@ -68,7 +68,14 @@ class Config:
         self._path = Path(os.path.expanduser("~/.shandu/config.json"))
         self._load_file()
         self._load_env()
+        self._normalize_storage_dir()
         self.apply_provider_api_key()
+
+    def _normalize_storage_dir(self) -> None:
+        raw = str(self._config["runtime"].get("storage_dir", ".blackgeorge") or ".blackgeorge")
+        self._config["runtime"]["storage_dir"] = str(
+            Path(raw).expanduser().resolve()
+        )
 
     def _load_file(self) -> None:
         if not self._path.exists():
@@ -152,8 +159,10 @@ class Config:
 
     def save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("w", encoding="utf-8") as handle:
+        fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(self._config, handle, indent=2)
+        os.chmod(self._path, 0o600)
 
 
 config = Config()

@@ -75,7 +75,7 @@ class LeadOrchestrator:
         agent_model_calls = 0
         all_evidence: list[EvidenceRecord] = []
         iteration_summaries: list[IterationSynthesis] = []
-        lead_fallbacks = self._lead.fallback_count
+        lead_fallbacks = fallbacks_before = self._lead.fallback_count
         extraction_fallbacks = 0
         fallback_reasons: list[str] = []
         llm_totals: dict[str, Any] = {
@@ -427,7 +427,7 @@ class LeadOrchestrator:
             "candidate_citation_count": len(citations),
             "citation_count": len(report_citations),
             "agent_model_calls": agent_model_calls,
-            "agent_fallbacks": lead_fallbacks + extraction_fallbacks,
+            "agent_fallbacks": lead_fallbacks - fallbacks_before + extraction_fallbacks,
         }
         if fallback_reasons:
             run_stats["fallback_reasons"] = list(fallback_reasons)

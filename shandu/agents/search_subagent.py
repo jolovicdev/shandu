@@ -441,7 +441,7 @@ class SearchSubagent:
             "task_expected_output": task.expected_output,
             "url": url,
             "title": title,
-            "text": text[:7000],
+            "text": text,
         }
         worker = Worker(
             name="SubagentExtractor",

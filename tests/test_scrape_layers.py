@@ -277,9 +277,9 @@ def test_detect_fetch_error_returns_none_for_benign_pages(html, text) -> None:
 
 
 def test_extract_html_caps_long_successful_extraction() -> None:
-    html = _long_html("Long Article", words=5000)
+    html = _long_html("Long Article", words=30000)
     result = _extract_html(html)
-    assert len(result.text) <= 18000
+    assert len(result.text) <= 120_000
 
 
 

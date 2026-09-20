@@ -546,6 +546,26 @@ def test_compact_evidence_applies_budget_lowest_score_first() -> None:
     assert urls == sorted(urls, key=lambda url: int(url.rsplit("/", 1)[1]))
 
 
+def test_compact_evidence_gives_small_corpus_full_text() -> None:
+    from shandu.agents.lead import LeadAgent
+
+    def payload(count: int) -> list[dict]:
+        return [
+            {
+                "evidence_id": f"e{index}",
+                "requested_url": f"https://x.example/{index}",
+                "extracted_text": "x" * 9000,
+            }
+            for index in range(count)
+        ]
+
+    small = LeadAgent._compact_evidence(payload(10), [])
+    large = LeadAgent._compact_evidence(payload(150), [])
+
+    assert {len(record["extracted_text"]) for record in small} == {9000}
+    assert {len(record["extracted_text"]) for record in large} == {2200}
+
+
 def test_adaptive_loop_weighs_credibility() -> None:
     coverage = SimpleNamespace(
         coverage_score=0.7,

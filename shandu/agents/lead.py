@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 # Reporter evidence budget in characters (~30k tokens), leaving room for
 # instructions, prior summaries, and output inside typical context windows.
 _REPORTER_EVIDENCE_BUDGET = 120_000
+# Floor for one record's extracted text. A record gets an equal share of the
+# budget when that is larger, so a small corpus reaches the reporter whole.
+_MIN_EVIDENCE_TEXT_CHARS = 2200
 
 
 def _failure_reason(report: Any, label: str) -> str:
@@ -294,6 +297,10 @@ class LeadAgent:
             for evidence_id in candidate.get("evidence_ids") or []:
                 if evidence_id:
                     citation_by_evidence.setdefault(str(evidence_id), citation_id)
+        text_chars = max(
+            _MIN_EVIDENCE_TEXT_CHARS,
+            _REPORTER_EVIDENCE_BUDGET // max(1, len(evidence_payload)),
+        )
         compact: list[dict[str, Any]] = []
         scores: list[float] = []
         for entry in evidence_payload:
@@ -317,7 +324,7 @@ class LeadAgent:
                     "domain": str(entry.get("domain", "") or ""),
                     "title": str(entry.get("title", "")),
                     "snippet": str(entry.get("snippet", "")),
-                    "extracted_text": str(entry.get("extracted_text", ""))[:2200],
+                    "extracted_text": str(entry.get("extracted_text", ""))[:text_chars],
                     "confidence": confidence,
                     "published_at": entry.get("published_at"),
                     "source_class": entry.get("source_class"),

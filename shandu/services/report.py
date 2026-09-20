@@ -81,9 +81,9 @@ class ReportService:
             if draft.markdown and draft.markdown.strip()
             else self._render_from_sections(request, draft)
         )
-        markdown = self._strip_provenance_columns(markdown)
-        markdown = self._strip_horizontal_rules(markdown)
         prose, protected = self._extract_protected_segments(markdown)
+        prose = self._strip_provenance_columns(prose)
+        prose = self._strip_horizontal_rules(prose)
         normalized = self._normalize_citation_markers(prose, citations)
         normalized, normalized_citations = self._reindex_citation_numbers(
             normalized, citations
@@ -141,16 +141,9 @@ class ReportService:
     def _strip_provenance_columns(self, markdown: str) -> str:
         lines = markdown.splitlines()
         output: list[str] = []
-        in_fence = False
         index = 0
         while index < len(lines):
-            stripped = lines[index].strip()
-            if stripped.startswith("```"):
-                in_fence = not in_fence
-                output.append(lines[index])
-                index += 1
-                continue
-            if in_fence or not self._is_table_row(lines[index]):
+            if not self._is_table_row(lines[index]):
                 output.append(lines[index])
                 index += 1
                 continue

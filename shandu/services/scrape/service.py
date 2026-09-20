@@ -110,18 +110,20 @@ class _PublicAddressConnector(aiohttp.TCPConnector):
 async def _proxy_target_blocked(url: str) -> bool:
     try:
         parts = urlsplit(url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
     except ValueError:
         return True
     host = parts.hostname or ""
     if not host:
         return True
-    port = parts.port or (443 if parts.scheme == "https" else 80)
     resolver = aiohttp.DefaultResolver()
     try:
         try:
             records = await resolver.resolve(host, port)
         except Exception:
-            return False
+            # This check is the only private-address guard on the proxy
+            # path, so an unresolvable host is refused.
+            return True
         return not any(
             _record_host_is_public(str(record.get("host", ""))) for record in records
         )

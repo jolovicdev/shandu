@@ -149,14 +149,14 @@ def test_ledger_prefers_site_name_for_publisher() -> None:
             "A Named Publisher Article Title",
             site_name="Example News",
         ),
-        _record("e2", "https://bare.example/page", "A Page Without Site Metadata"),
+        _record("e2", "https://www.bare.example/page", "A Page Without Site Metadata"),
     ]
 
     citations = asyncio.run(agent.build_citations("q", evidence))
 
     by_url = {entry.url: entry for entry in citations}
     assert by_url["https://news.example/articles/1"].publisher == "Example News"
-    assert by_url["https://bare.example/page"].publisher == "bare.example"
+    assert by_url["https://www.bare.example/page"].publisher == "bare.example"
 
 
 def test_empty_evidence_yields_empty_ledger() -> None:

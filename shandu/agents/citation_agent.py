@@ -68,7 +68,8 @@ class CitationAgent:
         accessed = date.today().isoformat()
         for url, items in grouped.items():
             first = items[0]
-            publisher = first.site_name or urlparse(url).netloc or "unknown"
+            host = urlparse(url).netloc.removeprefix("www.")
+            publisher = first.site_name or host or "unknown"
             title = self._sanitize_title(first.title, publisher)
             evidence_ids = sorted({entry.evidence_id for entry in items})
             # Fallback titles equal the publisher; merging on them would fuse

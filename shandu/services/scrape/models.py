@@ -23,6 +23,7 @@ class ScrapedPage(BaseModel):
     content_type: str | None = None
     fetch_error: str | None = None
     http_status: int | None = None
+    site_name: str | None = None
 
 
 class _ExtractionResult:
@@ -32,11 +33,13 @@ class _ExtractionResult:
         text: str = "",
         blocks: list[ContentBlock] | None = None,
         published_at: str | None = None,
+        site_name: str | None = None,
     ) -> None:
         self.title = title
         self.text = text
         self.blocks = blocks or []
         self.published_at = published_at
+        self.site_name = site_name
 
 
 class _FetchResult:

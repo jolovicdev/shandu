@@ -433,7 +433,7 @@ def test_orchestrator_adds_cost_stats_when_available() -> None:
     request = ResearchRequest(query="cost-test", max_iterations=1, parallelism=1)
     result = asyncio.run(orchestrator.run(request))
 
-    assert result.run_stats["agent_model_calls"] == 4
+    assert result.run_stats["agent_model_calls"] == 3
     assert result.run_stats["metered_calls"] == 6
     assert result.run_stats["cost_coverage"] == "full"
     assert result.run_stats["llm_tokens"] == 9000
@@ -475,7 +475,8 @@ def test_compact_evidence_carries_source_quality_fields() -> None:
                 "credibility_score": 0.72,
                 "quality_flags": ["undated"],
             }
-        ]
+        ],
+        [],
     )
 
     entry = compact[0]
@@ -484,6 +485,25 @@ def test_compact_evidence_carries_source_quality_fields() -> None:
     assert entry["source_class"] == "journalism"
     assert entry["credibility_score"] == 0.72
     assert entry["quality_flags"] == ["undated"]
+    assert entry["citation_id"] is None
+
+
+def test_compact_evidence_attaches_citation_id_per_record() -> None:
+    from shandu.agents.lead import LeadAgent
+
+    compact = LeadAgent._compact_evidence(
+        [
+            {"evidence_id": "e1", "task_id": "t1"},
+            {"evidence_id": "e2", "task_id": "t1"},
+            {"evidence_id": "e3", "task_id": "t2"},
+        ],
+        [
+            {"citation_id": 1, "evidence_ids": ["e1", "e2"]},
+            {"citation_id": 2, "evidence_ids": ["e9"]},
+        ],
+    )
+
+    assert [entry["citation_id"] for entry in compact] == [1, 1, None]
 
 
 def test_adaptive_loop_weighs_credibility() -> None:

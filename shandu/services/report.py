@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..contracts import CitationEntry, FinalReportDraft, ResearchRequest
+
+# Placeholder for a protected segment (fenced code, inline code, link) while
+# the marker passes run. Null bytes cannot appear in model output, and the
+# token carries no brackets, pipes, or markdown structure the passes scan for.
+_PROTECTED_TEMPLATE = "\x00shandu-protected-{}:\x00"
+
+# Inline code spans pair identical backtick runs; the backreference keeps
+# double-backtick spans containing single backticks intact.
+_CODE_SPAN_PATTERN = re.compile(r"(?P<ticks>`+)(?P<body>.+?)(?P=ticks)")
 
 # Table headers whose whole purpose is provenance; the reporter prompt bans
 # them, and this renderer pass removes any that slip through.
@@ -52,7 +62,8 @@ class ReportService:
         )
         markdown = self._strip_provenance_columns(markdown)
         markdown = self._strip_horizontal_rules(markdown)
-        normalized = self._normalize_citation_markers(markdown, citations)
+        prose, protected = self._extract_protected_segments(markdown)
+        normalized = self._normalize_citation_markers(prose, citations)
         normalized, normalized_citations = self._reindex_citation_numbers(
             normalized, citations
         )
@@ -61,6 +72,7 @@ class ReportService:
             body,
             normalized_citations,
         )
+        body = self._restore_protected_segments(body, protected)
         reference_lines = self._reference_lines(normalized_citations)
         if not reference_lines:
             return RenderedReport(markdown=body.strip(), citations=normalized_citations)
@@ -185,33 +197,52 @@ class ReportService:
 
     def _strip_references_section(self, markdown: str) -> str:
         heading_pattern = re.compile(
-            r"^\s{0,3}(?:#{1,6}\s*)?(?:key\s+)?"
+            r"^\s{0,3}(#{1,6}\s*)?(?:key\s+)?"
             r"(?:references?|sources?|bibliography|citations?)\s*:?\s*$",
             re.IGNORECASE,
         )
         lines = markdown.splitlines()
-        for index, line in enumerate(lines):
-            if heading_pattern.match(line) and self._looks_like_reference_block(
-                lines[index + 1 :]
-            ):
-                return "\n".join(lines[:index]).strip()
-        return markdown.strip()
-
-    def _looks_like_reference_block(self, lines: list[str]) -> bool:
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
+        output: list[str] = []
+        index = 0
+        while index < len(lines):
+            match = heading_pattern.match(lines[index])
+            if not match:
+                output.append(lines[index])
+                index += 1
                 continue
-            if re.match(r"^\s{0,3}#{1,6}\s+\S+", line):
-                return False
-            return self._looks_like_reference_entry(stripped)
-        return True
+            # A bare heading sorts below every ATX level so any later
+            # heading ends its block.
+            level = len(match.group(1).strip()) if match.group(1) else 7
+            block_end = self._bibliography_end(lines, index, level)
+            if block_end is None:
+                output.append(lines[index])
+                index += 1
+                continue
+            index = block_end
+        return "\n".join(output).strip()
 
-    def _looks_like_reference_entry(self, line: str) -> bool:
+    def _bibliography_end(
+        self, lines: list[str], start: int, level: int
+    ) -> int | None:
+        cursor = start + 1
+        while cursor < len(lines) and not lines[cursor].strip():
+            cursor += 1
+        if cursor >= len(lines):
+            return len(lines)
+        if not self._looks_like_reference_entry(lines[cursor].strip()):
+            return None
+        end = cursor + 1
+        while end < len(lines):
+            boundary = re.match(r"^\s{0,3}(#{1,6})\s+", lines[end])
+            if boundary and len(boundary.group(1)) <= level:
+                break
+            end += 1
+        return end
+
+    @staticmethod
+    def _looks_like_reference_entry(line: str) -> bool:
         return bool(
-            re.match(r"^(?:[-*+]\s*)?(?:\[\d+\]|\d+[\.)])\s+", line)
-            or re.search(r"https?://|www\.", line, re.IGNORECASE)
-            or re.search(r"\[[^\]]+\]\(https?://", line, re.IGNORECASE)
+            re.match(r"^(?:[-*+]\s*)?(?:\[\d+\]|\d+[.)])\s+", line)
         )
 
     @staticmethod
@@ -224,21 +255,102 @@ class ReportService:
             markdown,
         )
 
+    def _extract_protected_segments(
+        self, markdown: str
+    ) -> tuple[str, list[str]]:
+        # Fenced blocks leave as whole units; prose lines are further split
+        # into code spans, links, and plain text. Placeholders hold each
+        # segment's line position so surrounding blank runs still collapse.
+        protected: list[str] = []
+
+        def stash(segment: str) -> str:
+            protected.append(segment)
+            return _PROTECTED_TEMPLATE.format(len(protected) - 1)
+
+        chunks: list[str] = []
+        fence: list[str] = []
+        in_fence = False
+        for line in markdown.splitlines(keepends=True):
+            if line.strip().startswith("```"):
+                fence.append(line)
+                if in_fence:
+                    chunks.append(stash("".join(fence)))
+                    fence = []
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                fence.append(line)
+                continue
+            chunks.append(self._stash_line_segments(line, stash))
+        if fence:
+            chunks.append(stash("".join(fence)))
+        return "".join(chunks), protected
+
+    def _stash_line_segments(
+        self, line: str, stash: Callable[[str], str]
+    ) -> str:
+        candidates = sorted(
+            [(match.start(), match.end()) for match in _CODE_SPAN_PATTERN.finditer(line)]
+            + self._link_spans(line)
+        )
+        spans: list[tuple[int, int]] = []
+        for start, end in candidates:
+            if spans and start < spans[-1][1]:
+                continue
+            spans.append((start, end))
+        if not spans:
+            return line
+        output: list[str] = []
+        cursor = 0
+        for start, end in spans:
+            output.append(line[cursor:start])
+            output.append(stash(line[start:end]))
+            cursor = end
+        output.append(line[cursor:])
+        return "".join(output)
+
+    @staticmethod
+    def _link_spans(line: str) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        for match in re.finditer(r"\[[^\[\]\n]+\]\(", line):
+            depth = 1
+            index = match.end()
+            while index < len(line) and depth > 0:
+                if line[index] == "(":
+                    depth += 1
+                elif line[index] == ")":
+                    depth -= 1
+                index += 1
+            if depth == 0:
+                spans.append((match.start(), index))
+        return spans
+
+    @staticmethod
+    def _restore_protected_segments(
+        markdown: str, protected: list[str]
+    ) -> str:
+        for index, segment in enumerate(protected):
+            markdown = markdown.replace(
+                _PROTECTED_TEMPLATE.format(index), segment
+            )
+        return markdown
+
     def _normalize_citation_markers(
         self,
         markdown: str,
         citations: list[CitationEntry],
     ) -> str:
-        # Split grouped markers ("[1, 2]") into single ones so each number is
-        # validated below instead of bypassing the marker pipeline entirely.
-        markdown = re.sub(
-            r"\[(\d+(?:\s*,\s*\d+)+)\]",
-            lambda match: "".join(
-                f"[{int(token)}]" for token in re.split(r"\s*,\s*", match.group(1))
-            ),
-            markdown,
-        )
         valid_numbers = {str(entry.citation_id) for entry in citations}
+
+        def split_group(match: re.Match[str]) -> str:
+            tokens = re.split(r"\s*,\s*", match.group(1))
+            # A group splits only when every number is a live citation; a
+            # numeric array or interval such as [0, 1] stays literal.
+            if not all(token in valid_numbers for token in tokens):
+                return match.group(0)
+            return "".join(f"[{int(token)}]" for token in tokens)
+
+        markdown = re.sub(r"\[(\d+(?:\s*,\s*\d+)+)\]", split_group, markdown)
         evidence_to_number: dict[str, str] = {}
         for entry in citations:
             number = str(entry.citation_id)

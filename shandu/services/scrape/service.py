@@ -441,6 +441,7 @@ class ScrapeService:
                                 text=result.text,
                                 blocks=result.blocks,
                                 domain=urlparse(final_url).netloc,
+                                site_name=result.site_name,
                                 published_at=published_at,
                                 content_type=content_type,
                                 fetch_error=fetch_error,

@@ -44,7 +44,7 @@ class ShanduEngine:
 
         lead = LeadAgent(runtime)
         subagent = SearchSubagent(runtime, search_service, scrape_service)
-        citation = CitationAgent(runtime)
+        citation = CitationAgent()
         orchestrator = LeadOrchestrator(
             lead_agent=lead,
             search_subagent=subagent,

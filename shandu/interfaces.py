@@ -50,6 +50,7 @@ class ScrapedPageLike(Protocol):
     requested_url: str
     url: str
     title: str
+    site_name: str | None
     text: str
     blocks: Any
     domain: str

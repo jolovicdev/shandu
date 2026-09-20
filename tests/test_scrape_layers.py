@@ -59,6 +59,18 @@ def test_bs4_fallback_extracts_title_text_and_blocks() -> None:
     assert len(result.blocks) > 0
 
 
+def test_extract_html_captures_og_site_name() -> None:
+    html = (
+        '<html><head><title>Article</title>'
+        '<meta property="og:site_name" content="Example News" />'
+        "</head><body><article><h1>Article</h1>"
+        f"<p>{' '.join(['word'] * 120)}</p></article></body></html>"
+    )
+
+    assert _extract_html(html).site_name == "Example News"
+    assert _extract_html(_long_html("No Site Name", words=120)).site_name is None
+
+
 def test_extract_cascade_prefers_trafilatura_then_readability_then_bs4() -> None:
     service = ScrapeService()
     title, text = service._extract(_long_html("Cascade", words=120))

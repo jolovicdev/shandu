@@ -6,7 +6,6 @@ from collections.abc import Awaitable
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from blackgeorge.collaboration import Blackboard, Channel
 from blackgeorge.utils import new_id
 
 from ..contracts import (
@@ -45,8 +44,6 @@ class LeadOrchestrator:
         self._runtime_settings = (
             dict(runtime_settings) if runtime_settings is not None else None
         )
-        self._channel = Channel()
-        self._blackboard = Blackboard()
 
     async def run(
         self,
@@ -222,25 +219,12 @@ class LeadOrchestrator:
 
                 try:
                     async with semaphore:
-                        self._channel.send(
-                            sender="lead",
-                            recipient=task.task_id,
-                            content={
-                                "focus": task.focus,
-                                "queries": task.search_queries,
-                            },
-                        )
                         evidence = await self._search_subagent.execute_task(
                             scope,
                             task,
                             request,
                             progress_callback=on_search_trace,
                         )
-                    self._blackboard.write(
-                        key=f"iteration:{iteration}:task:{task.task_id}",
-                        value=[item.model_dump(mode="json") for item in evidence],
-                        author=task.task_id,
-                    )
                     self._memory.write(
                         scope,
                         f"iteration:{iteration}:task:{task.task_id}:evidence_count",
@@ -375,14 +359,8 @@ class LeadOrchestrator:
             elif not synthesis.continue_loop:
                 break
 
-        agent_model_calls += 1
         citations = await self._citation.build_citations(request.query, all_evidence)
-        citation_usage = absorb_llm_usage(
-            getattr(self._citation, "last_llm_usage", None)
-        )
         citation_metrics = with_model_call_count({"citations": len(citations)})
-        if citation_usage:
-            citation_metrics["llm_usage"] = citation_usage
         await emit(
             RunEvent(
                 stage="cite",

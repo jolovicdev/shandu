@@ -198,7 +198,7 @@ class LeadAgent:
             "query": request.query,
             "detail_level": request.detail_level,
             "iterations": [summary.model_dump(mode="json") for summary in iteration_summaries],
-            "evidence": self._compact_evidence(evidence_payload),
+            "evidence": self._compact_evidence(evidence_payload, citations_payload),
             "citations": self._compact_citations(citations_payload),
             "today": date.today().isoformat(),
         }
@@ -269,7 +269,21 @@ class LeadAgent:
         )
 
     @staticmethod
-    def _compact_evidence(evidence_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _compact_evidence(
+        evidence_payload: list[dict[str, Any]],
+        citations_payload: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        citation_by_evidence: dict[str, int] = {}
+        for candidate in citations_payload:
+            try:
+                citation_id = int(candidate.get("citation_id", 0))
+            except (TypeError, ValueError):
+                continue
+            if citation_id <= 0:
+                continue
+            for evidence_id in candidate.get("evidence_ids") or []:
+                if evidence_id:
+                    citation_by_evidence.setdefault(str(evidence_id), citation_id)
         compact: list[dict[str, Any]] = []
         for entry in evidence_payload:
             try:
@@ -279,6 +293,9 @@ class LeadAgent:
             compact.append(
                 {
                     "task_id": str(entry.get("task_id", "")),
+                    "citation_id": citation_by_evidence.get(
+                        str(entry.get("evidence_id", ""))
+                    ),
                     "query": str(entry.get("query", "")),
                     "url": str(entry.get("requested_url", entry.get("url", ""))),
                     "domain": str(entry.get("domain", "") or ""),

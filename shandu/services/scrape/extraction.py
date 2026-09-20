@@ -51,6 +51,7 @@ def _cap_extraction_result(result: _ExtractionResult) -> _ExtractionResult:
         text=_cap_text(result.text),
         blocks=blocks,
         published_at=result.published_at,
+        site_name=result.site_name,
     )
 
 
@@ -210,12 +211,12 @@ def _extract_with_bs4(html: str) -> _ExtractionResult:
 
 def _extract_html(html: str) -> _ExtractionResult:
     result = _extract_with_trafilatura(html)
-    if result is not None:
-        return result
-    result = _extract_with_readability(html)
-    if result is not None:
-        return result
-    return _extract_with_bs4(html)
+    if result is None:
+        result = _extract_with_readability(html)
+    if result is None:
+        result = _extract_with_bs4(html)
+    result.site_name = _extract_site_name(html)
+    return result
 
 
 def _parse_pdf(data: bytes) -> _ExtractionResult:
@@ -448,6 +449,13 @@ def _guess_format(url: str, content_type: str) -> str:
         return "html"
 
     return ""
+
+
+def _extract_site_name(html: str) -> str | None:
+    tag = BeautifulSoup(html, "lxml").find("meta", attrs={"property": "og:site_name"})
+    content = tag.get("content") if tag is not None else None
+    cleaned = " ".join(str(content).split()) if content else ""
+    return cleaned[:160] or None
 
 
 def _extract_title_from_soup(soup: BeautifulSoup) -> str:

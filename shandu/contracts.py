@@ -70,6 +70,7 @@ class EvidenceRecord(BaseModel):
     final_url: str | None = None
     domain: str | None = None
     title: str
+    site_name: str | None = None
     snippet: str
     extracted_text: str
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)

@@ -162,8 +162,9 @@ def reporter_instructions() -> str:
         "support for it.\n"
         "- Citation markers must be numeric [1], [2], etc. and must refer only to "
         "the provided citations list.\n"
-        "- Match evidence to citations by URL. If an evidence record has no matching "
-        "citation, use it sparingly and do not invent a marker.\n"
+        "- Each evidence record carries citation_id: cite that number directly. If "
+        "citation_id is null, the record has no ledger entry; use it sparingly and "
+        "do not invent a marker.\n"
         "- Do not mention task IDs, evidence IDs, run internals, payloads, or model "
         "process.\n"
         "- State uncertainty plainly when evidence is thin, indirect, stale, or "
@@ -332,39 +333,6 @@ def extractor_job(payload: dict[str, Any]) -> str:
         "- If the text does not answer the task focus, state the mismatch and set low "
         "confidence.\n\n"
         f"Input JSON:\n{_payload_json(payload)}"
-    )
-
-
-def citation_instructions() -> str:
-    return (
-        "You are CitationSubagent. Your output is parsed as structured data, so "
-        "return only schema-valid data.\n\n"
-        "Build a clean citation ledger from evidence. Deduplicate sources by URL, "
-        "preserve evidence linkage, normalize title/publisher text, and never invent "
-        "metadata. The final reporter depends on citation IDs staying aligned with "
-        "real evidence."
-    )
-
-
-def citation_job(query: str, evidence_json: str) -> str:
-    return (
-        "Build citation entries from evidence as structured output.\n\n"
-        "Requirements:\n"
-        "- Return one citation candidate per unique requested_url whenever possible.\n"
-        "- Preserve first-seen source order so [1], [2], ... follow evidence order.\n"
-        "- evidence_ids must reference provided evidence IDs only.\n"
-        "- Prefer the evidence title unless it is empty or obviously boilerplate.\n"
-        "- Publisher should be the named publisher if present; otherwise use the "
-        "source domain as a safe fallback.\n"
-        "- Do not invent URLs, titles, publishers, access dates, authors, or evidence "
-        "IDs.\n"
-        "- If multiple evidence records share a URL, group all their evidence_ids in "
-        "one candidate.\n"
-        "- If several URLs clearly point at the same work (same title on the same "
-        "site, such as abstract/HTML/PDF variants), return a single candidate for "
-        "it.\n\n"
-        f"Query: {query}\n"
-        f"Evidence JSON:\n{evidence_json}"
     )
 
 

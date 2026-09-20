@@ -68,6 +68,12 @@ class SearchService:
         self._cache_ttl = 300.0
         self._inflight: dict[str, asyncio.Task[list[SearchHit]]] = {}
         self.last_error: str | None = None
+        self._errors: dict[str, str] = {}
+
+    def last_error_for(self, query: str, max_results: int) -> str | None:
+        # last_error holds the latest outcome only; concurrent callers need
+        # the error of their own query.
+        return self._errors.get(self._cache_key(query, max_results))
 
     def _cache_key(self, query: str, max_results: int) -> str:
         return f"{query}:{max_results}:{self._region}:{self._safesearch}"
@@ -109,6 +115,7 @@ class SearchService:
             self._inflight.pop(key, None)
 
     async def _do_search(self, key: str, query: str, max_results: int) -> list[SearchHit]:
+        self._errors.pop(key, None)
         raw: list[Mapping[str, Any]] | None = None
         backend_errors: list[str] = []
         for backend in _TEXT_BACKENDS:
@@ -122,7 +129,7 @@ class SearchService:
                 break
         if not raw:
             if len(backend_errors) == len(_TEXT_BACKENDS):
-                self.last_error = "; ".join(backend_errors)[:300]
+                self.last_error = self._errors[key] = "; ".join(backend_errors)[:300]
                 logger.warning("All search backends failed for query %r", query)
             else:
                 self.last_error = None

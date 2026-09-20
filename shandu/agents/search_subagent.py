@@ -135,7 +135,10 @@ class SearchSubagent:
                 },
             )
             hits = await self._search.search(query, request.max_results_per_query)
-            search_error = getattr(self._search, "last_error", None)
+            error_for = getattr(self._search, "last_error_for", None)
+            search_error = (
+                error_for(query, request.max_results_per_query) if error_for else None
+            )
             if search_error:
                 await self._emit_trace(
                     progress_callback,

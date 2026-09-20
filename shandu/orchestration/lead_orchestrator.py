@@ -181,10 +181,11 @@ class LeadOrchestrator:
                 if not plan.subagent_tasks:
                     break
 
-                extracted_urls = {item.requested_url for item in all_evidence}
-                extracted_urls.update(
-                    item.final_url for item in all_evidence if item.final_url
-                )
+                # A failed fetch leaves snippet-only evidence; its URL stays
+                # eligible for another attempt.
+                fetched = [item for item in all_evidence if not item.fetch_error]
+                extracted_urls = {item.requested_url for item in fetched}
+                extracted_urls.update(item.final_url for item in fetched if item.final_url)
                 semaphore = asyncio.Semaphore(request.parallelism)
                 task_total = len(plan.subagent_tasks)
                 completed_tasks = 0

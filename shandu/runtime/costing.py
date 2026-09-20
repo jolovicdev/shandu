@@ -1,34 +1,26 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
-USAGE_KEYS = (
-    "prompt_tokens",
-    "completion_tokens",
-    "total_tokens",
-    "cost_usd",
-    "llm_calls",
-    "cost_events",
-)
+_TOKEN_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens")
 
 
-def collect_llm_usage(runtime: Any, report: Any) -> dict[str, Any] | None:
-    run_id = getattr(report, "run_id", None)
-    inspect_run = getattr(runtime, "inspect_run", None)
-    if not run_id or inspect_run is None:
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def collect_llm_usage(report: Any) -> dict[str, Any] | None:
+    metrics = getattr(report, "metrics", None)
+    if not isinstance(metrics, dict):
         return None
-    try:
-        inspection = inspect_run(run_id)
-    except Exception:
-        logger.warning("Failed to inspect blackgeorge run %s", run_id, exc_info=True)
-        return None
-    if not isinstance(inspection, dict):
-        return None
-    usage = inspection.get("usage")
-    if not isinstance(usage, dict):
-        return None
-    collected = {key: usage[key] for key in USAGE_KEYS if key in usage}
+    collected: dict[str, Any] = {}
+    usage = metrics.get("usage")
+    if isinstance(usage, dict):
+        for key in _TOKEN_KEYS:
+            value = usage.get(key)
+            if _is_number(value):
+                collected[key] = value
+    cost = metrics.get("cost_usd")
+    if _is_number(cost):
+        collected["cost_usd"] = cost
     return collected or None

@@ -27,14 +27,20 @@ _USAGE = {
 }
 
 
+_METRICS = {
+    "cost_usd": _USAGE["cost_usd"],
+    "usage": {
+        "prompt_tokens": _USAGE["prompt_tokens"],
+        "completion_tokens": _USAGE["completion_tokens"],
+        "total_tokens": _USAGE["total_tokens"],
+    },
+}
+
+
 class _MeteredRuntime:
     def __init__(self, desk: object) -> None:
         self.settings = SimpleNamespace(model="m")
         self.desk = desk
-
-    def inspect_run(self, run_id: str) -> dict:
-        assert run_id == "bg-1"
-        return {"exists": True, "run_id": run_id, "usage": dict(_USAGE)}
 
 
 class _LeadDesk:
@@ -63,7 +69,12 @@ class _LeadDesk:
         else:
             data, content = None, "# Title\n\nBody text here."
         return SimpleNamespace(
-            status="completed", data=data, content=content, run_id="bg-1", errors=[]
+            status="completed",
+            data=data,
+            content=content,
+            run_id="bg-1",
+            errors=[],
+            metrics=dict(_METRICS),
         )
 
 
@@ -116,6 +127,7 @@ class _ExtractionDesk:
             data=_ExtractionPayload(snippet="s", extracted_text="t" * 60),
             run_id="bg-1",
             errors=[],
+            metrics=dict(_METRICS),
         )
 
 
@@ -172,7 +184,11 @@ class _AnswerDesk:
     async def arun(self, worker, job):
         del worker, job
         return SimpleNamespace(
-            status="completed", content="# Answer\n\nBody [1]", run_id="bg-1", errors=[]
+            status="completed",
+            content="# Answer\n\nBody [1]",
+            run_id="bg-1",
+            errors=[],
+            metrics=dict(_METRICS),
         )
 
 
@@ -188,14 +204,12 @@ def test_ai_search_usage_reaches_run_stats() -> None:
     assert result.run_stats.get("llm_usage") == _USAGE
 
 
-def test_collect_returns_none_without_inspection() -> None:
+def test_collect_reads_usage_from_report_metrics() -> None:
     from shandu.runtime.costing import collect_llm_usage
 
-    runtime = SimpleNamespace(settings=SimpleNamespace(model="m"), desk=object())
-    report = SimpleNamespace(status="completed", data=None)
-    assert collect_llm_usage(runtime, report) is None
-    report_with_id = SimpleNamespace(status="completed", run_id="bg-1")
-    assert collect_llm_usage(runtime, report_with_id) is None
+    assert collect_llm_usage(SimpleNamespace(status="completed", data=None)) is None
+    report = SimpleNamespace(status="completed", run_id="bg-1", metrics=dict(_METRICS))
+    assert collect_llm_usage(report) == _USAGE
 
 
 class _UsageLead:
@@ -275,6 +289,46 @@ def test_sequential_runs_report_independent_costs() -> None:
         "cost_usd": 0.02,
     }
     second = asyncio.run(run_once())
+
+    assert first.run_stats["metered_calls"] == 3
+    assert first.run_stats["llm_tokens"] == 300
+    assert first.run_stats["usd_spent"] == pytest.approx(0.03)
+    assert second.run_stats["metered_calls"] == 3
+    assert second.run_stats["llm_tokens"] == 600
+    assert second.run_stats["usd_spent"] == pytest.approx(0.06)
+
+
+def test_overlapping_runs_report_independent_costs() -> None:
+    def make_orchestrator(total_tokens: int, cost_usd: float) -> LeadOrchestrator:
+        lead = _UsageLead()
+        lead.usage = {
+            "prompt_tokens": total_tokens * 6 // 10,
+            "completion_tokens": total_tokens * 4 // 10,
+            "total_tokens": total_tokens,
+            "cost_usd": cost_usd,
+        }
+        return LeadOrchestrator(
+            lead_agent=lead,
+            search_subagent=_EmptySearchSubagent(),
+            citation_agent=_EmptyCitationAgent(),
+            memory_service=MemoryService(InMemoryMemoryStore()),
+            report_service=ReportService(),
+        )
+
+    first_orchestrator = make_orchestrator(100, 0.01)
+    second_orchestrator = make_orchestrator(200, 0.02)
+
+    async def main():
+        return await asyncio.gather(
+            first_orchestrator.run(
+                ResearchRequest(query="a", max_iterations=1, parallelism=1)
+            ),
+            second_orchestrator.run(
+                ResearchRequest(query="b", max_iterations=1, parallelism=1)
+            ),
+        )
+
+    first, second = asyncio.run(main())
 
     assert first.run_stats["metered_calls"] == 3
     assert first.run_stats["llm_tokens"] == 300

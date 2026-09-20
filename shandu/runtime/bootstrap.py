@@ -147,6 +147,8 @@ class RuntimeBootstrap:
 
 _bootstrap: RuntimeBootstrap | None = None
 _bootstrap_lock = threading.Lock()
+_active_runs = 0
+_retired: list[RuntimeBootstrap] = []
 
 
 def get_bootstrap() -> RuntimeBootstrap:
@@ -158,12 +160,39 @@ def get_bootstrap() -> RuntimeBootstrap:
     return _bootstrap
 
 
+def acquire_bootstrap_run() -> None:
+    global _active_runs
+    with _bootstrap_lock:
+        _active_runs += 1
+
+
+def release_bootstrap_run() -> None:
+    global _active_runs
+    with _bootstrap_lock:
+        _active_runs -= 1
+        if _active_runs > 0:
+            return
+        pending = list(_retired)
+        del _retired[:]
+    for bootstrap in pending:
+        _close_bootstrap(bootstrap)
+
+
 def reset_bootstrap() -> None:
     global _bootstrap
-    current = _bootstrap
-    _bootstrap = None
-    if current is not None:
-        try:
-            current.close()
-        except Exception:
-            logger.warning("Failed to close previous runtime bootstrap", exc_info=True)
+    with _bootstrap_lock:
+        current = _bootstrap
+        _bootstrap = None
+        if current is None:
+            return
+        if _active_runs > 0:
+            _retired.append(current)
+            return
+    _close_bootstrap(current)
+
+
+def _close_bootstrap(bootstrap: RuntimeBootstrap) -> None:
+    try:
+        bootstrap.close()
+    except Exception:
+        logger.warning("Failed to close previous runtime bootstrap", exc_info=True)

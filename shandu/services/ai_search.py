@@ -86,7 +86,7 @@ class AISearchService:
         llm_usage = None
         try:
             report = await self._runtime.desk.arun(worker, job)
-            llm_usage = collect_llm_usage(self._runtime, report)
+            llm_usage = collect_llm_usage(report)
             content = getattr(report, "content", None)
             if report.status == "completed" and isinstance(content, str) and content.strip():
                 stats: dict[str, object] = {

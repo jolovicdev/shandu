@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
 from shandu.contracts import (
@@ -805,3 +806,87 @@ def test_planner_context_lists_prior_focuses_and_queries_only() -> None:
         ("queries_run", ["q"]),
     ]
     assert "max_iterations" not in json.dumps(lead.contexts[1])
+
+
+class _RaisingLead(FakeLeadAgent):
+    async def create_iteration_plan(
+        self, request, iteration, prior_summaries, memory_context
+    ):
+        raise RuntimeError("plan boom")
+
+
+def test_failed_run_persists_failed_status_and_events() -> None:
+    memory_service = MemoryService(InMemoryMemoryStore())
+    orchestrator = LeadOrchestrator(
+        lead_agent=_RaisingLead(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        memory_service=memory_service,
+        report_service=FakeReportService(),
+    )
+    seen: dict[str, str] = {}
+
+    async def on_event(event) -> None:
+        if event.stage == "bootstrap":
+            seen["run_id"] = event.metrics["run_id"]
+
+    with pytest.raises(RuntimeError, match="plan boom"):
+        asyncio.run(
+            orchestrator.run(
+                ResearchRequest(
+                    query="fail-test", max_iterations=1, parallelism=1
+                ),
+                progress_callback=on_event,
+            )
+        )
+
+    scope = f"run:{seen['run_id']}"
+    assert memory_service.read(scope, "status") == "failed"
+    events = memory_service.read(scope, "events")
+    assert events and events[0]["stage"] == "bootstrap"
+    assert "plan boom" in memory_service.read(scope, "error")
+
+
+class _BlockingLead(FakeLeadAgent):
+    async def create_iteration_plan(
+        self, request, iteration, prior_summaries, memory_context
+    ):
+        await asyncio.sleep(3600)
+
+
+def test_cancelled_run_persists_cancelled_status() -> None:
+    memory_service = MemoryService(InMemoryMemoryStore())
+    orchestrator = LeadOrchestrator(
+        lead_agent=_BlockingLead(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        memory_service=memory_service,
+        report_service=FakeReportService(),
+    )
+    seen: dict[str, str] = {}
+    started = asyncio.Event()
+
+    async def on_event(event) -> None:
+        if event.stage == "bootstrap":
+            seen["run_id"] = event.metrics["run_id"]
+            started.set()
+
+    async def main() -> None:
+        task = asyncio.create_task(
+            orchestrator.run(
+                ResearchRequest(
+                    query="cancel-test", max_iterations=1, parallelism=1
+                ),
+                progress_callback=on_event,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+
+    scope = f"run:{seen['run_id']}"
+    assert memory_service.read(scope, "status") == "cancelled"
+    assert memory_service.read(scope, "events")

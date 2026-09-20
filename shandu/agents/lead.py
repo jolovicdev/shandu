@@ -99,7 +99,7 @@ class LeadAgent:
         self.last_llm_usage = None
         try:
             report = await self._runtime.desk.arun(worker, job)
-            self.last_llm_usage = collect_llm_usage(self._runtime, report)
+            self.last_llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _PlanPayload):
                 tasks = self._normalize_tasks(
                     report.data.subagent_tasks,
@@ -157,7 +157,7 @@ class LeadAgent:
         self.last_llm_usage = None
         try:
             report = await self._runtime.desk.arun(worker, job)
-            self.last_llm_usage = collect_llm_usage(self._runtime, report)
+            self.last_llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _SynthesisPayload):
                 return IterationSynthesis(
                     summary=report.data.summary,
@@ -220,7 +220,7 @@ class LeadAgent:
         self.last_llm_usage = None
         try:
             report = await self._runtime.desk.arun(worker, job)
-            self.last_llm_usage = collect_llm_usage(self._runtime, report)
+            self.last_llm_usage = collect_llm_usage(report)
             content = getattr(report, "content", None)
             if report.status == "completed" and isinstance(content, str) and content.strip():
                 markdown = content.strip()

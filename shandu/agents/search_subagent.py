@@ -456,7 +456,7 @@ class SearchSubagent:
         try:
             async with self._extract_semaphore:
                 report = await self._runtime.desk.arun(worker, job)
-            llm_usage = collect_llm_usage(self._runtime, report)
+            llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _ExtractionPayload):
                 return report.data, True, llm_usage
             reason = _report_reason(report)

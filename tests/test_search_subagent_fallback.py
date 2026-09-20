@@ -520,7 +520,7 @@ def test_extract_completed_trace_carries_credibility() -> None:
 
     asyncio.run(subagent.execute_task("run:1", task, request, progress_callback=on_trace))
 
-    assert captured.get("credibility") is not None
+    assert captured.get("credibility") == 0.88
 
 
 class _DisjointSearch:

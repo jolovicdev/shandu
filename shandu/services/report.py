@@ -305,14 +305,19 @@ class ReportService:
 
         chunks: list[str] = []
         fence: list[str] = []
+        fence_mark = ""
         in_fence = False
         for line in markdown.splitlines(keepends=True):
-            if line.strip().startswith("```"):
+            stripped = line.strip()
+            if stripped.startswith("```") or stripped.startswith("~~~"):
                 fence.append(line)
-                if in_fence:
+                if in_fence and stripped[:3] == fence_mark:
                     chunks.append(stash("".join(fence)))
                     fence = []
-                in_fence = not in_fence
+                    in_fence = False
+                elif not in_fence:
+                    fence_mark = stripped[:3]
+                    in_fence = True
                 continue
             if in_fence:
                 fence.append(line)

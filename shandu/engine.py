@@ -15,7 +15,11 @@ from .interfaces import (
 )
 from .orchestration import LeadOrchestrator
 from .runtime import get_async_runner
-from .runtime.bootstrap import get_bootstrap
+from .runtime.bootstrap import (
+    acquire_bootstrap_run,
+    get_bootstrap,
+    release_bootstrap_run,
+)
 from .services import AISearchService, MemoryService, ReportService, ScrapeService, SearchService
 
 ProgressCallback = Callable[[RunEvent], Any]
@@ -66,7 +70,11 @@ class ShanduEngine:
         request: ResearchRequest,
         progress_callback: ProgressCallback | None = None,
     ) -> ResearchRunResult:
-        return await self._orchestrator.run(request, progress_callback)
+        acquire_bootstrap_run()
+        try:
+            return await self._orchestrator.run(request, progress_callback)
+        finally:
+            release_bootstrap_run()
 
     def run_sync(
         self,
@@ -96,11 +104,19 @@ class ShanduEngine:
                 await queue.put(None)
 
         task = asyncio.create_task(worker())
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            yield event
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         await task
         if error is not None:
             raise error
@@ -115,12 +131,16 @@ class ShanduEngine:
         max_pages: int = 3,
         detail_level: DetailLevel = "standard",
     ) -> AISearchResult:
-        return await self._ai_search.search(
-            query=query,
-            max_results=max_results,
-            max_pages=max_pages,
-            detail_level=detail_level,
-        )
+        acquire_bootstrap_run()
+        try:
+            return await self._ai_search.search(
+                query=query,
+                max_results=max_results,
+                max_pages=max_pages,
+                detail_level=detail_level,
+            )
+        finally:
+            release_bootstrap_run()
 
     def ai_search_sync(
         self,

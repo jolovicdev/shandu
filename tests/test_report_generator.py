@@ -419,6 +419,23 @@ def test_marker_passes_leave_fenced_code_byte_for_byte() -> None:
     assert "Claim [1]." in rendered
 
 
+def test_marker_passes_leave_tilde_fences_byte_for_byte() -> None:
+    service = ReportService()
+    request = ResearchRequest(query="q")
+    code = "~~~\nx = arr[0]\narr = [1, 2]\n~~~"
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown=f"# Report\n\nClaim [1].\n\n{code}\n",
+    )
+
+    rendered = service.render(request, draft, _single_citation())
+
+    assert code in rendered
+    assert "Claim [1]." in rendered
+
+
 def test_marker_passes_leave_inline_code_and_intervals_untouched() -> None:
     service = ReportService()
     request = ResearchRequest(query="q")

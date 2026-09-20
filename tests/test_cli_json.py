@@ -22,7 +22,7 @@ def _isolated_storage(tmp_path):
 
 
 def _stub_engine(monkeypatch, emit_event: bool = True) -> None:
-    def fake_run_sync(request, progress_callback=None):
+    async def fake_run(request, progress_callback=None):
         if emit_event and progress_callback is not None:
             progress_callback(
                 RunEvent(stage="search", message="diagnostic event line")
@@ -33,7 +33,7 @@ def _stub_engine(monkeypatch, emit_event: bool = True) -> None:
             report_markdown="# Report\n\nBody.",
         )
 
-    engine = SimpleNamespace(run_sync=fake_run_sync, close=lambda: None)
+    engine = SimpleNamespace(run=fake_run, close=lambda: None)
     monkeypatch.setattr(
         ShanduEngine, "from_config", classmethod(lambda cls: engine)
     )
@@ -77,14 +77,14 @@ def test_run_without_output_persists_report_export(monkeypatch, tmp_path) -> Non
 def test_run_depth_policy_flag_reaches_request(monkeypatch) -> None:
     seen: dict[str, str] = {}
 
-    def fake_run_sync(request, progress_callback=None):
+    async def fake_run(request, progress_callback=None):
         del progress_callback
         seen["depth_policy"] = request.depth_policy
         return ResearchRunResult(
             run_id="run-1", request=request, report_markdown="# Report"
         )
 
-    engine = SimpleNamespace(run_sync=fake_run_sync, close=lambda: None)
+    engine = SimpleNamespace(run=fake_run, close=lambda: None)
     monkeypatch.setattr(
         ShanduEngine, "from_config", classmethod(lambda cls: engine)
     )
@@ -95,3 +95,47 @@ def test_run_depth_policy_flag_reaches_request(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert seen["depth_policy"] == "fixed"
+
+
+def test_run_ctrl_c_cancels_and_exits_130(monkeypatch) -> None:
+    import concurrent.futures
+
+    class FakeFuture:
+        def __init__(self) -> None:
+            self.cancel_calls = 0
+            self.results = 0
+
+        def cancel(self) -> bool:
+            self.cancel_calls += 1
+            return True
+
+        def result(self, timeout=None):
+            del timeout
+            self.results += 1
+            if self.results == 1:
+                raise KeyboardInterrupt
+            raise concurrent.futures.CancelledError
+
+    future = FakeFuture()
+
+    async def fake_run(request, progress_callback=None):
+        del request, progress_callback
+        raise AssertionError("must go through the runner")
+
+    def fake_submit(coro):
+        coro.close()
+        return future
+
+    engine = SimpleNamespace(run=fake_run, close=lambda: None)
+    monkeypatch.setattr(
+        ShanduEngine, "from_config", classmethod(lambda cls: engine)
+    )
+    monkeypatch.setattr(
+        "shandu.cli.get_async_runner",
+        lambda: SimpleNamespace(submit=fake_submit),
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
+
+    assert result.exit_code == 130, result.output
+    assert future.cancel_calls == 1

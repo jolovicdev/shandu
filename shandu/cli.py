@@ -14,7 +14,7 @@ from .config import config, infer_api_key_env_name
 from .contracts import ResearchRequest, RunEvent
 from .engine import ShanduEngine
 from .interfaces import DepthPolicy, DetailLevel
-from .runtime import reset_bootstrap
+from .runtime import get_async_runner, reset_bootstrap
 from .services import persist_report_markdown
 from .ui import ShanduUI
 
@@ -241,8 +241,19 @@ def run_command(
         diag.print(ui.event_line(event))
 
     diag.print(_run_query_line(request.query))
+    future = get_async_runner().submit(
+        engine.run(request, progress_callback=on_event)
+    )
     try:
-        result = engine.run_sync(request, progress_callback=on_event)
+        result = future.result()
+    except KeyboardInterrupt:
+        future.cancel()
+        try:
+            future.result()
+        except Exception:
+            pass
+        diag.print("Run cancelled.")
+        raise SystemExit(130) from None
     finally:
         engine.close()
 

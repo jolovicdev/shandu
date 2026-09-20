@@ -55,6 +55,24 @@ def _cap_extraction_result(result: _ExtractionResult) -> _ExtractionResult:
     )
 
 
+_XML_CAPTURED_TAGS = {"head", "p", "item", "quote", "code", "table", "figcaption"}
+_HTML_CAPTURED_TAGS = {
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "p",
+    "li",
+    "blockquote",
+    "pre",
+    "code",
+    "table",
+    "figcaption",
+}
+
+
 def _trafilatura_xml_to_blocks(xml_str: str) -> list[ContentBlock]:
     blocks: list[ContentBlock] = []
     if not xml_str:
@@ -62,6 +80,10 @@ def _trafilatura_xml_to_blocks(xml_str: str) -> list[ContentBlock]:
     try:
         soup = BeautifulSoup(xml_str, "lxml-xml")
         for elem in soup.find_all(True):
+            # A node nested in an already-captured ancestor (p in quote,
+            # p in table cell) would emit its text twice.
+            if any(parent.name in _XML_CAPTURED_TAGS for parent in elem.parents):
+                continue
             tag = elem.name
             text = elem.get_text(" ", strip=True)
             if not text:
@@ -91,9 +113,9 @@ def _trafilatura_xml_to_blocks(xml_str: str) -> list[ContentBlock]:
 
 def _soup_to_blocks(soup: BeautifulSoup) -> list[ContentBlock]:
     blocks: list[ContentBlock] = []
-    for node in soup.find_all(
-        ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre", "code", "table", "figcaption"]
-    ):
+    for node in soup.find_all(sorted(_HTML_CAPTURED_TAGS)):
+        if any(parent.name in _HTML_CAPTURED_TAGS for parent in node.parents):
+            continue
         tag_name = node.name
         text = node.get_text(" ", strip=True)
         if not text:
@@ -123,36 +145,24 @@ def _extract_with_trafilatura(html: str) -> _ExtractionResult | None:
     try:
         import trafilatura
 
-        json_result = trafilatura.extract(
+        xml_result = trafilatura.extract(
             html,
-            output_format="json",
+            output_format="xml",
             with_metadata=True,
             include_comments=False,
             include_tables=True,
             include_images=False,
         )
-        if not json_result:
+        if not xml_result:
             return None
-        data = json.loads(json_result)
-        title = (data.get("title") or "").strip()
-        text = (data.get("text") or "").strip()
+        # Title and date are attributes of <doc>; the body carries the blocks.
+        doc = BeautifulSoup(xml_result, "lxml-xml").find("doc")
+        title = (doc.get("title", "") if doc is not None else "").strip()
+        published_at = (doc.get("date", "") if doc is not None else "").strip() or None
+        blocks = _trafilatura_xml_to_blocks(xml_result)
+        text = "\n".join(block.text for block in blocks).strip()
         if len(text.split()) < _MIN_ARTICLE_WORDS:
             return None
-        published_at = (data.get("date") or "").strip() or None
-
-        xml_result = trafilatura.extract(
-            html,
-            output_format="xml",
-            include_comments=False,
-            include_tables=True,
-            include_images=False,
-        )
-        blocks = _trafilatura_xml_to_blocks(xml_result or "")
-        if not blocks:
-            for line in text.splitlines():
-                line = line.strip()
-                if line:
-                    blocks.append(ContentBlock(type="paragraph", text=line))
         return _cap_extraction_result(
             _ExtractionResult(title=title, text=text, blocks=blocks, published_at=published_at)
         )
@@ -253,20 +263,46 @@ def _parse_pdf(data: bytes) -> _ExtractionResult:
 def _parse_docx(data: bytes) -> _ExtractionResult:
     try:
         from docx import Document
+        from docx.oxml.ns import qn
 
         doc = Document(io.BytesIO(data))
         title = (doc.core_properties.title or "").strip()
-        paragraphs: list[str] = []
-        for p in doc.paragraphs:
-            txt = p.text.strip()
-            if txt:
-                paragraphs.append(txt)
-        if not title and paragraphs:
-            for p in paragraphs:
-                if len(p) > 5:
-                    title = p
+        lines: list[str] = []
+        chars = 0
+        for child in doc.element.body:
+            if chars >= _MAX_EXTRACTED_CHARS:
+                break
+            if child.tag == qn("w:p"):
+                pending = [
+                    "".join(
+                        node.text or "" for node in child.iter(qn("w:t"))
+                    ).strip()
+                ]
+            elif child.tag == qn("w:tbl"):
+                pending = []
+                for row in child.iter(qn("w:tr")):
+                    cells = [
+                        "".join(
+                            node.text or "" for node in cell.iter(qn("w:t"))
+                        ).strip()
+                        for cell in row.iter(qn("w:tc"))
+                    ]
+                    cells = [cell for cell in cells if cell]
+                    if cells:
+                        pending.append(" | ".join(cells))
+            else:
+                continue
+            for line in pending:
+                if not line or chars >= _MAX_EXTRACTED_CHARS:
+                    continue
+                lines.append(line)
+                chars += len(line) + 1
+        if not title and lines:
+            for line in lines:
+                if len(line) > 5:
+                    title = line
                     break
-        text = _cap_text("\n".join(paragraphs))
+        text = _cap_text("\n".join(lines))
         if not text:
             raise _ParseError("non_text_content", "Empty DOCX")
         return _ExtractionResult(title=title, text=text)

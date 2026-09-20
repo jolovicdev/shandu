@@ -165,9 +165,9 @@ class _FailingLead:
 
 class _EmptySearchSubagent:
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None
     ):
-        del run_scope, task, request, progress_callback
+        del run_scope, task, request, progress_callback, extracted_urls
         return []
 
 
@@ -234,3 +234,72 @@ def test_search_zero_hits_is_not_a_backend_failure() -> None:
 
     assert hits == []
     assert service.last_error is None
+
+
+class _PlanDesk:
+    def __init__(self, payload: object) -> None:
+        self._payload = payload
+
+    async def arun(self, worker, job):
+        del worker, job
+        return SimpleNamespace(status="completed", data=self._payload)
+
+
+def test_planner_success_keeps_short_task_list_unpadded() -> None:
+    from shandu.agents.lead import _PlanPayload
+
+    desk = _PlanDesk(
+        _PlanPayload(
+            goals=["g"],
+            subagent_tasks=[
+                SubagentTask(
+                    task_id="t1",
+                    focus="physics question",
+                    search_queries=["physics q"],
+                    expected_output="out",
+                )
+            ],
+            continue_loop=True,
+        )
+    )
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+    request = ResearchRequest(query="physics q", max_iterations=2, parallelism=3)
+
+    plan = asyncio.run(agent.create_iteration_plan(request, 0, [], []))
+
+    assert [task.task_id for task in plan.subagent_tasks] == ["t1"]
+
+
+def test_planner_success_caps_overlong_task_list() -> None:
+    from shandu.agents.lead import _PlanPayload
+
+    desk = _PlanDesk(
+        _PlanPayload(
+            goals=["g"],
+            subagent_tasks=[
+                SubagentTask(
+                    task_id=f"t{index}",
+                    focus=f"focus {index}",
+                    search_queries=[f"q{index}"],
+                    expected_output="out",
+                )
+                for index in range(5)
+            ],
+            continue_loop=True,
+        )
+    )
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+    request = ResearchRequest(query="q", max_iterations=2, parallelism=2)
+
+    plan = asyncio.run(agent.create_iteration_plan(request, 0, [], []))
+
+    assert [task.task_id for task in plan.subagent_tasks] == ["t0", "t1"]
+
+
+def test_planner_failure_pads_to_parallelism() -> None:
+    agent = LeadAgent(runtime=_ModelRuntime(_FailedDesk()))
+    request = ResearchRequest(query="q", max_iterations=2, parallelism=3)
+
+    plan = asyncio.run(agent.create_iteration_plan(request, 0, [], []))
+
+    assert len(plan.subagent_tasks) == 3

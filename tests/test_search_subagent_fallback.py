@@ -294,7 +294,7 @@ def test_extraction_preserves_page_order_under_concurrency() -> None:
     assert all(item.extracted_text == "body" for item in evidence)
 
 
-def test_query_merge_preserves_query_order_under_concurrency() -> None:
+def test_query_merge_interleaves_deterministically_under_concurrency() -> None:
     class PerQuerySearch:
         async def search(self, query: str, max_results: int):
             del max_results
@@ -323,8 +323,8 @@ def test_query_merge_preserves_query_order_under_concurrency() -> None:
 
     assert [item.requested_url for item in evidence] == [
         "https://example.com/a",
-        "https://example.com/b",
         "https://example.com/c",
+        "https://example.com/b",
     ]
 
 
@@ -521,3 +521,175 @@ def test_extract_completed_trace_carries_credibility() -> None:
     asyncio.run(subagent.execute_task("run:1", task, request, progress_callback=on_trace))
 
     assert captured.get("credibility") is not None
+
+
+class _DisjointSearch:
+    async def search(self, query: str, max_results: int):
+        del max_results
+        return [
+            SearchHit(
+                query=query,
+                url=f"https://{query}.example/p{index}",
+                title=f"{query} {index}",
+                snippet="s",
+            )
+            for index in range(5)
+        ]
+
+
+def test_execute_task_interleaves_one_page_per_query_under_cap() -> None:
+    subagent = SearchSubagent(
+        runtime=FakeRuntime(),
+        search_service=_DisjointSearch(),
+        scrape_service=EmptyScrapeService(),
+    )
+    task = SubagentTask(
+        task_id="t",
+        focus="focus",
+        search_queries=["q1", "q2", "q3"],
+        expected_output="out",
+    )
+    request = ResearchRequest(query="q", max_pages_per_task=3, max_results_per_query=5)
+
+    evidence = asyncio.run(subagent.execute_task("run:1", task, request))
+
+    assert [item.requested_url for item in evidence] == [
+        "https://q1.example/p0",
+        "https://q2.example/p0",
+        "https://q3.example/p0",
+    ]
+    assert [item.search_query for item in evidence] == ["q1", "q2", "q3"]
+    assert all(item.query == "focus" for item in evidence)
+
+
+def test_execute_task_ranks_already_extracted_urls_last() -> None:
+    subagent = SearchSubagent(
+        runtime=FakeRuntime(),
+        search_service=_DisjointSearch(),
+        scrape_service=EmptyScrapeService(),
+    )
+    task = SubagentTask(
+        task_id="t",
+        focus="focus",
+        search_queries=["q1", "q2", "q3"],
+        expected_output="out",
+    )
+    request = ResearchRequest(query="q", max_pages_per_task=3, max_results_per_query=5)
+
+    evidence = asyncio.run(
+        subagent.execute_task(
+            "run:1",
+            task,
+            request,
+            extracted_urls={
+                "https://q1.example/p0",
+                "https://q2.example/p0",
+                "https://q3.example/p0",
+            },
+        )
+    )
+
+    assert [item.requested_url for item in evidence] == [
+        "https://q1.example/p1",
+        "https://q2.example/p1",
+        "https://q3.example/p1",
+    ]
+
+
+def test_execute_task_caps_queries_per_task_at_six() -> None:
+    class CapturingSearch:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def search(self, query: str, max_results: int):
+            del max_results
+            self.queries.append(query)
+            return []
+
+    search = CapturingSearch()
+    subagent = SearchSubagent(
+        runtime=FakeRuntime(),
+        search_service=search,
+        scrape_service=EmptyScrapeService(),
+    )
+    task = SubagentTask(
+        task_id="t",
+        focus="focus",
+        search_queries=[f"q{index}" for index in range(8)],
+        expected_output="out",
+    )
+    request = ResearchRequest(query="q", max_pages_per_task=3, max_results_per_query=5)
+
+    asyncio.run(subagent.execute_task("run:1", task, request))
+
+    assert sorted(search.queries) == [f"q{index}" for index in range(6)]
+
+
+def test_extraction_calls_share_one_bounded_semaphore() -> None:
+    class TrackingDesk:
+        def __init__(self) -> None:
+            self.active = 0
+            self.peak = 0
+
+        async def arun(self, worker, job):
+            del worker, job
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await asyncio.sleep(0.02)
+            finally:
+                self.active -= 1
+            return SimpleNamespace(
+                status="completed",
+                data=_ExtractionPayload(snippet="s", extracted_text="t" * 60),
+            )
+
+    desk = TrackingDesk()
+    subagent = SearchSubagent(
+        runtime=_ModelRuntime(desk),
+        search_service=_DisjointSearch(),
+        scrape_service=EmptyScrapeService(),
+    )
+    task = SubagentTask(task_id="t", focus="f", search_queries=["q"], expected_output="o")
+
+    async def run_all() -> None:
+        await asyncio.gather(
+            *(
+                subagent._extract(task, f"https://x.example/{index}", "T", "text")
+                for index in range(12)
+            )
+        )
+
+    asyncio.run(run_all())
+
+    assert desk.peak == 8
+
+
+def test_extraction_uses_constant_worker_name_across_tasks() -> None:
+    names: list[str] = []
+
+    class NameCapturingDesk:
+        async def arun(self, worker, job):
+            del job
+            names.append(worker.name)
+            return SimpleNamespace(
+                status="completed",
+                data=_ExtractionPayload(snippet="s", extracted_text="t" * 60),
+            )
+
+    subagent = SearchSubagent(
+        runtime=_ModelRuntime(NameCapturingDesk()),
+        search_service=_DisjointSearch(),
+        scrape_service=EmptyScrapeService(),
+    )
+
+    async def run_all() -> None:
+        for task_id in ("task-a", "task-b"):
+            task = SubagentTask(
+                task_id=task_id, focus="f", search_queries=["q"], expected_output="o"
+            )
+            await subagent._extract(task, "https://x.example/a", "T", "text")
+
+    asyncio.run(run_all())
+
+    assert names == ["SubagentExtractor", "SubagentExtractor"]

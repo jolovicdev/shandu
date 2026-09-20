@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 # is blocked (HTTP 403) as of ddgs 9.10.
 _TEXT_BACKENDS: tuple[str, ...] = ("brave,duckduckgo", "auto")
 _SEARCH_CACHE_MAX = 256
+_SEARCH_CONCURRENCY = 4
+_SEARCH_RETRY_DELAY_SECONDS = 1.0
 
 
 class SearchHit(BaseModel):
@@ -67,6 +69,7 @@ class SearchService:
         self._cache: OrderedDict[str, tuple[float, list[SearchHit]]] = OrderedDict()
         self._cache_ttl = 300.0
         self._inflight: dict[str, asyncio.Task[list[SearchHit]]] = {}
+        self._search_semaphore = asyncio.Semaphore(_SEARCH_CONCURRENCY)
         self.last_error: str | None = None
         self._errors: dict[str, str] = {}
 
@@ -116,17 +119,11 @@ class SearchService:
 
     async def _do_search(self, key: str, query: str, max_results: int) -> list[SearchHit]:
         self._errors.pop(key, None)
-        raw: list[Mapping[str, Any]] | None = None
-        backend_errors: list[str] = []
-        for backend in _TEXT_BACKENDS:
-            try:
-                raw = await asyncio.to_thread(self._fetch_backend, query, max_results, backend)
-            except Exception as exc:
-                raw = None
-                backend_errors.append(f"{backend}: {exc}")
-                logger.warning("Search backend %s failed", backend, exc_info=True)
-            if raw:
-                break
+        async with self._search_semaphore:
+            raw, backend_errors = await self._try_backends(query, max_results)
+            if not raw and backend_errors:
+                await asyncio.sleep(_SEARCH_RETRY_DELAY_SECONDS)
+                raw, backend_errors = await self._try_backends(query, max_results)
         if not raw:
             if len(backend_errors) == len(_TEXT_BACKENDS):
                 self.last_error = self._errors[key] = "; ".join(backend_errors)[:300]
@@ -156,6 +153,24 @@ class SearchService:
 
         self._set_cached(key, hits)
         return hits
+
+    async def _try_backends(
+        self, query: str, max_results: int
+    ) -> tuple[list[Mapping[str, Any]] | None, list[str]]:
+        raw: list[Mapping[str, Any]] | None = None
+        backend_errors: list[str] = []
+        for backend in _TEXT_BACKENDS:
+            try:
+                raw = await asyncio.to_thread(
+                    self._fetch_backend, query, max_results, backend
+                )
+            except Exception as exc:
+                raw = None
+                backend_errors.append(f"{backend}: {exc}")
+                logger.warning("Search backend %s failed", backend, exc_info=True)
+            if raw:
+                break
+        return raw, backend_errors
 
     def _fetch_backend(
         self,

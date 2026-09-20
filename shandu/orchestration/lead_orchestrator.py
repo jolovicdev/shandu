@@ -80,6 +80,8 @@ class LeadOrchestrator:
         agent_model_calls = 0
         all_evidence: list[EvidenceRecord] = []
         iteration_summaries: list[IterationSynthesis] = []
+        prior_task_focuses: list[str] = []
+        queries_run: list[str] = []
         lead_fallbacks = fallbacks_before = self._lead.fallback_count
         extraction_fallbacks = 0
         fallback_reasons: list[str] = []
@@ -122,7 +124,10 @@ class LeadOrchestrator:
             return updated
 
         for iteration in range(request.max_iterations):
-            memory_context = self._memory.search(scope, "iteration")
+            memory_context = [
+                ("prior_task_focuses", list(prior_task_focuses)),
+                ("queries_run", list(queries_run)),
+            ]
             agent_model_calls += 1
             plan = await self._lead.create_iteration_plan(
                 request=request,
@@ -166,9 +171,15 @@ class LeadOrchestrator:
                 ),
             )
 
+            if iteration > 0 and not plan.continue_loop:
+                break
             if not plan.subagent_tasks:
                 break
 
+            extracted_urls = {item.requested_url for item in all_evidence}
+            extracted_urls.update(
+                item.final_url for item in all_evidence if item.final_url
+            )
             semaphore = asyncio.Semaphore(request.parallelism)
             task_total = len(plan.subagent_tasks)
             completed_tasks = 0
@@ -224,6 +235,7 @@ class LeadOrchestrator:
                             task,
                             request,
                             progress_callback=on_search_trace,
+                            extracted_urls=extracted_urls,
                         )
                     self._memory.write(
                         scope,
@@ -277,6 +289,11 @@ class LeadOrchestrator:
                     task_errors += 1
 
             all_evidence.extend(iteration_evidence)
+            prior_task_focuses.extend(task.focus for task in plan.subagent_tasks)
+            for task in plan.subagent_tasks:
+                for query in task.search_queries:
+                    if query not in queries_run:
+                        queries_run.append(query)
             await emit(
                 RunEvent(
                     stage="search",
@@ -349,8 +366,8 @@ class LeadOrchestrator:
             if not iteration_evidence:
                 break
 
-            if request.depth_policy == "adaptive" and synthesis.coverage is not None:
-                if not synthesis.continue_loop:
+            if request.depth_policy == "adaptive":
+                if iteration + 1 >= request.max_iterations:
                     break
                 if not self._adaptive_should_continue(
                     synthesis.coverage, all_evidence, request.max_iterations, iteration
@@ -513,14 +530,6 @@ class LeadOrchestrator:
         if iteration + 1 >= max_iterations:
             return False
 
-        cov = getattr(coverage, "coverage_score", 0.5)
-        severity = getattr(coverage, "open_question_severity", 0.5)
-        contradictions = getattr(coverage, "contradiction_count", 0)
-        should = getattr(coverage, "should_continue", True)
-
-        if should:
-            return True
-
         domains: set[str] = set()
         high_conf = 0
         for ev in cumulative_evidence:
@@ -531,6 +540,23 @@ class LeadOrchestrator:
             cred = getattr(ev, "credibility_score", None)
             if conf >= 0.7 and (cred is None or cred >= 0.6):
                 high_conf += 1
+
+        # No coverage (deterministic synthesis fallback): the model's vote
+        # is missing, so the evidence signals alone decide.
+        if coverage is None:
+            if len(domains) < 3:
+                return True
+            if high_conf < 2:
+                return True
+            return False
+
+        cov = getattr(coverage, "coverage_score", 0.5)
+        severity = getattr(coverage, "open_question_severity", 0.5)
+        contradictions = getattr(coverage, "contradiction_count", 0)
+        should = getattr(coverage, "should_continue", True)
+
+        if should:
+            return True
 
         if float(cov) < 0.6:
             return True

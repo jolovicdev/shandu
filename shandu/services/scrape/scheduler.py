@@ -22,7 +22,11 @@ class _DomainScheduler:
                 last = self._last_fetch.get(domain, 0)
                 back = self._backoff.get(domain, 0)
                 now = time.monotonic()
-                wait = max(0.0, last + back + self._base_delay - now)
+                # Reserve the fire time before sleeping so concurrent slots
+                # for one domain stagger instead of waking together.
+                fire_at = max(now, last + back + self._base_delay)
+                self._last_fetch[domain] = fire_at
+                wait = fire_at - now
             if wait > 0:
                 await asyncio.sleep(wait)
         except asyncio.CancelledError:
@@ -31,7 +35,11 @@ class _DomainScheduler:
 
     async def release(self, domain: str) -> None:
         async with self._lock:
-            self._last_fetch[domain] = time.monotonic()
+            # A slow fetch pushes spacing out; a fast one keeps the
+            # reservation so the next slot still waits its turn.
+            self._last_fetch[domain] = max(
+                self._last_fetch.get(domain, 0), time.monotonic()
+            )
         sem = self._semaphores.get(domain)
         if sem:
             sem.release()

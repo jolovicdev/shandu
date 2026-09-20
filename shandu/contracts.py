@@ -66,6 +66,7 @@ class EvidenceRecord(BaseModel):
     evidence_id: str
     task_id: str
     query: str
+    search_query: str | None = None
     requested_url: str
     final_url: str | None = None
     domain: str | None = None

@@ -50,7 +50,8 @@ def planner_job(payload: dict[str, Any]) -> str:
     return (
         "Create the next iteration plan as structured data.\n\n"
         "Inputs include query, iteration, max_iterations, parallelism, detail_level, "
-        "prior_summaries, and memory_context.\n\n"
+        "prior_summaries, and memory_context (prior_task_focuses and queries_run "
+        "lists of what earlier iterations already covered).\n\n"
         "Planning rules:\n"
         "- Return roughly parallelism tasks, capped by what the query genuinely needs.\n"
         "- Task IDs must be unique, stable, ASCII strings like iter_2_primary_sources.\n"

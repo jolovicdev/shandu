@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 from typing import Any
@@ -29,6 +30,10 @@ from ..prompts import (
 from ..runtime.costing import collect_llm_usage
 
 logger = logging.getLogger(__name__)
+
+# Reporter evidence budget in characters (~30k tokens), leaving room for
+# instructions, prior summaries, and output inside typical context windows.
+_REPORTER_EVIDENCE_BUDGET = 120_000
 
 
 def _failure_reason(report: Any, label: str) -> str:
@@ -96,7 +101,7 @@ class LeadAgent:
             report = await self._runtime.desk.arun(worker, job)
             self.last_llm_usage = collect_llm_usage(self._runtime, report)
             if report.status == "completed" and isinstance(report.data, _PlanPayload):
-                tasks = self._ensure_parallel_task_count(
+                tasks = self._normalize_tasks(
                     report.data.subagent_tasks,
                     request=request,
                     iteration=iteration,
@@ -120,7 +125,7 @@ class LeadAgent:
         return IterationPlan(
             iteration_index=iteration,
             goals=[request.query],
-            subagent_tasks=self._ensure_parallel_task_count([], request, iteration),
+            subagent_tasks=self._fallback_tasks(request, iteration),
             continue_loop=True,
             stop_reason=None,
         )
@@ -285,11 +290,17 @@ class LeadAgent:
                 if evidence_id:
                     citation_by_evidence.setdefault(str(evidence_id), citation_id)
         compact: list[dict[str, Any]] = []
+        scores: list[float] = []
         for entry in evidence_payload:
             try:
                 confidence = float(entry.get("confidence", 0.5) or 0.5)
             except (TypeError, ValueError):
                 confidence = 0.5
+            try:
+                credibility = float(entry.get("credibility_score"))
+            except (TypeError, ValueError):
+                credibility = 0.5
+            scores.append(credibility * confidence)
             compact.append(
                 {
                     "task_id": str(entry.get("task_id", "")),
@@ -309,7 +320,32 @@ class LeadAgent:
                     "quality_flags": entry.get("quality_flags") or [],
                 }
             )
-        return compact
+        return LeadAgent._apply_evidence_budget(compact, scores)
+
+    @staticmethod
+    def _apply_evidence_budget(
+        compact: list[dict[str, Any]], scores: list[float]
+    ) -> list[dict[str, Any]]:
+        # Ledger records are always kept; the rest fill the budget from the
+        # highest credibility x confidence down, in original relative order.
+        sizes = [
+            len(json.dumps(record, ensure_ascii=False, default=str))
+            for record in compact
+        ]
+        kept = [record.get("citation_id") is not None for record in compact]
+        used = sum(size for size, keep in zip(sizes, kept) if keep)
+        dropped = [
+            index
+            for index, keep in enumerate(kept)
+            if not keep
+        ]
+        dropped.sort(key=lambda index: scores[index], reverse=True)
+        for index in dropped:
+            if used + sizes[index] > _REPORTER_EVIDENCE_BUDGET:
+                break
+            kept[index] = True
+            used += sizes[index]
+        return [record for record, keep in zip(compact, kept) if keep]
 
     @staticmethod
     def _compact_citations(citations_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -332,7 +368,7 @@ class LeadAgent:
         return compact
 
     @staticmethod
-    def _ensure_parallel_task_count(
+    def _normalize_tasks(
         tasks: list[SubagentTask],
         request: ResearchRequest,
         iteration: int,
@@ -362,35 +398,7 @@ class LeadAgent:
                 )
             )
 
-        if not normalized:
-            normalized = LeadAgent._fallback_tasks(request, iteration)
-
-        facets = [
-            "latest developments",
-            "market landscape",
-            "technical details",
-            "counterarguments",
-            "regional data",
-            "expert analysis",
-            "primary-source statements",
-            "case studies",
-        ]
-        facet_index = 0
-        while len(normalized) < target:
-            base_focus = normalized[facet_index % len(normalized)].focus
-            facet = facets[facet_index % len(facets)]
-            task_number = len(normalized) + 1
-            normalized.append(
-                SubagentTask(
-                    task_id=f"iter_{iteration + 1}_task_{task_number}",
-                    focus=f"{base_focus} - {facet}",
-                    search_queries=[f"{request.query} {facet}", base_focus],
-                    expected_output="Independent evidence track with distinct sources.",
-                )
-            )
-            facet_index += 1
-
-        return normalized
+        return normalized[:target]
 
     @staticmethod
     def _fallback_tasks(request: ResearchRequest, iteration: int) -> list[SubagentTask]:

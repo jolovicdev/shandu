@@ -8,6 +8,7 @@ from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
 from shandu.contracts import (
     CitationEntry,
+    CoverageAssessment,
     EvidenceRecord,
     IterationPlan,
     IterationSynthesis,
@@ -71,8 +72,8 @@ class FakeLeadAgent:
 
 
 class FakeSearchSubagent:
-    async def execute_task(self, run_scope, task, request, progress_callback=None):
-        del run_scope, request, progress_callback
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+        del run_scope, request, progress_callback, extracted_urls
         return [
             EvidenceRecord(
                 evidence_id=f"e-{task.task_id}",
@@ -147,7 +148,7 @@ class FilteringReportService(ReportService):
         )
 
 
-def test_orchestrator_stops_on_synthesis_decision() -> None:
+def test_orchestrator_overrides_model_stop_on_weak_corpus() -> None:
     memory_service = MemoryService(InMemoryMemoryStore())
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
@@ -160,8 +161,8 @@ def test_orchestrator_stops_on_synthesis_decision() -> None:
     request = ResearchRequest(query="test", max_iterations=5, parallelism=2)
     result = asyncio.run(orchestrator.run(request))
 
-    assert result.run_stats["iterations"] == 2
-    assert result.run_stats["evidence_count"] == 2
+    assert result.run_stats["iterations"] == 5
+    assert result.run_stats["evidence_count"] == 5
     assert result.run_stats["citation_count"] == 1
     assert "Synthetic Final" in result.report_markdown
 
@@ -244,8 +245,8 @@ class ParallelLeadAgent(FakeLeadAgent):
 
 
 class SlowSearchSubagent(FakeSearchSubagent):
-    async def execute_task(self, run_scope, task, request, progress_callback=None):
-        del run_scope, request, progress_callback
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+        del run_scope, request, progress_callback, extracted_urls
         await asyncio.sleep(0.2)
         return [
             EvidenceRecord(
@@ -343,8 +344,8 @@ def test_orchestrator_emits_live_model_call_count() -> None:
 
 
 class TraceSearchSubagent(FakeSearchSubagent):
-    async def execute_task(self, run_scope, task, request, progress_callback=None):
-        del run_scope
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+        del run_scope, extracted_urls
         if progress_callback is not None:
             await progress_callback(
                 "query_started",
@@ -506,6 +507,51 @@ def test_compact_evidence_attaches_citation_id_per_record() -> None:
     assert [entry["citation_id"] for entry in compact] == [1, 1, None]
 
 
+def test_compact_evidence_applies_budget_lowest_score_first() -> None:
+    import json
+
+    from shandu.agents.lead import LeadAgent, _REPORTER_EVIDENCE_BUDGET
+
+    payload = [
+        {
+            "evidence_id": f"e{index}",
+            "task_id": "t",
+            "query": "q",
+            "requested_url": f"https://x.example/{index}",
+            "title": f"T{index}",
+            "snippet": "s",
+            "extracted_text": "x" * 2200,
+            "confidence": 1.0,
+            "credibility_score": (index + 1) / 150,
+        }
+        for index in range(150)
+    ]
+    citations = [{"citation_id": 1, "evidence_ids": ["e0"]}]
+
+    compact = LeadAgent._compact_evidence(payload, citations)
+
+    total = sum(
+        len(json.dumps(record, ensure_ascii=False, default=str)) for record in compact
+    )
+    assert total <= _REPORTER_EVIDENCE_BUDGET
+    assert len(compact) < 150
+    urls = [record["url"] for record in compact]
+    assert "https://x.example/0" in urls
+    kept_scores = [
+        record["credibility_score"]
+        for record in compact
+        if record["citation_id"] is None
+    ]
+    dropped_scores = [
+        (index + 1) / 150
+        for index in range(1, 150)
+        if f"https://x.example/{index}" not in urls
+    ]
+    assert dropped_scores
+    assert min(kept_scores) >= max(dropped_scores)
+    assert urls == sorted(urls, key=lambda url: int(url.rsplit("/", 1)[1]))
+
+
 def test_adaptive_loop_weighs_credibility() -> None:
     coverage = SimpleNamespace(
         coverage_score=0.7,
@@ -533,3 +579,217 @@ def test_adaptive_loop_weighs_credibility() -> None:
 
     unscored = [ev.model_copy(update={"credibility_score": None}) for ev in weak]
     assert LeadOrchestrator._adaptive_should_continue(coverage, unscored, 3, 0) is False
+
+
+class CapturingSearchSubagent(FakeSearchSubagent):
+    def __init__(self) -> None:
+        self.seen_calls: list[set[str]] = []
+
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+    ):
+        self.seen_calls.append(set(extracted_urls or ()))
+        return await super().execute_task(
+            run_scope,
+            task,
+            request,
+            progress_callback=progress_callback,
+            extracted_urls=extracted_urls,
+        )
+
+
+def test_orchestrator_passes_already_extracted_urls_per_iteration() -> None:
+    subagent = CapturingSearchSubagent()
+    orchestrator = LeadOrchestrator(
+        lead_agent=FakeLeadAgent(),
+        search_subagent=subagent,
+        citation_agent=FakeCitationAgent(),
+        memory_service=MemoryService(InMemoryMemoryStore()),
+        report_service=FakeReportService(),
+    )
+    request = ResearchRequest(query="q", max_iterations=2, parallelism=1)
+
+    asyncio.run(orchestrator.run(request))
+
+    assert subagent.seen_calls[0] == set()
+    assert subagent.seen_calls[1] == {"https://example.com/task-0"}
+
+
+class _StoppingLead(FakeLeadAgent):
+    def __init__(self, coverage: CoverageAssessment | None) -> None:
+        self._coverage = coverage
+
+    async def synthesize_iteration(
+        self, request, iteration, iteration_evidence, prior_summaries
+    ):
+        del request, iteration, iteration_evidence, prior_summaries
+        return IterationSynthesis(
+            summary="s",
+            key_findings=[],
+            open_questions=[],
+            continue_loop=False,
+            stop_reason="model stop",
+            coverage=self._coverage,
+        )
+
+
+class _RichSearchSubagent(FakeSearchSubagent):
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+    ):
+        del run_scope, request, progress_callback, extracted_urls
+        return [
+            EvidenceRecord(
+                evidence_id=f"e-{task.task_id}-{index}",
+                task_id=task.task_id,
+                query=task.focus,
+                requested_url=f"https://d{index}.example/a",
+                domain=f"d{index}.example",
+                title="T",
+                snippet="s",
+                extracted_text="x",
+                confidence=0.8,
+            )
+            for index in range(3)
+        ]
+
+
+def _run_with(lead, subagent, max_iterations: int):
+    orchestrator = LeadOrchestrator(
+        lead_agent=lead,
+        search_subagent=subagent,
+        citation_agent=FakeCitationAgent(),
+        memory_service=MemoryService(InMemoryMemoryStore()),
+        report_service=FakeReportService(),
+    )
+    return asyncio.run(
+        orchestrator.run(
+            ResearchRequest(query="q", max_iterations=max_iterations, parallelism=1)
+        )
+    )
+
+
+def test_adaptive_ignores_model_stop_on_weak_coverage() -> None:
+    lead = _StoppingLead(
+        CoverageAssessment(
+            coverage_score=0.1,
+            open_question_severity=0.9,
+            contradiction_count=0,
+            recency_score=0.5,
+            should_continue=False,
+        )
+    )
+
+    result = _run_with(lead, FakeSearchSubagent(), 3)
+
+    assert result.run_stats["iterations"] == 3
+
+
+def test_adaptive_stops_on_strong_corpus() -> None:
+    lead = _StoppingLead(
+        CoverageAssessment(
+            coverage_score=0.9,
+            open_question_severity=0.1,
+            contradiction_count=0,
+            recency_score=0.9,
+            should_continue=False,
+        )
+    )
+
+    result = _run_with(lead, _RichSearchSubagent(), 5)
+
+    assert result.run_stats["iterations"] == 1
+
+
+def test_adaptive_without_coverage_uses_evidence_signals() -> None:
+    result = _run_with(_StoppingLead(None), FakeSearchSubagent(), 3)
+
+    assert result.run_stats["iterations"] == 3
+
+    strong = [
+        EvidenceRecord(
+            evidence_id=f"e{i}",
+            task_id="t",
+            query="q",
+            requested_url=f"https://d{i}.example/a",
+            domain=f"d{i}.example",
+            title="T",
+            snippet="s",
+            extracted_text="x",
+            confidence=0.8,
+        )
+        for i in range(3)
+    ]
+    assert LeadOrchestrator._adaptive_should_continue(None, strong, 3, 0) is False
+
+
+class _PlanStoppingLead(FakeLeadAgent):
+    async def create_iteration_plan(
+        self, request, iteration, prior_summaries, memory_context
+    ):
+        del request, prior_summaries, memory_context
+        return IterationPlan(
+            iteration_index=iteration,
+            goals=[f"goal-{iteration}"],
+            subagent_tasks=[
+                SubagentTask(
+                    task_id=f"task-{iteration}",
+                    focus="focus",
+                    search_queries=["q"],
+                    expected_output="out",
+                )
+            ],
+            continue_loop=iteration == 0,
+        )
+
+
+class _CountingSearchSubagent(FakeSearchSubagent):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+    ):
+        self.calls += 1
+        return await super().execute_task(
+            run_scope,
+            task,
+            request,
+            progress_callback=progress_callback,
+            extracted_urls=extracted_urls,
+        )
+
+
+def test_orchestrator_honors_plan_stop_before_fanout_after_iteration_one() -> None:
+    subagent = _CountingSearchSubagent()
+    result = _run_with(_PlanStoppingLead(), subagent, 3)
+
+    assert result.run_stats["iterations"] == 1
+    assert subagent.calls == 1
+
+
+class _ContextCapturingLead(FakeLeadAgent):
+    def __init__(self) -> None:
+        self.contexts: list[list[tuple[str, object]]] = []
+
+    async def create_iteration_plan(
+        self, request, iteration, prior_summaries, memory_context
+    ):
+        self.contexts.append(list(memory_context))
+        return await super().create_iteration_plan(
+            request, iteration, prior_summaries, memory_context
+        )
+
+
+def test_planner_context_lists_prior_focuses_and_queries_only() -> None:
+    import json
+
+    lead = _ContextCapturingLead()
+    _run_with(lead, FakeSearchSubagent(), 2)
+
+    assert lead.contexts[0] == [("prior_task_focuses", []), ("queries_run", [])]
+    assert lead.contexts[1] == [
+        ("prior_task_focuses", ["focus"]),
+        ("queries_run", ["q"]),
+    ]
+    assert "max_iterations" not in json.dumps(lead.contexts[1])

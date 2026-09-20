@@ -68,8 +68,8 @@ class _LeadDesk:
 
 
 class _EmptySearchSubagent:
-    async def execute_task(self, run_scope, task, request, progress_callback=None):
-        del run_scope, task, request, progress_callback
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+        del run_scope, task, request, progress_callback, extracted_urls
         return []
 
 
@@ -102,10 +102,10 @@ def test_lead_usage_reaches_completion_events_and_run_stats() -> None:
     assert plan_events[0].metrics.get("llm_usage") == _USAGE
     usage = result.run_stats.get("llm_usage")
     assert usage is not None
-    assert usage["prompt_tokens"] == 360
-    assert usage["completion_tokens"] == 120
-    assert usage["total_tokens"] == 480
-    assert usage["cost_usd"] == pytest.approx(0.0375)
+    assert usage["prompt_tokens"] == 240
+    assert usage["completion_tokens"] == 80
+    assert usage["total_tokens"] == 320
+    assert usage["cost_usd"] == pytest.approx(0.025)
 
 
 class _ExtractionDesk:

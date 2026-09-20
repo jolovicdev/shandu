@@ -5,8 +5,11 @@ import io
 
 import aiohttp
 import fitz
+import time
+from bs4 import BeautifulSoup
 from docx import Document
 from openpyxl import Workbook
+from unittest import mock
 
 from shandu.services.scrape import ScrapeService
 from shandu.services.scrape.extraction import (
@@ -21,7 +24,10 @@ from shandu.services.scrape.extraction import (
     _parse_pdf,
     _parse_plaintext,
     _parse_xlsx,
+    _soup_to_blocks,
+    _trafilatura_xml_to_blocks,
 )
+from shandu.services.scrape.scheduler import _DomainScheduler
 
 
 def _long_html(title: str = "Title", words: int = 100) -> str:
@@ -88,6 +94,62 @@ def test_readability_returns_none_for_short_content() -> None:
     assert _extract_with_readability(html) is None
 
 
+def test_soup_to_blocks_emits_nested_text_once() -> None:
+    soup = BeautifulSoup(
+        "<article>"
+        "<ul><li><p>list item text</p></li></ul>"
+        "<blockquote><p>quoted text</p></blockquote>"
+        "<pre><code>code text</code></pre>"
+        "<table><tr><td><p>cell text</p></td></tr></table>"
+        "</article>",
+        "lxml",
+    )
+
+    texts = [block.text for block in _soup_to_blocks(soup)]
+
+    assert texts == [
+        "list item text",
+        "quoted text",
+        "code text",
+        "cell text",
+    ]
+
+
+def test_trafilatura_xml_to_blocks_skips_nested_nodes() -> None:
+    xml_str = (
+        "<doc><main>"
+        "<quote><p>quoted text</p></quote>"
+        "<table><row><cell><p>cell text</p></cell></row></table>"
+        "</main></doc>"
+    )
+
+    blocks = _trafilatura_xml_to_blocks(xml_str)
+
+    assert [(block.type, block.text) for block in blocks] == [
+        ("blockquote", "quoted text"),
+        ("table", "cell text"),
+    ]
+
+
+def test_trafilatura_extracts_title_date_and_blocks_in_one_pass() -> None:
+    filler = " ".join(["word"] * 80)
+    xml_str = (
+        '<doc title="Mocked Title" date="2026-03-01"><main>'
+        "<head>Mocked Title</head>"
+        f"<p>{filler}</p>"
+        "</main></doc>"
+    )
+    with mock.patch("trafilatura.extract", return_value=xml_str) as extract:
+        result = _extract_with_trafilatura("<html></html>")
+
+    assert extract.call_count == 1
+    assert result is not None
+    assert result.title == "Mocked Title"
+    assert result.published_at == "2026-03-01"
+    assert [block.type for block in result.blocks] == ["heading", "paragraph"]
+    assert len(result.text.split()) >= 80
+
+
 # ---------------------------------------------------------------------------
 # Document parsers
 # ---------------------------------------------------------------------------
@@ -113,6 +175,45 @@ def test_parse_docx_extracts_title_and_text() -> None:
     result = _parse_docx(buffer.read())
     assert result.title == "DOCX Title"
     assert "paragraph" in result.text
+
+
+def _docx_bytes(build) -> bytes:
+    document = Document()
+    build(document)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def test_parse_docx_keeps_paragraphs_and_tables_in_order() -> None:
+    def build(document: Document) -> None:
+        document.add_paragraph("Intro paragraph here.")
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "Name"
+        table.cell(0, 1).text = "Value"
+        table.cell(1, 0).text = "Alice"
+        table.cell(1, 1).text = "100"
+        document.add_paragraph("Closing paragraph here.")
+
+    result = _parse_docx(_docx_bytes(build))
+
+    assert result.text.splitlines() == [
+        "Intro paragraph here.",
+        "Name | Value",
+        "Alice | 100",
+        "Closing paragraph here.",
+    ]
+
+
+def test_parse_docx_reads_table_only_document() -> None:
+    def build(document: Document) -> None:
+        table = document.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "Alpha"
+        table.cell(0, 1).text = "Beta"
+
+    result = _parse_docx(_docx_bytes(build))
+
+    assert result.text == "Alpha | Beta"
 
 
 def test_parse_xlsx_extracts_rows() -> None:
@@ -442,3 +543,65 @@ def test_scraped_page_defaults_blocks_to_empty_list() -> None:
         domain="example.com",
     )
     assert page.blocks == []
+
+
+def test_domain_scheduler_staggers_concurrent_slots() -> None:
+    scheduler = _DomainScheduler(max_concurrent_per_domain=2, base_delay=0.2)
+
+    async def timed_acquire() -> float:
+        await scheduler.acquire("d.example")
+        return time.monotonic()
+
+    async def run_all() -> list[float]:
+        stamps = await asyncio.gather(timed_acquire(), timed_acquire())
+        await scheduler.release("d.example")
+        await scheduler.release("d.example")
+        return sorted(stamps)
+
+    first, second = asyncio.run(run_all())
+
+    assert second - first >= 0.15
+
+
+def test_fetch_acquires_scheduler_slot_for_hop_domain() -> None:
+    service = ScrapeService()
+    acquired: list[str] = []
+
+    class RecordingScheduler:
+        async def acquire(self, domain: str) -> None:
+            acquired.append(domain)
+
+        async def release(self, domain: str) -> None:
+            del domain
+
+        def bump_backoff(self, domain: str) -> None:
+            del domain
+
+        def reset_backoff(self, domain: str) -> None:
+            del domain
+
+    service._domain_scheduler = RecordingScheduler()
+
+    class HopSession:
+        def get(self, *args, **kwargs):
+            del args, kwargs
+
+            class HopResponse:
+                status = 404
+                headers: dict[str, str] = {}
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    del args
+
+            return HopResponse()
+
+    asyncio.run(
+        service._fetch_single_request(
+            "https://orig.example/y", "https://hop.example/x", HopSession(), 0, 1
+        )
+    )
+
+    assert acquired == ["hop.example"]

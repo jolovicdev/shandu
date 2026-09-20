@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
+from itertools import zip_longest
 from typing import Any, Literal
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
@@ -26,6 +27,8 @@ SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 _SNIPPET_FALLBACK_METHOD = "search_snippet_fallback"
 _SNIPPET_ONLY_CREDIBILITY = 0.20
+_MAX_QUERIES_PER_TASK = 6
+_EXTRACTION_CONCURRENCY = 8
 
 
 def _report_reason(report: Any) -> str:
@@ -112,6 +115,7 @@ class SearchSubagent:
         self._runtime = runtime
         self._search = search_service
         self._scrape = scrape_service
+        self._extract_semaphore = asyncio.Semaphore(_EXTRACTION_CONCURRENCY)
 
     async def execute_task(
         self,
@@ -119,9 +123,10 @@ class SearchSubagent:
         task: SubagentTask,
         request: ResearchRequest,
         progress_callback: SearchTraceCallback | None = None,
+        extracted_urls: Collection[str] | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
-        queries = task.search_queries or [task.focus]
+        queries = (task.search_queries or [task.focus])[:_MAX_QUERIES_PER_TASK]
 
         async def run_query(query: str) -> Sequence[Any]:
             await self._emit_trace(
@@ -163,20 +168,45 @@ class SearchSubagent:
 
         query_hits = await asyncio.gather(*(run_query(query) for query in queries))
 
-        all_hits: list[dict[str, str]] = []
+        per_query: list[list[dict[str, str]]] = []
         seen: set[str] = set()
-        for hits in query_hits:
+        for query, hits in zip(queries, query_hits):
+            entries: list[dict[str, str]] = []
             for hit in hits:
                 if hit.url in seen:
                     continue
                 seen.add(hit.url)
-                all_hits.append(
+                entries.append(
                     {
                         "url": hit.url,
                         "title": hit.title,
                         "snippet": hit.snippet,
+                        "query": query,
                     }
                 )
+            per_query.append(entries)
+
+        # Round-robin across queries so later queries (counterevidence,
+        # specialist sources) survive the page cap instead of the first
+        # query filling it alone. Already-extracted URLs rank last so a new
+        # iteration prefers unseen sources.
+        interleaved: list[dict[str, str]] = []
+        for round_hits in zip_longest(*per_query):
+            for entry in round_hits:
+                if entry is not None:
+                    interleaved.append(entry)
+        known = {self._canonicalize_url(url) or url for url in extracted_urls or ()}
+        unseen = [
+            entry
+            for entry in interleaved
+            if (self._canonicalize_url(entry["url"]) or entry["url"]) not in known
+        ]
+        already_seen = [
+            entry
+            for entry in interleaved
+            if (self._canonicalize_url(entry["url"]) or entry["url"]) in known
+        ]
+        all_hits = unseen + already_seen
 
         urls = [entry["url"] for entry in all_hits[: request.max_pages_per_task]]
         canonical_urls = {url: self._canonicalize_url(url) or url for url in urls}
@@ -232,6 +262,7 @@ class SearchSubagent:
                     evidence_id=new_id(),
                     task_id=task.task_id,
                     query=task.focus,
+                    search_query=hit_payload.get("query") if hit_payload else None,
                     requested_url=page.requested_url,
                     domain=page.domain,
                     title=title,
@@ -286,10 +317,12 @@ class SearchSubagent:
                 "extract_completed",
                 completed_payload,
             )
+            extracted_hit = hits_by_url.get(page.requested_url)
             return EvidenceRecord(
                 evidence_id=new_id(),
                 task_id=task.task_id,
                 query=task.focus,
+                search_query=extracted_hit.get("query") if extracted_hit else None,
                 requested_url=page.requested_url,
                 final_url=page.url,
                 domain=page.domain,
@@ -328,6 +361,7 @@ class SearchSubagent:
                     evidence_id=new_id(),
                     task_id=task.task_id,
                     query=task.focus,
+                    search_query=hit_payload.get("query") if hit_payload else None,
                     requested_url=url,
                     domain=urlparse(url).netloc or None,
                     title=title,
@@ -411,7 +445,7 @@ class SearchSubagent:
             "text": text[:7000],
         }
         worker = Worker(
-            name=f"SubagentExtractor_{task.task_id}",
+            name="SubagentExtractor",
             model=self._runtime.settings.model,
             instructions=extractor_instructions(),
         )
@@ -421,7 +455,8 @@ class SearchSubagent:
         )
         llm_usage: dict[str, Any] | None = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            async with self._extract_semaphore:
+                report = await self._runtime.desk.arun(worker, job)
             llm_usage = collect_llm_usage(self._runtime, report)
             if report.status == "completed" and isinstance(report.data, _ExtractionPayload):
                 return report.data, True, llm_usage

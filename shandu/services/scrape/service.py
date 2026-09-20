@@ -349,7 +349,7 @@ class ScrapeService:
         attempt: int,
         hop: int,
     ) -> _FetchResult | str:
-        domain = urlparse(url).netloc
+        domain = urlparse(request_url).netloc
 
         def _error_page(
             fetch_error: str, status: int | None = None, retryable: bool = False

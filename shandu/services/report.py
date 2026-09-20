@@ -4,7 +4,9 @@ import re
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
+from ..config import config
 from ..contracts import CitationEntry, FinalReportDraft, ResearchRequest
 
 # Placeholder for a protected segment (fenced code, inline code, link) while
@@ -40,6 +42,25 @@ class RenderedReport:
     citations: list[CitationEntry]
 
 
+def persist_report_markdown(run_id: str, markdown: str) -> str | None:
+    text = markdown.strip()
+    if not text:
+        return None
+    try:
+        storage = Path(str(config.get("runtime", "storage_dir", ".blackgeorge")))
+        export_dir = storage / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        safe_run = (
+            "".join(char if char.isalnum() else "_" for char in run_id).strip("_")
+            or "report"
+        )
+        file_path = export_dir / f"{safe_run}.md"
+        file_path.write_text(text, encoding="utf-8")
+        return str(file_path)
+    except Exception:
+        return None
+
+
 class ReportService:
     def render(
         self,
@@ -67,7 +88,7 @@ class ReportService:
         normalized, normalized_citations = self._reindex_citation_numbers(
             normalized, citations
         )
-        body = self._strip_references_section(normalized)
+        body = self._strip_references_section(normalized, protected)
         body, normalized_citations = self._filter_and_reindex_used_citations(
             body,
             normalized_citations,
@@ -195,7 +216,9 @@ class ReportService:
             rewritten.append(join(kept))
         return rewritten
 
-    def _strip_references_section(self, markdown: str) -> str:
+    def _strip_references_section(
+        self, markdown: str, protected: list[str]
+    ) -> str:
         heading_pattern = re.compile(
             r"^\s{0,3}(#{1,6}\s*)?(?:key\s+)?"
             r"(?:references?|sources?|bibliography|citations?)\s*:?\s*$",
@@ -213,7 +236,7 @@ class ReportService:
             # A bare heading sorts below every ATX level so any later
             # heading ends its block.
             level = len(match.group(1).strip()) if match.group(1) else 7
-            block_end = self._bibliography_end(lines, index, level)
+            block_end = self._bibliography_end(lines, index, level, protected)
             if block_end is None:
                 output.append(lines[index])
                 index += 1
@@ -222,14 +245,21 @@ class ReportService:
         return "\n".join(output).strip()
 
     def _bibliography_end(
-        self, lines: list[str], start: int, level: int
+        self, lines: list[str], start: int, level: int, protected: list[str]
     ) -> int | None:
         cursor = start + 1
         while cursor < len(lines) and not lines[cursor].strip():
             cursor += 1
         if cursor >= len(lines):
             return len(lines)
-        if not self._looks_like_reference_entry(lines[cursor].strip()):
+        # The trigger line is tested with protected segments resolved so a
+        # link or code span inside an entry still reads as one.
+        candidate = lines[cursor].strip()
+        for index, segment in enumerate(protected):
+            token = _PROTECTED_TEMPLATE.format(index)
+            if token in candidate:
+                candidate = candidate.replace(token, segment)
+        if not self._looks_like_reference_entry(candidate):
             return None
         end = cursor + 1
         while end < len(lines):
@@ -241,8 +271,15 @@ class ReportService:
 
     @staticmethod
     def _looks_like_reference_entry(line: str) -> bool:
+        if re.match(r"^(?:[-*+]\s*)?(?:\[\d+\]|\d+[.)])\s+", line):
+            return True
+        # A bulleted item carrying a URL or markdown link is a bibliography
+        # entry; the same URL in running prose is not.
+        if not re.match(r"^[-*+]\s+\S+", line):
+            return False
         return bool(
-            re.match(r"^(?:[-*+]\s*)?(?:\[\d+\]|\d+[.)])\s+", line)
+            re.search(r"https?://|www\.", line, re.IGNORECASE)
+            or re.search(r"\[[^\]]+\]\([^)]*\)", line)
         )
 
     @staticmethod

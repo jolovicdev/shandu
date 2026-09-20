@@ -79,17 +79,18 @@ class ShanduUI:
             console.push_theme(theme)
             self.console = console
 
-    def print_banner(self) -> None:
+    def banner_panel(self) -> Panel:
         top = Text(" SHANDU V3 ", style="bold black on #10b981")
         sub = Text("LeadResearcher · Subagents · Memory · CitationAgent", style="muted")
-        self.console.print(
-            Panel(
-                Group(top, sub),
-                border_style="panel",
-                box=box.HEAVY,
-                padding=(1, 2),
-            )
+        return Panel(
+            Group(top, sub),
+            border_style="panel",
+            box=box.HEAVY,
+            padding=(1, 2),
         )
+
+    def print_banner(self, target: Console | None = None) -> None:
+        (target or self.console).print(self.banner_panel())
 
     def new_snapshot(self, request: ResearchRequest, model: str) -> RunSnapshot:
         return RunSnapshot(request=request, model=model)

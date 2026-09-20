@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dev dependencies
+        run: uv sync --dev
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Pytest
+        run: uv run pytest -q
+
+      - name: Version consistency
+        run: |
+          TOML_VERSION=$(python - <<'PY'
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          PY
+          )
+          INIT_VERSION=$(python - <<'PY'
+          import re
+          from pathlib import Path
+          content = Path("shandu/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', content)
+          if not match:
+              raise SystemExit("Missing __version__ in shandu/__init__.py")
+          print(match.group(1))
+          PY
+          )
+          echo "pyproject.toml version: $TOML_VERSION"
+          echo "__init__.py version:   $INIT_VERSION"
+          if [ "$TOML_VERSION" != "$INIT_VERSION" ]; then
+            echo "Error: pyproject and __init__ versions differ"
+            exit 1
+          fi

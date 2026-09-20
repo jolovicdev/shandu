@@ -503,6 +503,28 @@ def test_bibliography_block_ends_at_next_same_level_heading() -> None:
     assert "Kept [1]." in rendered
 
 
+def test_bulleted_link_bibliography_is_stripped() -> None:
+    service = ReportService()
+    request = ResearchRequest(query="q")
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown=(
+            "# Report\n\n"
+            "Finding A is supported [1].\n\n"
+            "## Sources\n\n"
+            "- [Title](https://a.example/x)\n"
+            "- plain bullet without a link\n"
+        ),
+    )
+
+    rendered = service.render(request, draft, _single_citation())
+
+    assert "https://a.example/x" not in rendered
+    assert "plain bullet without a link" not in rendered
+
+
 def test_bare_references_heading_ends_at_next_heading() -> None:
     service = ReportService()
     request = ResearchRequest(query="q")

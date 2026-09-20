@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import cast
 
 from ...config import DEFAULT_MODEL, config, infer_api_key_env_name
 from ...interfaces import DepthPolicy, DetailLevel
 from ...runtime import reset_bootstrap
+from ...services.report import persist_report_markdown as persist_report_markdown
 from .constants import DEPTH_POLICIES, DETAIL_LEVELS
 
 
@@ -129,25 +129,6 @@ def save_configuration(
         reset_bootstrap()
     config.apply_provider_api_key()
     return f"Saved configuration: model {model_text}, env key {resolved_env}."
-
-
-def persist_report_markdown(run_id: str, markdown: str) -> str | None:
-    text = markdown.strip()
-    if not text:
-        return None
-    try:
-        storage = Path(str(config.get("runtime", "storage_dir", ".blackgeorge")))
-        export_dir = storage / "exports"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        safe_run = (
-            "".join(char if char.isalnum() else "_" for char in run_id).strip("_")
-            or "report"
-        )
-        file_path = export_dir / f"{safe_run}.md"
-        file_path.write_text(text, encoding="utf-8")
-        return str(file_path)
-    except Exception:
-        return None
 
 
 _resolved_detail_level = resolved_detail_level

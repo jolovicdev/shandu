@@ -16,9 +16,9 @@ from .constants import (
     TIMELINE_HEADERS,
     TRACE_HEADERS,
 )
+from ...services.report import persist_report_markdown
 from .settings import (
     load_defaults,
-    persist_report_markdown,
     resolved_depth_policy,
     resolved_detail_level,
     save_configuration,

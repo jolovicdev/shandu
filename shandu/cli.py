@@ -7,6 +7,7 @@ from typing import cast
 
 import click
 from pydantic import ValidationError
+from rich.console import Console
 from rich.markup import escape
 
 from .config import config, infer_api_key_env_name
@@ -14,10 +15,12 @@ from .contracts import ResearchRequest, RunEvent
 from .engine import ShanduEngine
 from .interfaces import DepthPolicy, DetailLevel
 from .runtime import reset_bootstrap
+from .services import persist_report_markdown
 from .ui import ShanduUI
 
 ui = ShanduUI()
 console = ui.console
+err_console = Console(theme=ui.theme, stderr=True)
 
 _DETAIL_LEVELS: tuple[DetailLevel, ...] = ("concise", "standard", "high")
 _DEPTH_POLICIES: tuple[DepthPolicy, ...] = ("adaptive", "fixed")
@@ -45,11 +48,12 @@ def _run_query_line(query: str) -> str:
 
 @click.group()
 def cli() -> None:
-    ui.print_banner()
+    pass
 
 
 @cli.command()
 def info() -> None:
+    ui.print_banner()
     api_key_env = config.get_api_key_env_name()
     key_in_env = bool(api_key_env and os.getenv(api_key_env))
     key_in_config = bool(str(config.get("api", "api_key", "")).strip())
@@ -80,6 +84,7 @@ def info() -> None:
 
 @cli.command()
 def configure() -> None:
+    ui.print_banner()
     model = click.prompt("Default model", default=config.get("api", "model"))
     inferred_env_name = infer_api_key_env_name(model)
     api_key_env = click.prompt(
@@ -137,6 +142,7 @@ def configure() -> None:
 @click.option("--auth", default=None, help="Basic auth credentials as user:pass.")
 @click.option("--browser/--no-browser", default=False, show_default=True)
 def gui_command(host: str, port: int, share: bool, auth: str | None, browser: bool) -> None:
+    ui.print_banner()
     credentials = _parse_gui_auth(auth)
     if share and credentials is None:
         raise click.ClickException("--share requires --auth user:pass.")
@@ -174,6 +180,7 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 @click.option("--max-iterations", default=None, type=int)
 @click.option("--parallelism", default=None, type=int)
 @click.option("--detail-level", default=None, type=click.Choice(["concise", "standard", "high"]))
+@click.option("--depth-policy", default=None, type=click.Choice(["adaptive", "fixed"]))
 @click.option("--max-results-per-query", default=None, type=int)
 @click.option("--max-pages-per-task", default=None, type=int)
 @click.option("--output", default=None)
@@ -184,12 +191,15 @@ def run_command(
     max_iterations: int | None,
     parallelism: int | None,
     detail_level: str | None,
+    depth_policy: str | None,
     max_results_per_query: int | None,
     max_pages_per_task: int | None,
     output: str | None,
     json_output: bool,
     verbose: bool,
 ) -> None:
+    diag = err_console if (json_output and not output) else console
+    ui.print_banner(diag)
     default_detail = _resolve_detail_level(
         str(config.get("orchestration", "detail_level", "high")),
         "high",
@@ -208,7 +218,7 @@ def run_command(
             if parallelism is not None
             else int(config.get("orchestration", "parallelism", 3)),
             detail_level=_resolve_detail_level(detail_level, default_detail),
-            depth_policy=default_depth,
+            depth_policy=_resolve_depth_policy(depth_policy, default_depth),
             max_results_per_query=max_results_per_query
             if max_results_per_query is not None
             else int(config.get("orchestration", "max_results_per_query", 5)),
@@ -228,18 +238,18 @@ def run_command(
 
     def on_event(event: RunEvent) -> None:
         snapshot.apply(event)
-        console.print(ui.event_line(event))
+        diag.print(ui.event_line(event))
 
-    console.print(_run_query_line(request.query))
+    diag.print(_run_query_line(request.query))
     try:
         result = engine.run_sync(request, progress_callback=on_event)
     finally:
         engine.close()
 
     if verbose:
-        console.print(ui.dashboard(snapshot))
+        diag.print(ui.dashboard(snapshot))
 
-    console.print(ui.result_panels(result))
+    diag.print(ui.result_panels(result))
 
     if output:
         path = Path(output)
@@ -248,11 +258,16 @@ def run_command(
             path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
         else:
             path.write_text(result.report_markdown, encoding="utf-8")
-        console.print(ui.success(f"Output saved to {path}"))
+        diag.print(ui.success(f"Output saved to {path}"))
     elif json_output:
         console.print_json(result.model_dump_json(indent=2))
     else:
-        console.print(ui.markdown_panel("Final Report", result.report_markdown))
+        diag.print(ui.markdown_panel("Final Report", result.report_markdown))
+
+    if not output:
+        export_path = persist_report_markdown(result.run_id, result.report_markdown)
+        if export_path:
+            diag.print(ui.success(f"Report saved to {export_path}"))
 
 
 @cli.command("aisearch")
@@ -270,6 +285,8 @@ def ai_search_command(
     output: str | None,
     json_output: bool,
 ) -> None:
+    diag = err_console if (json_output and not output) else console
+    ui.print_banner(diag)
     engine = ShanduEngine.from_config()
     try:
         result = engine.ai_search_sync(
@@ -288,20 +305,21 @@ def ai_search_command(
             path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
         else:
             path.write_text(result.answer_markdown, encoding="utf-8")
-        console.print(ui.success(f"Output saved to {path}"))
+        diag.print(ui.success(f"Output saved to {path}"))
         return
 
     if json_output:
         console.print_json(result.model_dump_json(indent=2))
         return
 
-    console.print(ui.markdown_panel("AISearch Answer", result.answer_markdown))
-    console.print(ui.ai_sources_panel(result))
+    diag.print(ui.markdown_panel("AISearch Answer", result.answer_markdown))
+    diag.print(ui.ai_sources_panel(result))
 
 
 @cli.command()
 @click.argument("run_id")
 def inspect(run_id: str) -> None:
+    ui.print_banner()
     engine = ShanduEngine.from_config()
     payload = engine.inspect_run(run_id)
     if not payload.get("exists"):
@@ -313,6 +331,7 @@ def inspect(run_id: str) -> None:
 @cli.command()
 @click.option("--force", is_flag=True)
 def clean(force: bool) -> None:
+    ui.print_banner()
     runtime_dir = Path(
         str(config.get("runtime", "storage_dir", ".blackgeorge"))
     ).expanduser().resolve()

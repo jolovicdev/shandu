@@ -10,7 +10,7 @@ from blackgeorge import Desk
 from blackgeorge.memory.sqlite import SQLiteMemoryStore
 import litellm
 
-from ..config import config
+from ..config import DEFAULT_MODEL, config
 from .cost_tracker import CostTracker
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ class RuntimeBootstrap:
         api_key_value = str(config.get("api", "api_key", "")).strip()
         if api_key_env and api_key_value and not os.getenv(api_key_env):
             os.environ[api_key_env] = api_key_value
+            config.record_exported_api_key(api_key_env, api_key_value)
         litellm.suppress_debug_info = True
         storage = Path(settings.storage_dir)
         storage.mkdir(parents=True, exist_ok=True)
@@ -71,7 +72,7 @@ class RuntimeBootstrap:
     def from_config(cls) -> "RuntimeBootstrap":
         return cls(
             RuntimeSettings(
-                model=str(config.get("api", "model", "deepseek/deepseek-v4-flash")),
+                model=str(config.get("api", "model", DEFAULT_MODEL)),
                 temperature=float(config.get("api", "temperature", 0.2)),
                 max_tokens=int(config.get("api", "max_tokens", 16384)),
                 storage_dir=str(config.get("runtime", "storage_dir", ".blackgeorge")),

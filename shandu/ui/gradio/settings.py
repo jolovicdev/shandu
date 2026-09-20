@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from ...config import config, infer_api_key_env_name
+from ...config import DEFAULT_MODEL, config, infer_api_key_env_name
 from ...interfaces import DepthPolicy, DetailLevel
 from ...runtime import reset_bootstrap
 from .constants import DEPTH_POLICIES, DETAIL_LEVELS
@@ -42,7 +42,7 @@ class GuiDefaults:
 
 
 def load_defaults() -> GuiDefaults:
-    model = str(config.get("api", "model", "deepseek/deepseek-v4-flash"))
+    model = str(config.get("api", "model", DEFAULT_MODEL))
     return GuiDefaults(
         model=model,
         api_key_env=config.get_api_key_env_name(model),
@@ -86,7 +86,7 @@ def save_configuration(
     max_results_per_query: object,
     max_pages_per_task: object,
 ) -> str:
-    model_text = str(model or "").strip() or "deepseek/deepseek-v4-flash"
+    model_text = str(model or "").strip() or DEFAULT_MODEL
     env_text = str(api_key_env or "").strip()
     key_text = str(api_key_value or "").strip()
 

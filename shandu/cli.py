@@ -51,14 +51,23 @@ def cli() -> None:
 @cli.command()
 def info() -> None:
     api_key_env = config.get_api_key_env_name()
-    key_in_env = bool(os.getenv(api_key_env))
+    key_in_env = bool(api_key_env and os.getenv(api_key_env))
     key_in_config = bool(str(config.get("api", "api_key", "")).strip())
+    if api_key_env:
+        key_rows = [
+            ("API Key Env", api_key_env),
+            ("API Key", "set" if (key_in_env or key_in_config) else "not set"),
+        ]
+    else:
+        key_rows = [
+            ("API Key Env", "provider-managed"),
+            ("API Key", "provider-managed"),
+        ]
     rows = [
         ("Model", config.get("api", "model")),
         ("Temperature", config.get("api", "temperature")),
         ("Max Tokens", config.get("api", "max_tokens")),
-        ("API Key Env", api_key_env),
-        ("API Key", "set" if (key_in_env or key_in_config) else "not set"),
+        *key_rows,
         ("Storage Dir", config.get("runtime", "storage_dir")),
         ("Default Iterations", config.get("orchestration", "max_iterations")),
         ("Default Parallelism", config.get("orchestration", "parallelism")),

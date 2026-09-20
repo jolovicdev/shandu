@@ -56,7 +56,7 @@ cp .env.example .env
 
 `shandu configure` now asks for:
 
-- `Default model` (example: `deepseek/deepseek-v4-flash`, `openrouter/minimax/minimax-m2.5`)
+- `Default model` (example: `deepseek/deepseek-flash`, `openrouter/minimax/minimax-m2.5`)
 - `API key env var name` (example: `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `ANYSUPPORTED_API_KEY`)
 - `API key value` (hidden input)
 
@@ -67,7 +67,7 @@ Examples:
 ```bash
 # DeepSeek
 shandu configure
-# model: deepseek/deepseek-v4-flash
+# model: deepseek/deepseek-flash
 # env var name: DEEPSEEK_API_KEY
 # key value: <your key>
 
@@ -90,7 +90,7 @@ If you prefer not to use interactive configuration, set env vars directly.
 
 Provider/model:
 
-- `SHANDU_MODEL` (primary model selector, example `deepseek/deepseek-v4-flash`)
+- `SHANDU_MODEL` (primary model selector, example `deepseek/deepseek-flash`)
 - `OPENAI_MODEL_NAME` (compatibility fallback if `SHANDU_MODEL` is not set)
 
 Provider API key routing:

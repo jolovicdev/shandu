@@ -37,6 +37,22 @@ _REPORTER_EVIDENCE_BUDGET = 120_000
 # Floor for one record's extracted text. A record gets an equal share of the
 # budget when that is larger, so a small corpus reaches the reporter whole.
 _MIN_EVIDENCE_TEXT_CHARS = 2200
+# A reasoning model sometimes drafts the whole report inside its reasoning
+# channel and then stops, so the call completes with empty content. The report
+# is the one call a run cannot do without, so that case is retried.
+_REPORTER_ATTEMPTS = 3
+
+
+def _add_usage(
+    total: dict[str, Any] | None, usage: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not usage:
+        return total
+    merged = dict(total or {})
+    for key, value in usage.items():
+        merged[key] = merged.get(key, 0) + value
+    merged["llm_calls"] = (total or {}).get("llm_calls", 0) + 1
+    return merged
 
 
 def _failure_reason(report: Any, label: str) -> str:
@@ -221,24 +237,28 @@ class LeadAgent:
             model=self._runtime.settings.model,
             instructions=reporter_instructions(),
         )
-        job = Job(
-            input=reporter_job(payload, target_words),
-            expected_output=reporter_expected_output(),
-        )
+        job_input = reporter_job(payload, target_words)
         self.last_llm_usage = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
-            self.last_llm_usage = collect_llm_usage(report)
-            content = getattr(report, "content", None)
-            if report.status == "completed" and isinstance(content, str) and content.strip():
-                markdown = content.strip()
-                return FinalReportDraft(
-                    title=self._extract_title(markdown, request.query),
-                    executive_summary=self._extract_summary(markdown),
-                    sections=[],
-                    markdown=markdown,
+            for _ in range(_REPORTER_ATTEMPTS):
+                job = Job(input=job_input, expected_output=reporter_expected_output())
+                report = await self._runtime.desk.arun(worker, job)
+                self.last_llm_usage = _add_usage(
+                    self.last_llm_usage, collect_llm_usage(report)
                 )
-            reason = _failure_reason(report, "reporter")
+                if report.status != "completed":
+                    reason = _failure_reason(report, "reporter")
+                    break
+                content = getattr(report, "content", None)
+                if isinstance(content, str) and content.strip():
+                    markdown = content.strip()
+                    return FinalReportDraft(
+                        title=self._extract_title(markdown, request.query),
+                        executive_summary=self._extract_summary(markdown),
+                        sections=[],
+                        markdown=markdown,
+                    )
+                reason = "reporter returned empty content"
             logger.warning("Lead reporter call did not complete: %s", reason)
         except Exception:
             reason = "reporter raised before completing"

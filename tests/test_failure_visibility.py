@@ -62,6 +62,43 @@ def test_lead_failure_logs_and_exposes_reason(caplog, method) -> None:
     assert "401" in agent.last_fallback_reason
 
 
+class _EmptyThenReportDesk:
+    def __init__(self, empty_calls: int) -> None:
+        self.calls = 0
+        self._empty_calls = empty_calls
+
+    async def arun(self, worker, job):
+        del worker, job
+        self.calls += 1
+        content = "" if self.calls <= self._empty_calls else "# Title\n\nBody [1]."
+        return SimpleNamespace(
+            status="completed",
+            content=content,
+            metrics={"usage": {"total_tokens": 10}, "cost_usd": 0.01},
+        )
+
+
+def test_reporter_retries_empty_content_and_sums_usage() -> None:
+    desk = _EmptyThenReportDesk(empty_calls=2)
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert draft.markdown == "# Title\n\nBody [1]."
+    assert agent.fallback_count == 0
+    assert agent.last_llm_usage == {"total_tokens": 30, "cost_usd": 0.03, "llm_calls": 3}
+
+
+def test_reporter_falls_back_after_repeated_empty_content() -> None:
+    desk = _EmptyThenReportDesk(empty_calls=99)
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert desk.calls == 3
+    assert agent.last_fallback_reason == "reporter returned empty content"
+
+
 class _AlphaSearch:
     async def search(self, query: str, max_results: int) -> list[SearchHit]:
         del query, max_results

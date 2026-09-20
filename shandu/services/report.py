@@ -295,9 +295,8 @@ class ReportService:
     def _extract_protected_segments(
         self, markdown: str
     ) -> tuple[str, list[str]]:
-        # Fenced blocks leave as whole units; prose lines are further split
-        # into code spans, links, and plain text. Placeholders hold each
-        # segment's line position so surrounding blank runs still collapse.
+        # Placeholders hold each segment's line position so surrounding blank
+        # runs still collapse.
         protected: list[str] = []
 
         def stash(segment: str) -> str:

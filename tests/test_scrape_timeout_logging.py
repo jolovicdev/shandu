@@ -5,14 +5,17 @@ import asyncio
 from shandu.services.scrape import ScrapeService
 
 
-def test_scrape_timeout_increments_counter():
+def test_scrape_timeout_surfaces_fetch_error():
     service = ScrapeService()
+    call_count = 0
 
     class FakeSession:
         closed = False
         async def close(self):
             pass
         def get(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
             class FakeResponse:
                 status = 200
                 async def __aenter__(self):
@@ -25,10 +28,8 @@ def test_scrape_timeout_increments_counter():
     result = asyncio.run(service.scrape("https://example.com", session=fake_session))
     assert result is not None
     assert result.fetch_error == "timeout"
-    # Timeouts get at most one retry: initial attempt + 1 retry = 2 timeouts.
-    assert service._timeout_count == 2
-    assert service._retry_count == 1
-    assert service._total_scrapes == 1
+    # Timeouts get at most one retry: initial attempt + 1 retry.
+    assert call_count == 2
 
 
 def test_retryable_status_uses_full_attempt_budget():
@@ -65,7 +66,6 @@ def test_retryable_status_uses_full_attempt_budget():
     assert result.http_status == 429
     # 429 is retryable but not a timeout, so it uses the full attempt budget.
     assert call_count == service._max_attempts
-    assert service._retry_count == service._max_attempts - 1
 
 
 def test_scrape_success_after_retry():
@@ -103,12 +103,10 @@ def test_scrape_success_after_retry():
     assert result is not None
     assert result.fetch_error is None
     assert result.text == "Hello world this is a test paragraph with enough words to pass filter"
-    assert service._timeout_count == 1
-    assert service._retry_count == 1
-    assert service._total_scrapes == 1
+    assert call_count == 2
 
 
-def test_scrape_success_does_not_increment_timeout():
+def test_scrape_success_returns_page_without_retry():
     service = ScrapeService()
 
     html = "<html><body><p>Hello world this is a test paragraph with enough words to pass filter</p></body></html>"
@@ -137,9 +135,6 @@ def test_scrape_success_does_not_increment_timeout():
     assert result is not None
     assert result.fetch_error is None
     assert result.text == "Hello world this is a test paragraph with enough words to pass filter"
-    assert service._timeout_count == 0
-    assert service._retry_count == 0
-    assert service._total_scrapes == 1
 
 
 def test_scrape_cross_task_deduplication():
@@ -177,4 +172,3 @@ def test_scrape_cross_task_deduplication():
     assert result2 is not None
     assert result1 is result2  # same cached object
     assert call_count == 1  # only one HTTP call
-    assert service._total_scrapes == 1  # one actual scrape attempt

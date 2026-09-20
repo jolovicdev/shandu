@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
 
 from blackgeorge.memory.in_memory import InMemoryMemoryStore
@@ -262,38 +261,51 @@ class SlowSearchSubagent(FakeSearchSubagent):
         ]
 
 
+class TrackingSearchSubagent(FakeSearchSubagent):
+    def __init__(self) -> None:
+        self.active = 0
+        self.peak = 0
+
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+    ):
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            await asyncio.sleep(0.01)
+        finally:
+            self.active -= 1
+        return await super().execute_task(
+            run_scope,
+            task,
+            request,
+            progress_callback=progress_callback,
+            extracted_urls=extracted_urls,
+        )
+
+
+def _peak_concurrency(parallelism: int) -> int:
+    subagent = TrackingSearchSubagent()
+    orchestrator = LeadOrchestrator(
+        lead_agent=ParallelLeadAgent(),
+        search_subagent=subagent,
+        citation_agent=FakeCitationAgent(),
+        memory_service=MemoryService(InMemoryMemoryStore()),
+        report_service=FakeReportService(),
+    )
+    asyncio.run(
+        orchestrator.run(
+            ResearchRequest(
+                query="parallel-test", max_iterations=1, parallelism=parallelism
+            )
+        )
+    )
+    return subagent.peak
+
+
 def test_orchestrator_parallelism_controls_task_concurrency() -> None:
-    request_serial = ResearchRequest(
-        query="parallel-test", max_iterations=1, parallelism=1
-    )
-    request_parallel = ResearchRequest(
-        query="parallel-test", max_iterations=1, parallelism=2
-    )
-
-    orchestrator_serial = LeadOrchestrator(
-        lead_agent=ParallelLeadAgent(),
-        search_subagent=SlowSearchSubagent(),
-        citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
-        report_service=FakeReportService(),
-    )
-    orchestrator_parallel = LeadOrchestrator(
-        lead_agent=ParallelLeadAgent(),
-        search_subagent=SlowSearchSubagent(),
-        citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
-        report_service=FakeReportService(),
-    )
-
-    started = time.perf_counter()
-    asyncio.run(orchestrator_serial.run(request_serial))
-    serial_elapsed = time.perf_counter() - started
-
-    started = time.perf_counter()
-    asyncio.run(orchestrator_parallel.run(request_parallel))
-    parallel_elapsed = time.perf_counter() - started
-
-    assert parallel_elapsed < serial_elapsed * 0.75
+    assert _peak_concurrency(1) == 1
+    assert _peak_concurrency(2) == 2
 
 
 def test_orchestrator_emits_task_level_search_progress_events() -> None:

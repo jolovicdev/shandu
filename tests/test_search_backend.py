@@ -10,7 +10,12 @@ from shandu.services.search import SearchService
 
 def test_search_service_constructs() -> None:
     service = SearchService()
-    assert service is not None
+    assert service.last_error is None
+    assert service._cache == {}
+    assert service._inflight == {}
+    assert service._region
+    assert service._safesearch
+    assert service._get_cached(service._cache_key("q", 3)) is None
 
 
 def test_search_backends_pair_engines_with_auto_fallback() -> None:

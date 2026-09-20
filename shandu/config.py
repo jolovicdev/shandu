@@ -206,9 +206,6 @@ class Config:
         self._overlay.setdefault(section, {})[key] = value
         self._config.setdefault(section, {})[key] = value
 
-    def get_section(self, section: str) -> dict[str, Any]:
-        return self._config.get(section, {}).copy()
-
     def save(self) -> None:
         payload: dict[str, dict[str, Any]] = {}
         for section, values in self._overlay.items():

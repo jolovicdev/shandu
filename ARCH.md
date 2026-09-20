@@ -1,6 +1,6 @@
-# Shandu 3.0 Architecture
+# Shandu 3.2 Architecture
 
-This document describes how Shandu 3.0 executes research runs end-to-end.
+This document describes how Shandu 3.2 executes research runs end-to-end.
 
 ## 1) System Topology
 
@@ -81,7 +81,7 @@ flowchart TD
 ## 5) Parallelism Model
 
 - `--parallelism` is the hard upper bound for concurrent subagent task execution per iteration.
-- The planner attempts to generate enough independent tasks to use requested parallelism.
+- The planner returns roughly parallelism tasks, capped by what the query needs.
 - The orchestrator enforces concurrency with an async semaphore.
 
 ```mermaid

@@ -35,9 +35,6 @@ def _long_html(title: str = "Title", words: int = 100) -> str:
     return f"<html><head><title>{title}</title></head><body><article><h1>{title}</h1><p>{text}</p><p>{text}</p></article></body></html>"
 
 
-# ---------------------------------------------------------------------------
-# Article extractors
-# ---------------------------------------------------------------------------
 
 def test_trafilatura_extracts_title_text_and_blocks() -> None:
     html = _long_html("Trafilatura Article", words=100)
@@ -78,10 +75,9 @@ def test_extract_html_captures_og_site_name() -> None:
 
 
 def test_extract_cascade_prefers_trafilatura_then_readability_then_bs4() -> None:
-    service = ScrapeService()
-    title, text = service._extract(_long_html("Cascade", words=120))
-    assert title == "Cascade"
-    assert len(text.split()) >= 120
+    result = _extract_html(_long_html("Cascade", words=120))
+    assert result.title == "Cascade"
+    assert len(result.text.split()) >= 120
 
 
 def test_trafilatura_returns_none_for_short_content() -> None:
@@ -150,9 +146,6 @@ def test_trafilatura_extracts_title_date_and_blocks_in_one_pass() -> None:
     assert len(result.text.split()) >= 80
 
 
-# ---------------------------------------------------------------------------
-# Document parsers
-# ---------------------------------------------------------------------------
 
 def test_parse_pdf_extracts_title_and_text() -> None:
     doc = fitz.open()
@@ -235,13 +228,10 @@ def test_parse_csv_extracts_rows() -> None:
 
 
 def test_parse_plaintext_extracts_text() -> None:
-    result = _parse_plaintext(b"Hello world", "text/plain")
+    result = _parse_plaintext(b"Hello world")
     assert result.text == "Hello world"
 
 
-# ---------------------------------------------------------------------------
-# Date extraction
-# ---------------------------------------------------------------------------
 
 def test_extract_published_at_finds_new_meta_names() -> None:
     html = (
@@ -272,33 +262,30 @@ def test_extract_published_at_finds_upload_date() -> None:
     assert _extract_published_at(html) == "2024-06-01"
 
 
-# ---------------------------------------------------------------------------
-# Paywall / blocked detection
-# ---------------------------------------------------------------------------
 
 def test_detect_fetch_error_detects_paywall() -> None:
     html = '<html><body><div class="paywall">Subscribe to read more.</div></body></html>'
-    assert _detect_fetch_error(html, 200, "") == "paywall"
+    assert _detect_fetch_error(html, "") == "paywall"
 
 
 def test_detect_fetch_error_detects_captcha() -> None:
     html = '<html><body><div class="g-recaptcha"></div></body></html>'
-    assert _detect_fetch_error(html, 200, "") == "captcha"
+    assert _detect_fetch_error(html, "") == "captcha"
 
 
 def test_detect_fetch_error_detects_empty_js_shell() -> None:
     html = '<html><body>' + ' ' * 9000 + '<div id="root"></div></body></html>'
-    assert _detect_fetch_error(html, 200, "") == "empty_js_shell"
+    assert _detect_fetch_error(html, "") == "empty_js_shell"
 
 
 def test_detect_fetch_error_returns_none_for_normal_page() -> None:
     html = '<html><body><p>This is a normal page with plenty of content.</p></body></html>'
-    assert _detect_fetch_error(html, 200, "normal content here") is None
+    assert _detect_fetch_error(html, "normal content here") is None
 
 
 def test_detect_fetch_error_ignores_captcha_marker_when_text_is_strong() -> None:
     html = '<html><body><article><p>' + " ".join(["word"] * 120) + '</p></article><script>g-recaptcha</script></body></html>'
-    assert _detect_fetch_error(html, 200, " ".join(["word"] * 120)) is None
+    assert _detect_fetch_error(html, " ".join(["word"] * 120)) is None
 
 
 def test_extract_html_caps_long_successful_extraction() -> None:
@@ -307,9 +294,6 @@ def test_extract_html_caps_long_successful_extraction() -> None:
     assert len(result.text) <= 18000
 
 
-# ---------------------------------------------------------------------------
-# Retry policy
-# ---------------------------------------------------------------------------
 
 def test_scrape_retries_on_429_and_eventually_succeeds() -> None:
     service = ScrapeService()
@@ -340,7 +324,6 @@ def test_scrape_retries_on_429_and_eventually_succeeds() -> None:
     result = asyncio.run(service.scrape("https://example.com", session=fake))
     assert result.fetch_error is None
     assert call_count == 3
-    assert service._retry_count == 2
 
 
 def test_scrape_retries_on_transient_client_error() -> None:
@@ -373,7 +356,6 @@ def test_scrape_retries_on_transient_client_error() -> None:
     result = asyncio.run(service.scrape("https://example.com", session=fake))
     assert result.fetch_error is None
     assert call_count == 2
-    assert service._retry_count == 1
 
 
 def test_scrape_does_not_retry_404() -> None:
@@ -405,12 +387,8 @@ def test_scrape_does_not_retry_404() -> None:
     result = asyncio.run(service.scrape("https://example.com", session=fake))
     assert result.fetch_error == "scrape_failed"
     assert call_count == 1
-    assert service._retry_count == 0
 
 
-# ---------------------------------------------------------------------------
-# Content type / format detection
-# ---------------------------------------------------------------------------
 
 def test_scrape_service_detects_pdf_from_content_type() -> None:
     service = ScrapeService()
@@ -508,9 +486,6 @@ def test_scrape_service_rejects_oversized_html_before_decoding() -> None:
     assert result.fetch_error == "non_text_content"
 
 
-# ---------------------------------------------------------------------------
-# Structured blocks
-# ---------------------------------------------------------------------------
 
 def test_extract_produces_structured_blocks() -> None:
     long_para = " ".join(["word"] * 60)

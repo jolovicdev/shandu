@@ -361,7 +361,7 @@ def _parse_csv(data: bytes) -> _ExtractionResult:
         raise _ParseError("non_text_content", str(exc)) from exc
 
 
-def _parse_plaintext(data: bytes, content_type: str | None = None) -> _ExtractionResult:
+def _parse_plaintext(data: bytes) -> _ExtractionResult:
     text = _cap_text(data.decode("utf-8", errors="ignore"))
     if not text:
         raise _ParseError("non_text_content", "Empty text file")
@@ -417,7 +417,7 @@ def _extract_published_at(html: str) -> str | None:
     return None
 
 
-def _detect_fetch_error(html: str | None, status: int | None, text: str) -> str | None:
+def _detect_fetch_error(html: str | None, text: str) -> str | None:
     if html:
         if len(html) > 8000 and len(text.split()) < 40:
             return "empty_js_shell"

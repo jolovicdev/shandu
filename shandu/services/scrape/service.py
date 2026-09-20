@@ -200,9 +200,6 @@ class ScrapeService:
             base_delay=float(config.get("scraper", "domain_base_delay", 0.5)),
         )
         self._max_attempts = max(1, min(int(config.get("scraper", "max_attempts", 3)), 5))
-        self._timeout_count = 0
-        self._total_scrapes = 0
-        self._retry_count = 0
         self._page_cache: OrderedDict[str, ScrapedPage] = OrderedDict()
         self._inflight: dict[str, asyncio.Task[ScrapedPage]] = {}
         self._session: aiohttp.ClientSession | None = None
@@ -279,7 +276,6 @@ class ScrapeService:
     ) -> ScrapedPage:
         active_session = session or await self._get_session()
         owns_session = session is None
-        self._total_scrapes += 1
 
         try:
             page = await self._scrape_with_retry(url, active_session, attempt=0)
@@ -313,7 +309,6 @@ class ScrapeService:
             else self._max_attempts
         )
         if result.retryable and attempt < max_attempts - 1:
-            self._retry_count += 1
             delay = self._backoff_delay(attempt)
             await asyncio.sleep(delay)
             return await self._scrape_with_retry(url, session, attempt + 1)
@@ -431,9 +426,9 @@ class ScrapeService:
                                 _extract_published_at, html
                             )
                             if not result.text.strip():
-                                fetch_error = _detect_fetch_error(html, status, result.text) or "empty_content"
+                                fetch_error = _detect_fetch_error(html, result.text) or "empty_content"
                             else:
-                                fetch_error = _detect_fetch_error(html, status, result.text)
+                                fetch_error = _detect_fetch_error(html, result.text)
                             page = ScrapedPage(
                                 requested_url=url,
                                 url=final_url,
@@ -537,7 +532,7 @@ class ScrapeService:
                             if data is None:
                                 return _error_page("non_text_content", status, retryable=False)
                             try:
-                                result = await asyncio.to_thread(_parse_plaintext, data, content_type)
+                                result = await asyncio.to_thread(_parse_plaintext, data)
                             except _ParseError as exc:
                                 return _error_page(exc.fetch_error, status, retryable=False)
                             page = ScrapedPage(
@@ -555,7 +550,6 @@ class ScrapeService:
                         return _error_page("non_text_content", status, retryable=False)
 
                 except asyncio.TimeoutError:
-                    self._timeout_count += 1
                     logger.warning(
                         "Scrape timeout: %s (timeout=%ss, attempt=%s)",
                         request_url,
@@ -582,23 +576,6 @@ class ScrapeService:
                     return _error_page("scrape_failed", None, retryable=False)
         finally:
             await self._domain_scheduler.release(domain)
-
-    def _canonicalize_url(self, url: str) -> str:
-        return _canonicalize_url(url)
-
-    def _extract(self, html: str) -> tuple[str, str]:
-        result = _extract_html(html)
-        return result.title, result.text
-
-    @staticmethod
-    def _extract_published_at(html: str) -> str | None:
-        return _extract_published_at(html)
-
-    @staticmethod
-    def _extract_title(soup: object) -> str:
-        from .extraction import _extract_title_from_soup
-
-        return _extract_title_from_soup(soup)  # type: ignore[arg-type]
 
     async def _get_session(self) -> aiohttp.ClientSession:
         timeout = aiohttp.ClientTimeout(total=self._timeout)

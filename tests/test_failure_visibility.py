@@ -303,3 +303,59 @@ def test_planner_failure_pads_to_parallelism() -> None:
     plan = asyncio.run(agent.create_iteration_plan(request, 0, [], []))
 
     assert len(plan.subagent_tasks) == 3
+
+
+def test_normalize_tasks_drops_empty_focus_and_repairs_ids() -> None:
+    request = ResearchRequest(query="q", max_iterations=2, parallelism=3)
+
+    tasks = LeadAgent._normalize_tasks(
+        [
+            SubagentTask(task_id="t1", focus="  ", search_queries=["q"]),
+            SubagentTask(task_id="dup", focus="first lane", search_queries=[]),
+            SubagentTask(task_id="dup", focus="second lane", search_queries=["q2"]),
+        ],
+        request,
+        0,
+    )
+
+    assert [task.focus for task in tasks] == ["first lane", "second lane"]
+    assert tasks[0].task_id == "dup"
+    assert tasks[0].search_queries == ["first lane"]
+    assert tasks[1].task_id != "dup"
+    assert tasks[1].task_id.startswith("iter_1_task_")
+
+
+def test_fallback_tasks_cover_parallelism_with_unique_ids() -> None:
+    request = ResearchRequest(query="physics question", max_iterations=2, parallelism=3)
+
+    tasks = LeadAgent._fallback_tasks(request, 1)
+
+    assert len(tasks) == 3
+    assert len({task.task_id for task in tasks}) == 3
+    assert tasks[0].focus == "physics question"
+    assert all(task.search_queries for task in tasks)
+
+
+def test_extract_title_prefers_h1_then_query() -> None:
+    assert (
+        LeadAgent._extract_title("# Real Title\n\nBody", "fallback query")
+        == "Real Title"
+    )
+    assert LeadAgent._extract_title("no heading here", "fallback query") == (
+        "fallback query"
+    )
+    assert LeadAgent._extract_title("", "") == "Research Report"
+
+
+def test_extract_summary_reads_executive_section_then_prose() -> None:
+    markdown = (
+        "# Title\n\n## Executive Summary\n\nFirst line.\nSecond line.\n\n"
+        "## Details\n\nLater."
+    )
+    assert LeadAgent._extract_summary(markdown) == "First line. Second line."
+    assert LeadAgent._extract_summary("# Title\n\nBody prose here.") == (
+        "Body prose here."
+    )
+    assert LeadAgent._extract_summary("# Only Headings\n\n## Sub") == (
+        "Summary unavailable."
+    )

@@ -186,10 +186,9 @@ class SearchSubagent:
                 )
             per_query.append(entries)
 
-        # Round-robin across queries so later queries (counterevidence,
-        # specialist sources) survive the page cap instead of the first
-        # query filling it alone. Already-extracted URLs rank last so a new
-        # iteration prefers unseen sources.
+        # Round-robin across queries so later queries survive the page cap.
+        # Already-extracted URLs rank last so a new iteration prefers unseen
+        # sources.
         interleaved: list[dict[str, str]] = []
         for round_hits in zip_longest(*per_query):
             for entry in round_hits:

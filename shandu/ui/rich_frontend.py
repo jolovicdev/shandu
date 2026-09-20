@@ -15,6 +15,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from .. import __version__
 from ..contracts import AISearchResult, ResearchRequest, ResearchRunResult, RunEvent
 
 def _inspect_result_summary(output: object) -> list[tuple[str, str]]:
@@ -80,7 +81,7 @@ class ShanduUI:
             self.console = console
 
     def banner_panel(self) -> Panel:
-        top = Text(" SHANDU V3 ", style="bold black on #10b981")
+        top = Text(f" SHANDU V{__version__.split('.')[0]} ", style="bold black on #10b981")
         sub = Text("LeadResearcher · Subagents · Memory · CitationAgent", style="muted")
         return Panel(
             Group(top, sub),

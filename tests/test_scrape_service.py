@@ -3,17 +3,17 @@ from __future__ import annotations
 import asyncio
 
 from shandu.services.scrape import ScrapeService, ScrapedPage
+from shandu.services.scrape.extraction import _extract_html
+from shandu.services.scrape.service import _canonicalize_url
 
 
 def test_scrape_service_canonicalizes_urls() -> None:
-    service = ScrapeService()
-    canonical = service._canonicalize_url("https://example.com/path?a=1#section")
+    canonical = _canonicalize_url("https://example.com/path?a=1#section")
     assert canonical == "https://example.com/path?a=1"
 
 
 def test_scrape_service_extracts_main_content_and_drops_noise() -> None:
-    service = ScrapeService()
-    title, text = service._extract(
+    result = _extract_html(
         """
         <html>
           <head>
@@ -30,10 +30,10 @@ def test_scrape_service_extracts_main_content_and_drops_noise() -> None:
         </html>
         """
     )
-    assert title == "Sample Article"
-    assert "informative and content-rich" in text
-    assert "ignore me" not in text
-    assert "header nav" not in text
+    assert result.title == "Sample Article"
+    assert "informative and content-rich" in result.text
+    assert "ignore me" not in result.text
+    assert "header nav" not in result.text
 
 
 def test_safe_decode_falls_back_on_unknown_charset() -> None:

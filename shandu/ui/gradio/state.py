@@ -119,43 +119,6 @@ class GuiRunState:
         self.errors.append(message)
         self.stage = "error"
 
-    def status_markdown(self, running: bool) -> str:
-        state_label = "RUNNING" if running else self.stage.upper()
-        lines = [
-            "## Mission Status",
-            f"- State: **{state_label}**",
-            f"- Run ID: **{self.run_id}**",
-            f"- Iteration: **{self.iteration}**",
-            f"- Events: **{self.event_count}**",
-            f"- Query: `{self.query}`",
-        ]
-        model_calls = self._model_calls()
-        if isinstance(model_calls, int) and model_calls > 0:
-            lines.append(f"- Model Calls: **{model_calls}**")
-        metered_calls = self.run_stats.get(
-            "metered_calls", self.run_stats.get("llm_calls")
-        )
-        coverage = self._cost_coverage(
-            metered_calls=metered_calls, model_calls=model_calls
-        )
-        if isinstance(metered_calls, int) and metered_calls > 0:
-            if isinstance(model_calls, int) and model_calls > 0:
-                label = "partial" if coverage == "partial" else "full"
-                lines.append(
-                    f"- Cost Coverage: **{label} ({metered_calls}/{model_calls})**"
-                )
-            else:
-                lines.append(f"- Metered Calls: **{metered_calls}**")
-        cost = self.run_stats.get("usd_spent")
-        if isinstance(cost, (int, float)) and float(cost) > 0:
-            label = "Metered Cost" if coverage == "partial" else "Cost"
-            lines.append(f"- {label}: **${float(cost):.6f}**")
-        if self.errors:
-            lines.append("")
-            lines.append("### Errors")
-            lines.extend(f"- {err}" for err in self.errors[-3:])
-        return "\n".join(lines)
-
     def status_html(self, running: bool) -> str:
         state_label = "RUNNING" if running else self.stage.upper()
         status_class = "is-running" if running else f"is-{self.stage.lower()}"
@@ -294,22 +257,6 @@ class GuiRunState:
             f"<ol>{''.join(items)}</ol>"
             "</section>"
         )
-
-    def task_table(self) -> list[list[Any]]:
-        ordered = sorted(self.task_rows.values(), key=lambda row: str(row["Task"]))
-        return [
-            [
-                item["Task"],
-                item["Status"],
-                item["Focus"],
-                item["Last Query"],
-                item["Hits"],
-                item["Scraped"],
-                item["Evidence"],
-                item["Last Update"],
-            ]
-            for item in ordered
-        ]
 
     def task_board_html(self) -> str:
         ordered = sorted(self.task_rows.values(), key=lambda row: str(row["Task"]))

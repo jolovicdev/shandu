@@ -326,8 +326,6 @@ class LeadAgent:
     def _apply_evidence_budget(
         compact: list[dict[str, Any]], scores: list[float]
     ) -> list[dict[str, Any]]:
-        # Ledger records are always kept; the rest fill the budget from the
-        # highest credibility x confidence down, in original relative order.
         sizes = [
             len(json.dumps(record, ensure_ascii=False, default=str))
             for record in compact

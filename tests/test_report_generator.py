@@ -62,7 +62,8 @@ def test_report_service_respects_prebuilt_markdown() -> None:
 def test_report_service_normalizes_evidence_id_markers_to_numeric_citations() -> None:
     service = ReportService()
     request = ResearchRequest(query="Predict top jobs")
-    evidence_id = "a93a4e1b65ff42009c95f52329c5179e"
+    evidence_id = "e1-alpha"
+    orphan_md5 = "a93a4e1b65ff42009c95f52329c5179e"
     draft = FinalReportDraft(
         title="Report",
         executive_summary="Summary",
@@ -70,7 +71,7 @@ def test_report_service_normalizes_evidence_id_markers_to_numeric_citations() ->
         markdown=(
             "# Report\n\n"
             "## Executive Summary\n\n"
-            f"Energy demand is rising [{evidence_id}][{evidence_id}] and market salaries are rising [1][99].\n\n"
+            f"Energy demand is rising [{evidence_id}][{evidence_id}] and market salaries are rising [1][99] despite [{orphan_md5}].\n\n"
             "## References\n\n"
             f"[{evidence_id}] random"
         ),
@@ -92,6 +93,7 @@ def test_report_service_normalizes_evidence_id_markers_to_numeric_citations() ->
     assert "rising [1]" in rendered
     assert rendered.count("[1]") >= 2
     assert "[99]" not in rendered
+    assert orphan_md5 not in rendered
     assert "**[1] energy.example**" in rendered
     assert "[Source](https://energy.example/analysis)" in rendered
 
@@ -440,7 +442,7 @@ def test_marker_passes_leave_inline_code_and_intervals_untouched() -> None:
 def test_marker_passes_leave_links_untouched() -> None:
     service = ReportService()
     request = ResearchRequest(query="q")
-    link = "[manual](https://example.com/p_[1])"
+    link = "[manual](https://example.com/p_[2])"
     draft = FinalReportDraft(
         title="Report",
         executive_summary="Summary",

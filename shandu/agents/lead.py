@@ -106,14 +106,19 @@ class LeadAgent:
                     request=request,
                     iteration=iteration,
                 )
-                return IterationPlan(
-                    iteration_index=iteration,
-                    goals=report.data.goals,
-                    subagent_tasks=tasks,
-                    continue_loop=report.data.continue_loop,
-                    stop_reason=report.data.stop_reason,
-                )
-            reason = _failure_reason(report, "planner")
+                # An empty plan is the planner's stop signal; tasks that all
+                # lack a focus are a malformed plan.
+                if tasks or not report.data.subagent_tasks:
+                    return IterationPlan(
+                        iteration_index=iteration,
+                        goals=report.data.goals,
+                        subagent_tasks=tasks,
+                        continue_loop=report.data.continue_loop,
+                        stop_reason=report.data.stop_reason,
+                    )
+                reason = "planner returned no usable tasks"
+            else:
+                reason = _failure_reason(report, "planner")
             logger.warning("Lead planner call did not complete: %s", reason)
         except Exception:
             reason = "planner raised before completing"

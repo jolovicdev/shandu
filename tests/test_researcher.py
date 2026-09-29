@@ -149,7 +149,7 @@ def test_researcher_by_request_routes_on_request_field() -> None:
         def __init__(self, name: str) -> None:
             self.name = name
 
-        async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+        async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
             calls.append(self.name)
             return []
 
@@ -187,7 +187,7 @@ class _MemoLead:
 
 
 class _MemoSubagent:
-    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
         await progress_callback("task_memo", {"task_id": task.task_id, "focus": task.focus, "memo": "found it"})
         return [
             EvidenceRecord(

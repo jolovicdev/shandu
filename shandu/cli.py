@@ -26,6 +26,36 @@ console = ui.console
 err_console = Console(theme=ui.theme, stderr=True)
 
 _DETAIL_LEVELS: tuple[DetailLevel, ...] = ("concise", "standard", "high")
+_EFFORT_PRESETS: dict[str, dict[str, int]] = {
+    "low": {
+        "max_iterations": 1,
+        "parallelism": 2,
+        "max_pages_per_task": 3,
+        "max_results_per_query": 6,
+        "max_searches_per_task": 3,
+    },
+    "medium": {
+        "max_iterations": 2,
+        "parallelism": 3,
+        "max_pages_per_task": 5,
+        "max_results_per_query": 8,
+        "max_searches_per_task": 6,
+    },
+    "high": {
+        "max_iterations": 3,
+        "parallelism": 4,
+        "max_pages_per_task": 6,
+        "max_results_per_query": 8,
+        "max_searches_per_task": 8,
+    },
+    "max": {
+        "max_iterations": 4,
+        "parallelism": 6,
+        "max_pages_per_task": 8,
+        "max_results_per_query": 10,
+        "max_searches_per_task": 10,
+    },
+}
 _DEPTH_POLICIES: tuple[DepthPolicy, ...] = ("adaptive", "fixed")
 
 
@@ -205,6 +235,12 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     help="Skip pages dated before this day (YYYY-MM-DD).",
 )
 @click.option(
+    "--effort",
+    default=None,
+    type=click.Choice(list(_EFFORT_PRESETS)),
+    help="Research budget preset; explicit budget flags override it.",
+)
+@click.option(
     "--researcher",
     default="pipeline",
     show_default=True,
@@ -226,6 +262,7 @@ def run_command(
     include_domains: tuple[str, ...],
     exclude_domains: tuple[str, ...],
     since: datetime | None,
+    effort: str | None,
     researcher: str,
 ) -> None:
     diag = err_console if (json_output and not output) else console
@@ -237,23 +274,26 @@ def run_command(
         str(config.get("orchestration", "depth_policy", "adaptive")),
         "adaptive",
     )
+    preset = _EFFORT_PRESETS.get(effort or "", {})
+
+    def budget(flag: int | None, key: str, fallback: int) -> int:
+        if flag is not None:
+            return flag
+        if key in preset:
+            return preset[key]
+        return int(config.get("orchestration", key, fallback))
+
     try:
         request = ResearchRequest(
             query=query,
-            max_iterations=max_iterations
-            if max_iterations is not None
-            else int(config.get("orchestration", "max_iterations", 2)),
-            parallelism=parallelism
-            if parallelism is not None
-            else int(config.get("orchestration", "parallelism", 3)),
+            max_iterations=budget(max_iterations, "max_iterations", 2),
+            parallelism=budget(parallelism, "parallelism", 3),
             detail_level=_resolve_detail_level(detail_level, default_detail),
             depth_policy=_resolve_depth_policy(depth_policy, default_depth),
-            max_results_per_query=max_results_per_query
-            if max_results_per_query is not None
-            else int(config.get("orchestration", "max_results_per_query", 8)),
-            max_pages_per_task=max_pages_per_task
-            if max_pages_per_task is not None
-            else int(config.get("orchestration", "max_pages_per_task", 6)),
+            max_results_per_query=budget(max_results_per_query, "max_results_per_query", 8),
+            max_pages_per_task=budget(max_pages_per_task, "max_pages_per_task", 6),
+            max_searches_per_task=preset.get("max_searches_per_task", 6),
+            effort=cast(Literal["low", "medium", "high", "max"], effort or "medium"),
             include_domains=list(include_domains),
             exclude_domains=list(exclude_domains),
             since=since.date() if since else None,

@@ -70,3 +70,25 @@ def test_header_question_aligns_with_event_stage_column() -> None:
     details = next(line for line in lines if "deepseek/deepseek-flash" in line)
     event = next(line for line in lines if "plan ready" in line)
     assert question.index("Why") == details.index("deepseek") == event.index("plan")
+
+
+def test_result_summary_shows_sub_question_coverage() -> None:
+    from shandu.contracts import ResearchRunResult
+
+    console = Console(record=True, width=100)
+    ui = ShanduUI(console=console)
+    result = ResearchRunResult(
+        run_id="r1",
+        request=ResearchRequest(query="q"),
+        report_markdown="# R",
+        run_stats={
+            "sub_question_coverage": {"strong": 3, "moderate": 1, "weak": 0, "none": 2},
+            "findings": 41,
+        },
+    )
+
+    console.print(ui.result_summary(result))
+    text = console.export_text()
+
+    assert "3 strong · 1 moderate · 2 none" in text
+    assert "41" in text

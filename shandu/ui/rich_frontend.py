@@ -251,6 +251,21 @@ class ShanduUI:
             ("citations", str(stats.get("citation_count", 0))),
             ("elapsed", f"{stats.get('elapsed_seconds', 0)}s"),
         ]
+        sub_question_coverage = stats.get("sub_question_coverage")
+        if isinstance(sub_question_coverage, dict) and sub_question_coverage:
+            rows.append(
+                (
+                    "sub-questions",
+                    " · ".join(
+                        f"{count} {level}"
+                        for level, count in sub_question_coverage.items()
+                        if count
+                    ),
+                )
+            )
+        findings = stats.get("findings")
+        if isinstance(findings, int) and findings > 0:
+            rows.append(("findings", str(findings)))
         model_calls = stats.get("agent_model_calls")
         if isinstance(model_calls, int) and model_calls > 0:
             rows.append(("Model Calls", str(model_calls)))

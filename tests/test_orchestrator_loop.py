@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from shandu.contracts import (
+    Claim,
     ResearchBrief,
     CitationEntry,
     CoverageAssessment,
@@ -75,7 +76,7 @@ class FakeLeadAgent:
 
 
 class FakeSearchSubagent:
-    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
         del run_scope, request, progress_callback, extracted_urls
         return [
             EvidenceRecord(
@@ -228,7 +229,7 @@ class ParallelLeadAgent(FakeLeadAgent):
 
 
 class SlowSearchSubagent(FakeSearchSubagent):
-    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
         del run_scope, request, progress_callback, extracted_urls
         await asyncio.sleep(0.2)
         return [
@@ -251,7 +252,7 @@ class TrackingSearchSubagent(FakeSearchSubagent):
         self.peak = 0
 
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         self.active += 1
         self.peak = max(self.peak, self.active)
@@ -340,7 +341,7 @@ def test_orchestrator_emits_live_model_call_count(tmp_path) -> None:
 
 
 class TraceSearchSubagent(FakeSearchSubagent):
-    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
         del run_scope, extracted_urls
         if progress_callback is not None:
             await progress_callback(
@@ -639,7 +640,7 @@ class CapturingSearchSubagent(FakeSearchSubagent):
         self.seen_calls: list[set[str]] = []
 
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         self.seen_calls.append(set(extracted_urls or ()))
         return await super().execute_task(
@@ -688,7 +689,7 @@ class _StoppingLead(FakeLeadAgent):
 
 class _RichSearchSubagent(FakeSearchSubagent):
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         del run_scope, request, progress_callback, extracted_urls
         return [
@@ -702,6 +703,8 @@ class _RichSearchSubagent(FakeSearchSubagent):
                 snippet="s",
                 extracted_text="x",
                 confidence=0.8,
+                credibility_score=0.8,
+                claims=[Claim(statement="the fact", quote="x", sub_question=1)],
             )
             for index in range(3)
         ]
@@ -801,7 +804,7 @@ class _CountingSearchSubagent(FakeSearchSubagent):
         self.calls = 0
 
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         self.calls += 1
         return await super().execute_task(

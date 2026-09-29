@@ -56,6 +56,8 @@ class ResearchRequest(BaseModel):
     # "pipeline" searches, ranks, then reads in one pass per task; "agentic"
     # runs each task as a tool loop that searches, reads, and follows links.
     researcher: Literal["pipeline", "agentic"] = "pipeline"
+    max_searches_per_task: int = Field(default=6, ge=1, le=12)
+    effort: Literal["low", "medium", "high", "max"] = "medium"
 
     @field_validator("include_domains", "exclude_domains")
     @classmethod
@@ -97,6 +99,15 @@ class IterationPlan(BaseModel):
     stop_reason: str | None = None
 
 
+class Claim(BaseModel):
+    statement: str
+    # Verbatim from the page text the extractor read; claims whose quote is
+    # not found there are dropped.
+    quote: str
+    # 1-based index into ResearchBrief.sub_questions, when the claim answers one.
+    sub_question: int | None = None
+
+
 class EvidenceRecord(BaseModel):
     evidence_id: str
     task_id: str
@@ -118,8 +129,31 @@ class EvidenceRecord(BaseModel):
     credibility_score: float | None = None
     source_class: SourceClass | None = None
     quality_flags: list[QualityFlag] = Field(default_factory=list)
+    claims: list[Claim] = Field(default_factory=list)
     fetch_error: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Finding(BaseModel):
+    """One claim, merged across every page that states it."""
+
+    statement: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    quotes: list[str] = Field(default_factory=list)
+    domains: list[str] = Field(default_factory=list)
+    # Highest credibility among the supporting pages.
+    confidence: float = 0.0
+    sub_questions: list[int] = Field(default_factory=list)
+
+
+class SubQuestionCoverage(BaseModel):
+    index: int
+    question: str
+    # none: no finding; weak: no credible page; moderate: credible pages from
+    # one site; strong: credible pages from two or more independent sites.
+    strength: Literal["none", "weak", "moderate", "strong"]
+    findings: int = 0
+    credible_sources: int = 0
 
 
 class CitationEntry(BaseModel):
@@ -148,6 +182,7 @@ class IterationSynthesis(BaseModel):
     coverage: CoverageAssessment | None = None
     # 1-based indices of brief sub-questions the evidence does not yet answer.
     open_sub_questions: list[int] = Field(default_factory=list)
+    coverage_matrix: list[SubQuestionCoverage] = Field(default_factory=list)
 
 
 class ReportSection(BaseModel):
@@ -200,5 +235,6 @@ class ResearchRunResult(BaseModel):
     report_markdown: str
     citations: list[CitationEntry] = Field(default_factory=list)
     evidence: list[EvidenceRecord] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
     iteration_summaries: list[IterationSynthesis] = Field(default_factory=list)
     run_stats: dict[str, Any] = Field(default_factory=dict)

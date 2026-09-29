@@ -10,12 +10,11 @@ from blackgeorge import Job, Worker
 from blackgeorge.tools import Tool, tool
 from pydantic import BaseModel
 
-from ..contracts import EvidenceRecord, ResearchRequest, SubagentTask
+from ..contracts import EvidenceRecord, ResearchBrief, ResearchRequest, SubagentTask
 from ..interfaces import SearchServiceLike, SearchSubagentLike
 from ..prompts import researcher_instructions, researcher_job
 from ..runtime.costing import collect_llm_usage
 from .search_subagent import (
-    _MAX_QUERIES_PER_TASK,
     SearchSubagent,
     SearchTraceCallback,
     _dated_before,
@@ -54,13 +53,14 @@ class ResearcherAgent(SearchSubagent):
         request: ResearchRequest,
         progress_callback: SearchTraceCallback | None = None,
         extracted_urls: Collection[str] | None = None,
+        brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
         evidence: list[EvidenceRecord] = []
         hits_by_url: dict[str, dict[str, str]] = {}
         replies: dict[str, str] = {}
         known = {self._canonicalize_url(url) or url for url in extracted_urls or ()}
-        budget = {"searches": _MAX_QUERIES_PER_TASK, "reads": request.max_pages_per_task}
+        budget = {"searches": request.max_searches_per_task, "reads": request.max_pages_per_task}
 
         def allowed(url: str) -> bool:
             if request.include_domains and not _host_matches(url, request.include_domains):
@@ -192,7 +192,7 @@ class ResearcherAgent(SearchSubagent):
                 reply = "The page is dated before the research cutoff; choose another source."
             else:
                 record = await self._page_evidence(
-                    task, page, hits_by_url.get(url), progress_callback
+                    task, page, hits_by_url.get(url), progress_callback, brief
                 )
                 evidence.append(record)
                 reply = json.dumps(
@@ -260,7 +260,7 @@ class ResearcherAgent(SearchSubagent):
             "task_id": task.task_id,
             "focus": task.focus,
             "memo": memo,
-            "searches": _MAX_QUERIES_PER_TASK - budget["searches"],
+            "searches": request.max_searches_per_task - budget["searches"],
             "reads": request.max_pages_per_task - budget["reads"],
         }
         if llm_usage:
@@ -283,8 +283,9 @@ class ResearcherByRequest:
         request: ResearchRequest,
         progress_callback: SearchTraceCallback | None = None,
         extracted_urls: Collection[str] | None = None,
+        brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]:
         researcher = self._agentic if request.researcher == "agentic" else self._pipeline
         return await researcher.execute_task(
-            run_scope, task, request, progress_callback, extracted_urls
+            run_scope, task, request, progress_callback, extracted_urls, brief
         )

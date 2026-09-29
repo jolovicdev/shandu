@@ -25,6 +25,7 @@ from ..interfaces import (
     ReportServiceLike,
     SearchSubagentLike,
 )
+from ..services.findings import build_findings, coverage_matrix
 from ..services.run_store import CompletedIteration, RunStore, StoredRun
 
 
@@ -378,6 +379,7 @@ class LeadOrchestrator:
                                 request,
                                 progress_callback=on_search_trace,
                                 extracted_urls=extracted_urls,
+                                brief=state.brief,
                             )
                         self._store.append_evidence(run_id, iteration, evidence)
                         async with completed_lock:
@@ -459,6 +461,19 @@ class LeadOrchestrator:
                 synthesis_usage = absorb_llm_usage(
                     getattr(self._lead, "last_llm_usage", None)
                 )
+                if state.brief is not None:
+                    matrix = coverage_matrix(
+                        state.brief, state.evidence, build_findings(state.evidence)
+                    )
+                    gaps = {item.index for item in matrix if item.strength != "strong"}
+                    synthesis = synthesis.model_copy(
+                        update={
+                            "coverage_matrix": matrix,
+                            "open_sub_questions": sorted(
+                                gaps | set(synthesis.open_sub_questions)
+                            ),
+                        }
+                    )
                 if lead_fell_back():
                     await emit(
                         RunEvent(
@@ -515,7 +530,9 @@ class LeadOrchestrator:
                         state.evidence,
                         request.max_iterations,
                         iteration,
-                        open_sub_questions=len(synthesis.open_sub_questions),
+                        open_sub_questions=len(synthesis.open_sub_questions)
+                        if state.brief is not None
+                        else None,
                     ):
                         break
                 elif not synthesis.continue_loop:
@@ -600,6 +617,15 @@ class LeadOrchestrator:
                 else:
                     run_stats["cost_coverage"] = "full"
             run_stats.update(self._quality_summary(state.evidence))
+            findings = build_findings(state.evidence)
+            run_stats["findings"] = len(findings)
+            final_matrix = state.summaries[-1].coverage_matrix if state.summaries else []
+            if final_matrix:
+                strengths = [item.strength for item in final_matrix]
+                run_stats["sub_question_coverage"] = {
+                    level: strengths.count(level)
+                    for level in ("strong", "moderate", "weak", "none")
+                }
 
             result = ResearchRunResult(
                 run_id=run_id,
@@ -608,6 +634,7 @@ class LeadOrchestrator:
                 report_markdown=report_markdown,
                 citations=report_citations,
                 evidence=state.evidence,
+                findings=findings,
                 iteration_summaries=state.summaries,
                 run_stats=run_stats,
             )
@@ -668,14 +695,17 @@ class LeadOrchestrator:
         cumulative_evidence: list[Any],
         max_iterations: int,
         iteration: int,
-        open_sub_questions: int = 0,
+        open_sub_questions: int | None = None,
     ) -> bool:
         if iteration + 1 >= max_iterations:
             return False
-        # An unanswered brief sub-question outweighs every other stop signal
-        # while the iteration budget lasts.
-        if open_sub_questions > 0:
-            return True
+        # With a brief, the sub-question checklist decides: keep going while
+        # any sub-question lacks two independent credible sources or sources
+        # conflict. The model's own coverage score only decides without one.
+        if open_sub_questions is not None:
+            return open_sub_questions > 0 or int(
+                getattr(coverage, "contradiction_count", 0) or 0
+            ) > 0
 
         domains: set[str] = set()
         high_conf = 0

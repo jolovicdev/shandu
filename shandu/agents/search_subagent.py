@@ -14,7 +14,14 @@ from blackgeorge import Job, Worker
 from blackgeorge.utils import new_id
 from pydantic import BaseModel, Field
 
-from ..contracts import EvidenceRecord, ResearchRequest, SourceClass, SubagentTask
+from ..contracts import (
+    Claim,
+    EvidenceRecord,
+    ResearchBrief,
+    ResearchRequest,
+    SourceClass,
+    SubagentTask,
+)
 from ..interfaces import (
     RuntimeExecutionLike,
     ScrapedPageLike,
@@ -28,6 +35,7 @@ from ..prompts import (
     selector_job,
 )
 from ..runtime.costing import collect_llm_usage
+from ..services.findings import verified_claims
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +43,6 @@ SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 _SNIPPET_FALLBACK_METHOD = "search_snippet_fallback"
 _SNIPPET_ONLY_CREDIBILITY = 0.20
-_MAX_QUERIES_PER_TASK = 6
 _EXTRACTION_CONCURRENCY = 8
 
 
@@ -78,6 +85,7 @@ class _ExtractionPayload(BaseModel):
     authorship: Literal["named", "organizational", "anonymous"] = "anonymous"
     is_promotional: bool = False
     summarizes_inaccessible_source: bool = False
+    claims: list[Claim] = Field(default_factory=list)
 
 
 class _SelectionPayload(BaseModel):
@@ -161,15 +169,16 @@ class SearchSubagent:
         request: ResearchRequest,
         progress_callback: SearchTraceCallback | None = None,
         extracted_urls: Collection[str] | None = None,
+        brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
-        queries = (task.search_queries or [task.focus])[:_MAX_QUERIES_PER_TASK]
+        queries = (task.search_queries or [task.focus])[: request.max_searches_per_task]
         if request.include_domains:
             queries = [
                 f"{query} site:{domain}"
                 for query in queries
                 for domain in request.include_domains
-            ][:_MAX_QUERIES_PER_TASK]
+            ][: request.max_searches_per_task]
 
         searches: list[tuple[str, SearchServiceLike, str]] = [
             (query, self._search, "web") for query in queries
@@ -318,7 +327,7 @@ class SearchSubagent:
         evidence: list[EvidenceRecord] = await asyncio.gather(
             *(
                 self._page_evidence(
-                    task, page, hits_by_url.get(page.requested_url), progress_callback
+                    task, page, hits_by_url.get(page.requested_url), progress_callback, brief
                 )
                 for page in pages
                 if page not in too_old
@@ -375,6 +384,7 @@ class SearchSubagent:
         page: ScrapedPageLike,
         hit_payload: dict[str, str] | None,
         progress_callback: SearchTraceCallback | None,
+        brief: ResearchBrief | None = None,
     ) -> EvidenceRecord:
         """Turn a scraped page into evidence through extraction and source scoring.
 
@@ -425,7 +435,7 @@ class SearchSubagent:
             },
         )
         extraction, assessed, extract_usage = await self._extract(
-            task, page.url, page.title, page.text, progress_callback
+            task, page.url, page.title, page.text, progress_callback, brief
         )
         source_type, extraction_method = self._source_metadata(page.content_type, page.url)
         if assessed:
@@ -475,6 +485,11 @@ class SearchSubagent:
             credibility_score=credibility,
             source_class=source_class,
             quality_flags=quality_flags,
+            claims=verified_claims(
+                extraction.claims,
+                page.text,
+                len(brief.sub_questions) if brief is not None else 0,
+            ),
         )
 
     @staticmethod
@@ -595,10 +610,17 @@ class SearchSubagent:
         title: str,
         text: str,
         progress_callback: SearchTraceCallback | None = None,
+        brief: ResearchBrief | None = None,
     ) -> tuple[_ExtractionPayload, bool, dict[str, Any] | None]:
         payload = {
             "task_focus": task.focus,
             "task_expected_output": task.expected_output,
+            "sub_questions": [
+                {"index": index, "question": question}
+                for index, question in enumerate(
+                    brief.sub_questions if brief is not None else [], start=1
+                )
+            ],
             "url": url,
             "title": title,
             "text": text,

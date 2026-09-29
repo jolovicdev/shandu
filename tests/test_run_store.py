@@ -80,7 +80,7 @@ class _Subagent:
         self.prefix = prefix
 
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         del run_scope, request, progress_callback, extracted_urls
         return [

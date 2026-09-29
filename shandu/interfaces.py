@@ -118,6 +118,7 @@ class SearchSubagentLike(Protocol):
         request: ResearchRequest,
         progress_callback: Callable[[str, dict[str, Any]], Any] | None = None,
         extracted_urls: Collection[str] | None = None,
+        brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]: ...
 
 

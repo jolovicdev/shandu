@@ -69,6 +69,9 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "max_tokens": 32768,
         "api_key_env": "",
         "api_key": "",
+        # Optional per-role models: planner, researcher, extractor,
+        # synthesizer, writer, auditor. A role without one uses "model".
+        "models": {},
     },
     "runtime": {
         "storage_dir": DEFAULT_STORAGE_DIR,
@@ -150,6 +153,15 @@ class Config:
         model = os.getenv("SHANDU_MODEL") or os.getenv("OPENAI_MODEL_NAME")
         if model:
             self._config["api"]["model"] = model
+
+        # The role names mirror runtime.roles.ROLES; importing them here would
+        # cycle through the runtime package back into this module.
+        for role in ("planner", "researcher", "extractor", "synthesizer", "writer", "auditor"):
+            role_model = os.getenv(f"SHANDU_MODEL_{role.upper()}")
+            if role_model:
+                models = dict(self._config["api"].get("models") or {})
+                models[role] = role_model
+                self._config["api"]["models"] = models
 
         if os.getenv("SHANDU_TEMPERATURE"):
             try:

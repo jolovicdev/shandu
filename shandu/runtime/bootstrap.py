@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,7 @@ import litellm
 
 from ..config import DEFAULT_MODEL, DEFAULT_STORAGE_DIR, config
 from .cost_tracker import CostTracker
+from .roles import ROLES
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,8 @@ class RuntimeSettings:
     max_tool_calls: int
     num_retries: int
     max_context_messages: int
+    # Per-role model overrides; a role without one uses ``model``.
+    role_models: dict[str, str] = field(default_factory=dict)
 
 
 class RuntimeBootstrap:
@@ -83,6 +86,11 @@ class RuntimeBootstrap:
                 max_context_messages=int(
                     lookup("runtime", "max_context_messages", 30)
                 ),
+                role_models={
+                    role: str(model)
+                    for role, model in dict(lookup("api", "models", {}) or {}).items()
+                    if role in ROLES and str(model).strip()
+                },
             )
         )
 

@@ -117,6 +117,13 @@ Generation/runtime controls:
   enabled). A backend without its variable falls back to `ddgs` with a warning.
 - `OPENALEX_API_KEY`, `NCBI_API_KEY` (optional): raise the OpenAlex and PubMed
   rate limits for paper search.
+- `SHANDU_MODEL_PLANNER`, `SHANDU_MODEL_RESEARCHER`, `SHANDU_MODEL_EXTRACTOR`,
+  `SHANDU_MODEL_SYNTHESIZER`, `SHANDU_MODEL_WRITER`, `SHANDU_MODEL_AUDITOR`
+  (optional): a model for one role, overriding the default model. The same
+  overrides live under `api.models` in `~/.shandu/config.json`. Extraction makes
+  most of the calls, so a cheaper extractor model cuts cost the most. A role on
+  another provider needs that provider's key in the environment, for example
+  `ANTHROPIC_API_KEY`.
 
 Precedence:
 

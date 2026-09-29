@@ -13,6 +13,7 @@ from ..contracts import CitationEntry, CitationVerdict, EvidenceRecord
 from ..interfaces import RuntimeExecutionLike
 from ..prompts import auditor_instructions, auditor_job
 from ..runtime.costing import collect_llm_usage
+from ..runtime.roles import role_model
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ class CitationAuditor:
             }
             worker = Worker(
                 name="CitationAuditor",
-                model=self._runtime.settings.model,
+                model=role_model(self._runtime.settings, "auditor"),
                 instructions=auditor_instructions(),
             )
             async with semaphore:

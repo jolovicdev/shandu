@@ -103,9 +103,11 @@ def info() -> None:
             ("API Key Env", "provider-managed"),
             ("API Key", "provider-managed"),
         ]
+    role_models = dict(config.get("api", "models", {}) or {})
     rows = [
         ("Version", __version__),
         ("Model", config.get("api", "model")),
+        *((f"Model ({role})", model) for role, model in sorted(role_models.items())),
         ("Temperature", config.get("api", "temperature")),
         ("Max Tokens", config.get("api", "max_tokens")),
         *key_rows,

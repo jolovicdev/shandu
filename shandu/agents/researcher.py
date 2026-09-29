@@ -14,6 +14,7 @@ from ..contracts import EvidenceRecord, ResearchBrief, ResearchRequest, Subagent
 from ..interfaces import SearchServiceLike, SearchSubagentLike
 from ..prompts import researcher_instructions, researcher_job
 from ..runtime.costing import collect_llm_usage
+from ..runtime.roles import role_model
 from .search_subagent import (
     SearchSubagent,
     SearchTraceCallback,
@@ -225,7 +226,7 @@ class ResearcherAgent(SearchSubagent):
             tools.append(search_papers)
         worker = Worker(
             name="Researcher",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "researcher"),
             tools=tools,
             instructions=researcher_instructions(),
         )

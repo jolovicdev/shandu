@@ -42,6 +42,7 @@ from ..prompts import (
     synthesizer_job,
 )
 from ..runtime.costing import collect_llm_usage
+from ..runtime.roles import role_model
 from ..services.findings import build_findings
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,7 @@ class LeadAgent:
         }
         worker = Worker(
             name="LeadBriefWriter",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "planner"),
             instructions=brief_instructions(),
         )
         job = Job(input=brief_job(payload), response_schema=ResearchBrief)
@@ -180,7 +181,7 @@ class LeadAgent:
     async def clarifying_questions(self, query: str) -> list[str]:
         worker = Worker(
             name="LeadClarifier",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "planner"),
             instructions=clarifier_instructions(),
         )
         job = Job(input=clarifier_job(query), response_schema=_ClarifierPayload)
@@ -217,7 +218,7 @@ class LeadAgent:
         }
         worker = Worker(
             name="LeadPlanner",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "planner"),
             instructions=planner_instructions(),
         )
         job = Job(
@@ -285,7 +286,7 @@ class LeadAgent:
         }
         worker = Worker(
             name="LeadSynthesizer",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "synthesizer"),
             instructions=synthesizer_instructions(),
         )
         job = Job(
@@ -422,7 +423,7 @@ class LeadAgent:
         """
         worker = Worker(
             name=name,
-            model=self._writer_model or self._runtime.settings.model,
+            model=self._writer_model or role_model(self._runtime.settings, "writer"),
             instructions=instructions,
         )
         reason = f"{label} returned empty content"
@@ -481,7 +482,7 @@ class LeadAgent:
         )
         outline_worker = Worker(
             name="LeadOutliner",
-            model=self._writer_model or self._runtime.settings.model,
+            model=self._writer_model or role_model(self._runtime.settings, "writer"),
             instructions=outliner_instructions(),
         )
         outline_job = Job(

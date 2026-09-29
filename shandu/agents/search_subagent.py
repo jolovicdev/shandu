@@ -35,6 +35,7 @@ from ..prompts import (
     selector_job,
 )
 from ..runtime.costing import collect_llm_usage
+from ..runtime.roles import role_model
 from ..services.findings import verified_claims
 
 logger = logging.getLogger(__name__)
@@ -563,7 +564,7 @@ class SearchSubagent:
         }
         worker = Worker(
             name="SubagentSelector",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "researcher"),
             instructions=selector_instructions(),
         )
         job = Job(input=selector_job(payload), response_schema=_SelectionPayload)
@@ -627,7 +628,7 @@ class SearchSubagent:
         }
         worker = Worker(
             name="SubagentExtractor",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "extractor"),
             instructions=extractor_instructions(),
         )
         job = Job(

@@ -12,6 +12,7 @@ from blackgeorge.utils import new_id
 from ..contracts import (
     CitationVerdict,
     EvidenceRecord,
+    IterationPlan,
     IterationSynthesis,
     ResearchBrief,
     ResearchRequest,
@@ -71,6 +72,13 @@ class _RunState:
             "saw_llm_usage": self.saw_llm_usage,
         }
 
+    def record_plan(self, plan: IterationPlan) -> None:
+        for task in plan.subagent_tasks:
+            self.task_focuses.append(task.focus)
+            for query in task.search_queries:
+                if query not in self.queries_run:
+                    self.queries_run.append(query)
+
     @classmethod
     def from_stored(cls, stored: StoredRun, include_partial: bool) -> "_RunState":
         """Rebuild loop state from a stored run.
@@ -88,11 +96,7 @@ class _RunState:
         ]
         for item in stored.iterations:
             state.summaries.append(item.synthesis)
-            for task in item.plan.subagent_tasks:
-                state.task_focuses.append(task.focus)
-                for query in task.search_queries:
-                    if query not in state.queries_run:
-                        state.queries_run.append(query)
+            state.record_plan(item.plan)
         state.research_done = bool(stored.status.get("research_done"))
         if stored.iterations:
             state.next_iteration = stored.iterations[-1].index + 1
@@ -159,19 +163,13 @@ class LeadOrchestrator:
     async def rewrite_report(
         self,
         run_id: str,
-        detail_level: Literal["concise", "standard", "high"] | None = None,
+        overrides: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
-        writer: Literal["single", "sectioned"] | None = None,
-        audit: bool | None = None,
     ) -> ResearchRunResult:
+        """Write the report again from stored evidence, with request fields
+        such as ``detail_level``, ``writer``, or ``audit`` overridden."""
         stored = self._store.load(run_id)
-        request = stored.request
-        if detail_level is not None:
-            request = request.model_copy(update={"detail_level": detail_level})
-        if writer is not None:
-            request = request.model_copy(update={"writer": writer})
-        if audit is not None:
-            request = request.model_copy(update={"audit": audit})
+        request = stored.request.model_copy(update=overrides or {})
         state = _RunState.from_stored(stored, include_partial=True)
         state.research_done = True
         return await self._execute(
@@ -234,38 +232,46 @@ class LeadOrchestrator:
 
             def with_model_call_count(
                 metrics: dict[str, Any] | None = None,
+                usage: dict[str, Any] | None = None,
             ) -> dict[str, Any]:
                 updated = dict(metrics or {})
                 if state.agent_model_calls > 0:
                     updated["agent_model_calls"] = state.agent_model_calls
+                if usage:
+                    updated["llm_usage"] = usage
                 return updated
 
-            if state.brief is None and not state.research_done:
-                state.agent_model_calls += 1
-                state.brief = await self._lead.create_brief(request)
-                brief_usage = absorb_llm_usage(
-                    getattr(self._lead, "last_llm_usage", None)
-                )
+            async def after_lead_call(
+                method: str, fallback_message: str, iteration: int | None = None
+            ) -> dict[str, Any] | None:
+                """Meter the lead's last call and report it if it fell back."""
+                usage = absorb_llm_usage(getattr(self._lead, "last_llm_usage", None))
                 if lead_fell_back():
                     await emit(
                         RunEvent(
                             stage="error",
-                            message="Lead brief writer fell back to the raw query",
-                            payload=self._fallback_payload("create_brief"),
+                            message=fallback_message,
+                            iteration=iteration,
+                            payload=self._fallback_payload(method),
                         ),
                     )
-                    self._record_fallback_reason(state.fallback_reasons, "create_brief")
-                self._store.save_brief(run_id, state.brief)
-                brief_metrics = with_model_call_count(
-                    {"sub_questions": len(state.brief.sub_questions)}
+                    self._record_fallback_reason(state.fallback_reasons, method)
+                return usage
+
+            if state.brief is None and not state.research_done:
+                state.agent_model_calls += 1
+                state.brief = await self._lead.create_brief(request)
+                brief_usage = await after_lead_call(
+                    "create_brief", "Lead brief writer fell back to the raw query"
                 )
-                if brief_usage:
-                    brief_metrics["llm_usage"] = brief_usage
+                self._store.save_brief(run_id, state.brief)
                 await emit(
                     RunEvent(
                         stage="plan",
                         message="Research brief ready",
-                        metrics=brief_metrics,
+                        metrics=with_model_call_count(
+                            {"sub_questions": len(state.brief.sub_questions)}, brief_usage
+                        ),
                         payload={"sub_questions": list(state.brief.sub_questions)},
                     ),
                 )
@@ -302,32 +308,19 @@ class LeadOrchestrator:
                     memory_context=memory_context,
                     brief=state.brief,
                 )
-                plan_usage = absorb_llm_usage(
-                    getattr(self._lead, "last_llm_usage", None)
+                plan_usage = await after_lead_call(
+                    "create_iteration_plan",
+                    "Lead planner fell back to deterministic plan",
+                    iteration,
                 )
-                if lead_fell_back():
-                    await emit(
-                        RunEvent(
-                            stage="error",
-                            message="Lead planner fell back to deterministic plan",
-                            iteration=iteration,
-                            payload=self._fallback_payload("create_iteration_plan"),
-                        ),
-                    )
-                    self._record_fallback_reason(
-                        state.fallback_reasons, "create_iteration_plan"
-                    )
-                plan_metrics = with_model_call_count(
-                    {"tasks": len(plan.subagent_tasks)}
-                )
-                if plan_usage:
-                    plan_metrics["llm_usage"] = plan_usage
                 await emit(
                     RunEvent(
                         stage="plan",
                         message=f"Iteration {iteration + 1} plan ready",
                         iteration=iteration,
-                        metrics=plan_metrics,
+                        metrics=with_model_call_count(
+                            {"tasks": len(plan.subagent_tasks)}, plan_usage
+                        ),
                     ),
                 )
 
@@ -392,9 +385,9 @@ class LeadOrchestrator:
                             trace_type=trace_type,
                             payload=payload,
                         )
-                        trace_event.metrics = with_model_call_count(trace_event.metrics)
-                        if trace_usage:
-                            trace_event.metrics["llm_usage"] = trace_usage
+                        trace_event.metrics = with_model_call_count(
+                            trace_event.metrics, trace_usage
+                        )
                         await emit(trace_event)
 
                     try:
@@ -454,11 +447,7 @@ class LeadOrchestrator:
                         task_errors += 1
 
                 state.evidence.extend(iteration_evidence)
-                state.task_focuses.extend(task.focus for task in plan.subagent_tasks)
-                for task in plan.subagent_tasks:
-                    for query in task.search_queries:
-                        if query not in state.queries_run:
-                            state.queries_run.append(query)
+                state.record_plan(plan)
                 await emit(
                     RunEvent(
                         stage="search",
@@ -484,8 +473,10 @@ class LeadOrchestrator:
                     brief=state.brief,
                     task_memos=task_memos,
                 )
-                synthesis_usage = absorb_llm_usage(
-                    getattr(self._lead, "last_llm_usage", None)
+                synthesis_usage = await after_lead_call(
+                    "synthesize_iteration",
+                    "Lead synthesizer fell back to deterministic synthesis",
+                    iteration,
                 )
                 if state.brief is not None:
                     matrix = coverage_matrix(
@@ -499,18 +490,6 @@ class LeadOrchestrator:
                                 gaps | set(synthesis.open_sub_questions)
                             ),
                         }
-                    )
-                if lead_fell_back():
-                    await emit(
-                        RunEvent(
-                            stage="error",
-                            message="Lead synthesizer fell back to deterministic synthesis",
-                            iteration=iteration,
-                            payload=self._fallback_payload("synthesize_iteration"),
-                        ),
-                    )
-                    self._record_fallback_reason(
-                        state.fallback_reasons, "synthesize_iteration"
                     )
                 state.summaries.append(synthesis)
                 self._store.save_iteration(
@@ -529,10 +508,9 @@ class LeadOrchestrator:
                         if synthesis.coverage
                         else None,
                         "depth_policy": request.depth_policy,
-                    }
+                    },
+                    synthesis_usage,
                 )
-                if synthesis_usage:
-                    synthesis_metrics["llm_usage"] = synthesis_usage
                 await emit(
                     RunEvent(
                         stage="synthesize",
@@ -549,17 +527,7 @@ class LeadOrchestrator:
                     break
 
                 if request.depth_policy == "adaptive":
-                    if iteration + 1 >= request.max_iterations:
-                        break
-                    if not self._adaptive_should_continue(
-                        synthesis.coverage,
-                        state.evidence,
-                        request.max_iterations,
-                        iteration,
-                        open_sub_questions=len(synthesis.open_sub_questions)
-                        if state.brief is not None
-                        else None,
-                    ):
+                    if not self._adaptive_should_continue(synthesis):
                         break
                 elif not synthesis.continue_loop:
                     break
@@ -575,7 +543,6 @@ class LeadOrchestrator:
                 ),
             )
 
-            state.agent_model_calls += 1
             draft = await self._lead.build_final_report(
                 request=request,
                 iteration_summaries=state.summaries,
@@ -583,32 +550,21 @@ class LeadOrchestrator:
                 citations_payload=[entry.model_dump(mode="json") for entry in citations],
                 brief=state.brief,
             )
-            if lead_fell_back():
-                await emit(
-                    RunEvent(
-                        stage="error",
-                        message="Lead reporter fell back to deterministic report",
-                        payload=self._fallback_payload("build_final_report"),
-                    ),
-                )
-                self._record_fallback_reason(state.fallback_reasons, "build_final_report")
+            report_usage = await after_lead_call(
+                "build_final_report", "Lead reporter fell back to deterministic report"
+            )
+            # Writing takes one call, or several with retries or the sectioned
+            # writer's outline, sections, and edit.
+            writer_calls = (report_usage or {}).get("llm_calls")
+            state.agent_model_calls += writer_calls if isinstance(writer_calls, int) else 1
             rendered_report = self._report.render_result(request, draft, citations)
-            report_usage = absorb_llm_usage(
-                getattr(self._lead, "last_llm_usage", None)
-            )
-            # The sectioned writer makes an outline, section, and edit call.
-            if report_usage and isinstance(report_usage.get("llm_calls"), int):
-                state.agent_model_calls += max(0, report_usage["llm_calls"] - 1)
-            report_metrics = with_model_call_count(
-                {"report_words": len(rendered_report.markdown.split())}
-            )
-            if report_usage:
-                report_metrics["llm_usage"] = report_usage
             await emit(
                 RunEvent(
                     stage="report",
                     message="Lead researcher completed final report draft",
-                    metrics=report_metrics,
+                    metrics=with_model_call_count(
+                        {"report_words": len(rendered_report.markdown.split())}, report_usage
+                    ),
                 ),
             )
 
@@ -631,16 +587,13 @@ class LeadOrchestrator:
                     draft.model_copy(update={"markdown": outcome.markdown}),
                     rendered_report.citations,
                 )
-                audit_metrics = with_model_call_count(
-                    {"citation_audit": self._audit_counts(citation_audit)}
-                )
-                if audit_usage:
-                    audit_metrics["llm_usage"] = audit_usage
                 await emit(
                     RunEvent(
                         stage="report",
                         message="Citation audit completed",
-                        metrics=audit_metrics,
+                        metrics=with_model_call_count(
+                            {"citation_audit": self._audit_counts(citation_audit)}, audit_usage
+                        ),
                     ),
                 )
             report_markdown = rendered_report.markdown
@@ -758,63 +711,11 @@ class LeadOrchestrator:
             fallback_reasons.append(f"{method}: {reason}"[:300])
 
     @staticmethod
-    def _adaptive_should_continue(
-        coverage: object,
-        cumulative_evidence: list[Any],
-        max_iterations: int,
-        iteration: int,
-        open_sub_questions: int | None = None,
-    ) -> bool:
-        if iteration + 1 >= max_iterations:
-            return False
-        # With a brief, the sub-question checklist decides: keep going while
-        # any sub-question lacks two independent credible sources or sources
-        # conflict. The model's own coverage score only decides without one.
-        if open_sub_questions is not None:
-            return open_sub_questions > 0 or int(
-                getattr(coverage, "contradiction_count", 0) or 0
-            ) > 0
-
-        domains: set[str] = set()
-        high_conf = 0
-        for ev in cumulative_evidence:
-            d = getattr(ev, "domain", None)
-            if d and isinstance(d, str):
-                domains.add(d)
-            conf = getattr(ev, "confidence", 0.0) or 0.0
-            cred = getattr(ev, "credibility_score", None)
-            if conf >= 0.7 and (cred is None or cred >= 0.6):
-                high_conf += 1
-
-        # No coverage (deterministic synthesis fallback): the model's vote
-        # is missing, so the evidence signals alone decide.
-        if coverage is None:
-            if len(domains) < 3:
-                return True
-            if high_conf < 2:
-                return True
-            return False
-
-        cov = getattr(coverage, "coverage_score", 0.5)
-        severity = getattr(coverage, "open_question_severity", 0.5)
-        contradictions = getattr(coverage, "contradiction_count", 0)
-        should = getattr(coverage, "should_continue", True)
-
-        if should:
-            return True
-
-        if float(cov) < 0.6:
-            return True
-        if float(severity) > 0.5:
-            return True
-        if int(contradictions) > 0:
-            return True
-        if len(domains) < 3:
-            return True
-        if high_conf < 2:
-            return True
-
-        return False
+    def _adaptive_should_continue(synthesis: IterationSynthesis) -> bool:
+        # The brief's checklist decides: keep going while any sub-question
+        # lacks two independent credible sources, or while sources conflict.
+        contradictions = synthesis.coverage.contradiction_count if synthesis.coverage else 0
+        return bool(synthesis.open_sub_questions) or contradictions > 0
 
     @staticmethod
     def _audit_counts(verdicts: list[CitationVerdict]) -> dict[str, int]:

@@ -175,10 +175,8 @@ class OrchestratorLike(Protocol):
     async def rewrite_report(
         self,
         run_id: str,
-        detail_level: DetailLevel | None = None,
+        overrides: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
-        writer: Literal["single", "sectioned"] | None = None,
-        audit: bool | None = None,
     ) -> ResearchRunResult: ...
 
 

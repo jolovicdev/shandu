@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
@@ -568,70 +567,19 @@ def test_compact_evidence_gives_small_corpus_full_text() -> None:
     assert {len(record["extracted_text"]) for record in large} == {2200}
 
 
-def test_adaptive_loop_weighs_credibility() -> None:
-    coverage = SimpleNamespace(
-        coverage_score=0.7,
-        open_question_severity=0.3,
-        contradiction_count=0,
-        should_continue=False,
-    )
-    weak = [
-        EvidenceRecord(
-            evidence_id=f"e{i}",
-            task_id="t",
-            query="q",
-            requested_url=f"https://d{i}.example/a",
-            domain=f"d{i}.example",
-            title="T",
-            snippet="s",
-            extracted_text="x",
-            confidence=0.8,
-            credibility_score=0.3,
-        )
-        for i in range(3)
-    ]
+def test_adaptive_continues_while_sub_questions_are_open_or_sources_conflict() -> None:
+    confident = CoverageAssessment(coverage_score=0.9, should_continue=False)
+    should = LeadOrchestrator._adaptive_should_continue
 
-    assert LeadOrchestrator._adaptive_should_continue(coverage, weak, 3, 0) is True
-
-    unscored = [ev.model_copy(update={"credibility_score": None}) for ev in weak]
-    assert LeadOrchestrator._adaptive_should_continue(coverage, unscored, 3, 0) is False
-
-
-def test_adaptive_continues_while_brief_sub_questions_stay_open() -> None:
-    coverage = SimpleNamespace(
-        coverage_score=0.9,
-        open_question_severity=0.1,
-        contradiction_count=0,
-        should_continue=False,
-    )
-    strong = [
-        EvidenceRecord(
-            evidence_id=f"e{i}",
-            task_id="t",
-            query="q",
-            requested_url=f"https://d{i}.example/a",
-            domain=f"d{i}.example",
-            title="T",
-            snippet="s",
-            extracted_text="x",
-            confidence=0.9,
-            credibility_score=0.9,
-        )
-        for i in range(3)
-    ]
-
-    assert LeadOrchestrator._adaptive_should_continue(coverage, strong, 3, 0) is False
+    assert should(IterationSynthesis(summary="s", coverage=confident)) is False
+    assert should(IterationSynthesis(summary="s", coverage=None)) is False
     assert (
-        LeadOrchestrator._adaptive_should_continue(
-            coverage, strong, 3, 0, open_sub_questions=1
-        )
+        should(IterationSynthesis(summary="s", coverage=confident, open_sub_questions=[2]))
         is True
     )
     assert (
-        LeadOrchestrator._adaptive_should_continue(
-            coverage, strong, 3, 2, open_sub_questions=1
-        )
-        is False
+        should(IterationSynthesis(summary="s", coverage=CoverageAssessment(contradiction_count=1)))
+        is True
     )
 
 
@@ -757,26 +705,10 @@ def test_adaptive_stops_on_strong_corpus(tmp_path) -> None:
     assert result.run_stats["iterations"] == 1
 
 
-def test_adaptive_without_coverage_uses_evidence_signals(tmp_path) -> None:
+def test_adaptive_without_coverage_follows_open_sub_questions(tmp_path) -> None:
     result = _run_with(_StoppingLead(None), FakeSearchSubagent(), 3, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 3
-
-    strong = [
-        EvidenceRecord(
-            evidence_id=f"e{i}",
-            task_id="t",
-            query="q",
-            requested_url=f"https://d{i}.example/a",
-            domain=f"d{i}.example",
-            title="T",
-            snippet="s",
-            extracted_text="x",
-            confidence=0.8,
-        )
-        for i in range(3)
-    ]
-    assert LeadOrchestrator._adaptive_should_continue(None, strong, 3, 0) is False
 
 
 class _PlanStoppingLead(FakeLeadAgent):

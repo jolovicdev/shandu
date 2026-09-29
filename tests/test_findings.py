@@ -10,14 +10,12 @@ from shandu.agents.search_subagent import SearchSubagent, _ExtractionPayload
 from shandu.cli import ShanduEngine, cli
 from shandu.contracts import (
     Claim,
-    CoverageAssessment,
     EvidenceRecord,
     ResearchBrief,
     ResearchRequest,
     ResearchRunResult,
     SubagentTask,
 )
-from shandu.orchestration.lead_orchestrator import LeadOrchestrator
 from shandu.services.findings import build_findings, coverage_matrix, verified_claims
 from shandu.services.scrape import ScrapedPage
 from shandu.services.search import SearchHit
@@ -97,14 +95,6 @@ def test_coverage_matrix_rates_independent_credible_support() -> None:
         ("weak", 0),
         ("none", 0),
     ]
-
-
-def test_brief_checklist_overrides_model_coverage_score() -> None:
-    confident = CoverageAssessment(coverage_score=0.2, should_continue=True)
-
-    assert LeadOrchestrator._adaptive_should_continue(confident, [], 3, 0, open_sub_questions=0) is False
-    conflicted = CoverageAssessment(contradiction_count=1, should_continue=False)
-    assert LeadOrchestrator._adaptive_should_continue(conflicted, [], 3, 0, open_sub_questions=0) is True
 
 
 class _ClaimDesk:

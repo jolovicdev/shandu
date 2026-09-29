@@ -481,27 +481,24 @@ def report_command(
     diag = err_console if (json_output and not output) else console
     engine = ShanduEngine.from_config(writer_model=model)
     request = _load_request(engine, run_id)
-    level = cast(DetailLevel | None, detail_level)
+    overrides: dict[str, Any] = {"detail_level": detail_level, "writer": writer}
+    overrides = {key: value for key, value in overrides.items() if value is not None}
+    if no_audit:
+        overrides["audit"] = False
     diag.print(
         ui.header(
             request.query,
             [
                 f"rewriting report {run_id}",
                 model or str(config.get("api", "model")),
-                f"{level or request.detail_level} detail",
+                f"{detail_level or request.detail_level} detail",
             ],
         )
     )
     result = _run_to_completion(
         engine,
         request,
-        lambda on_event: engine.rewrite_report(
-            run_id,
-            level,
-            progress_callback=on_event,
-            writer=cast(Literal["single", "sectioned"] | None, writer),
-            audit=False if no_audit else None,
-        ),
+        lambda on_event: engine.rewrite_report(run_id, overrides, progress_callback=on_event),
         diag,
     )
     _deliver(engine, result, output, json_output, diag)

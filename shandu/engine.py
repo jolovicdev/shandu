@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Literal
-from collections.abc import AsyncIterator, Callable
+from typing import Any
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import contextmanager
 
 from .agents import CitationAgent, LeadAgent, SearchSubagent
 from .agents.auditor import CitationAuditor
@@ -30,6 +31,16 @@ from .services.run_store import RunNotFoundError, RunStore, RunSummary
 ProgressCallback = Callable[[RunEvent], Any]
 
 
+@contextmanager
+def _bootstrap_run() -> Iterator[None]:
+    """Keep the runtime open for the duration of one call."""
+    acquire_bootstrap_run()
+    try:
+        yield
+    finally:
+        release_bootstrap_run()
+
+
 class ShanduEngine:
     def __init__(
         self,
@@ -45,9 +56,12 @@ class ShanduEngine:
         self._orchestrator = orchestrator
         self._ai_search = ai_search_service
         self._run_store = run_store
-        self._scrape_service = scrape_service
-        self._scholarly_service = scholarly_service
-        self._search_service = search_service
+        # Services holding HTTP sessions, closed with the engine.
+        self._closables = [
+            service
+            for service in (scrape_service, scholarly_service, search_service)
+            if service is not None
+        ]
 
     @classmethod
     def from_config(cls, writer_model: str | None = None) -> "ShanduEngine":
@@ -93,11 +107,8 @@ class ShanduEngine:
         request: ResearchRequest,
         progress_callback: ProgressCallback | None = None,
     ) -> ResearchRunResult:
-        acquire_bootstrap_run()
-        try:
+        with _bootstrap_run():
             return await self._orchestrator.run(request, progress_callback)
-        finally:
-            release_bootstrap_run()
 
     def run_sync(
         self,
@@ -108,38 +119,27 @@ class ShanduEngine:
         return runner.run(self.run(request, progress_callback))
 
     async def clarifying_questions(self, query: str) -> list[str]:
-        acquire_bootstrap_run()
-        try:
+        with _bootstrap_run():
             return await self._orchestrator.clarifying_questions(query)
-        finally:
-            release_bootstrap_run()
 
     async def resume(
         self,
         run_id: str,
         progress_callback: ProgressCallback | None = None,
     ) -> ResearchRunResult:
-        acquire_bootstrap_run()
-        try:
+        with _bootstrap_run():
             return await self._orchestrator.resume(run_id, progress_callback)
-        finally:
-            release_bootstrap_run()
 
     async def rewrite_report(
         self,
         run_id: str,
-        detail_level: DetailLevel | None = None,
+        overrides: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
-        writer: Literal["single", "sectioned"] | None = None,
-        audit: bool | None = None,
     ) -> ResearchRunResult:
-        acquire_bootstrap_run()
-        try:
+        with _bootstrap_run():
             return await self._orchestrator.rewrite_report(
-                run_id, detail_level, progress_callback, writer, audit
+                run_id, overrides, progress_callback
             )
-        finally:
-            release_bootstrap_run()
 
     def list_runs(self) -> list[RunSummary]:
         return self._run_store.list_runs()
@@ -215,16 +215,13 @@ class ShanduEngine:
         max_pages: int = 3,
         detail_level: DetailLevel = "standard",
     ) -> AISearchResult:
-        acquire_bootstrap_run()
-        try:
+        with _bootstrap_run():
             return await self._ai_search.search(
                 query=query,
                 max_results=max_results,
                 max_pages=max_pages,
                 detail_level=detail_level,
             )
-        finally:
-            release_bootstrap_run()
 
     def ai_search_sync(
         self,
@@ -244,18 +241,9 @@ class ShanduEngine:
         )
 
     async def aclose(self) -> None:
-        if self._scrape_service is not None:
-            await self._scrape_service.aclose()
-        if self._scholarly_service is not None:
-            await self._scholarly_service.aclose()
-        if self._search_service is not None:
-            await self._search_service.aclose()
+        for service in self._closables:
+            await service.aclose()
 
     def close(self) -> None:
-        if (
-            self._scrape_service is None
-            and self._scholarly_service is None
-            and self._search_service is None
-        ):
-            return
-        get_async_runner().run(self.aclose())
+        if self._closables:
+            get_async_runner().run(self.aclose())

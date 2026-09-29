@@ -26,10 +26,8 @@ def _isolated_storage(tmp_path, monkeypatch):
 def test_report_rewrites_with_writer_model_and_detail_level(monkeypatch, tmp_path) -> None:
     seen: dict[str, object] = {}
 
-    async def rewrite_report(
-        run_id, detail_level=None, progress_callback=None, writer=None, audit=None
-    ):
-        seen["rewrite"] = (run_id, detail_level, writer, audit)
+    async def rewrite_report(run_id, overrides=None, progress_callback=None):
+        seen["rewrite"] = (run_id, overrides)
         return ResearchRunResult(
             run_id=run_id, request=ResearchRequest(query="q"), report_markdown="Rewritten body"
         )
@@ -67,7 +65,7 @@ def test_report_rewrites_with_writer_model_and_detail_level(monkeypatch, tmp_pat
     assert result.exit_code == 0, result.output
     assert seen == {
         "writer_model": "openai/gpt-x",
-        "rewrite": ("r1", "concise", "sectioned", False),
+        "rewrite": ("r1", {"detail_level": "concise", "writer": "sectioned", "audit": False}),
     }
     assert "Rewritten body" in result.stdout
 

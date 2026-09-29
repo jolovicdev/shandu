@@ -168,7 +168,9 @@ def test_rewrite_report_uses_stored_evidence_without_searching(tmp_path) -> None
     lead = _Lead()
 
     asyncio.run(
-        _orchestrator(store, lead, _NoSearch()).rewrite_report(run_id, "concise")
+        _orchestrator(store, lead, _NoSearch()).rewrite_report(
+            run_id, {"detail_level": "concise"}
+        )
     )
 
     assert lead.planned == []

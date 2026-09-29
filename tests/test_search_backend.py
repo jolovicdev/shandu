@@ -24,8 +24,7 @@ def test_search_backends_pair_engines_with_auto_fallback() -> None:
     assert "lite" not in _TEXT_BACKENDS
     assert "html" not in _TEXT_BACKENDS
     primary = _TEXT_BACKENDS[0].split(",")
-    assert "brave" in primary
-    assert "duckduckgo" in primary
+    assert primary == ["bing", "yahoo"]
     assert _TEXT_BACKENDS[-1] == "auto"
 
 

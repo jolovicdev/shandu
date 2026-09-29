@@ -19,9 +19,10 @@ logger = logging.getLogger(__name__)
 # parallel threads and merges URL-deduped results, so the primary entry gets
 # per-query source diversity and survives either engine having a bad day;
 # "auto" stays as the everything-else fallback. "lite"/"html" were
-# duckduckgo_search names rejected by ddgs; "bing" is disabled and "google"
-# is blocked (HTTP 403) as of ddgs 9.10.
-_TEXT_BACKENDS: tuple[str, ...] = ("brave,duckduckgo", "auto")
+# duckduckgo_search names rejected by ddgs. As of ddgs 9.10 in September
+# 2026, "brave" answers HTTP 429 and "duckduckgo" returns no results on
+# every query, while "bing" and "yahoo" both return full result pages.
+_TEXT_BACKENDS: tuple[str, ...] = ("bing,yahoo", "auto")
 _SEARCH_CACHE_MAX = 256
 _SEARCH_CONCURRENCY = 4
 _SEARCH_RETRY_DELAY_SECONDS = 1.0
@@ -168,7 +169,9 @@ class SearchService:
             except Exception as exc:
                 raw = None
                 backend_errors.append(f"{backend}: {exc}")
-                logger.warning("Search backend %s failed", backend, exc_info=True)
+                # One line: the error also reaches the run as a search_failed
+                # event, and a rate-limit traceback per query floods the CLI.
+                logger.warning("Search backend %s failed: %s", backend, str(exc)[:200])
             if raw:
                 break
         return raw, backend_errors

@@ -162,6 +162,7 @@ class OrchestratorLike(Protocol):
         run_id: str,
         detail_level: DetailLevel | None = None,
         progress_callback: ProgressCallback | None = None,
+        writer: Literal["single", "sectioned"] | None = None,
     ) -> ResearchRunResult: ...
 
 

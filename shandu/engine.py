@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from collections.abc import AsyncIterator, Callable
 
 from .agents import CitationAgent, LeadAgent, SearchSubagent
@@ -128,11 +128,12 @@ class ShanduEngine:
         run_id: str,
         detail_level: DetailLevel | None = None,
         progress_callback: ProgressCallback | None = None,
+        writer: Literal["single", "sectioned"] | None = None,
     ) -> ResearchRunResult:
         acquire_bootstrap_run()
         try:
             return await self._orchestrator.rewrite_report(
-                run_id, detail_level, progress_callback
+                run_id, detail_level, progress_callback, writer
             )
         finally:
             release_bootstrap_run()

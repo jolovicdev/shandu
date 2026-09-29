@@ -157,11 +157,14 @@ class LeadOrchestrator:
         run_id: str,
         detail_level: Literal["concise", "standard", "high"] | None = None,
         progress_callback: ProgressCallback | None = None,
+        writer: Literal["single", "sectioned"] | None = None,
     ) -> ResearchRunResult:
         stored = self._store.load(run_id)
         request = stored.request
         if detail_level is not None:
             request = request.model_copy(update={"detail_level": detail_level})
+        if writer is not None:
+            request = request.model_copy(update={"writer": writer})
         state = _RunState.from_stored(stored, include_partial=True)
         state.research_done = True
         return await self._execute(

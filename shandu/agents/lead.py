@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from datetime import date
 from typing import Any
 
@@ -10,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from ..contracts import (
     CoverageAssessment,
+    EvidenceRecord,
     FinalReportDraft,
     IterationPlan,
     IterationSynthesis,
@@ -24,15 +27,22 @@ from ..prompts import (
     brief_job,
     clarifier_instructions,
     clarifier_job,
+    editor_instructions,
+    editor_job,
+    outliner_instructions,
+    outliner_job,
     planner_instructions,
     planner_job,
     reporter_expected_output,
     reporter_instructions,
     reporter_job,
+    section_writer_instructions,
+    section_writer_job,
     synthesizer_instructions,
     synthesizer_job,
 )
 from ..runtime.costing import collect_llm_usage
+from ..services.findings import build_findings
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +57,12 @@ _MIN_EVIDENCE_TEXT_CHARS = 2200
 # is the one call a run cannot do without, so that case is retried.
 _REPORTER_ATTEMPTS = 3
 _MAX_SUB_QUESTIONS = 8
+_MAX_SECTIONS = 9
+_SECTION_CONCURRENCY = 4
+# The sectioned writer's total length scales with the run's research effort.
+_EFFORT_LENGTH = {"low": 0.75, "medium": 1.0, "high": 1.5, "max": 2.0}
+# An edit shorter than this share of the draft lost content, not repetition.
+_EDIT_MIN_RATIO = 0.6
 _MAX_CLARIFYING_QUESTIONS = 3
 
 
@@ -75,6 +91,19 @@ class _PlanPayload(BaseModel):
     subagent_tasks: list[SubagentTask] = Field(default_factory=list)
     continue_loop: bool = True
     stop_reason: str | None = None
+
+
+class _OutlineSection(BaseModel):
+    heading: str
+    purpose: str = ""
+    sub_questions: list[int] = Field(default_factory=list)
+    finding_ids: list[int] = Field(default_factory=list)
+    target_words: int = 400
+
+
+class _OutlinePayload(BaseModel):
+    title: str
+    sections: list[_OutlineSection] = Field(default_factory=list)
 
 
 class _ClarifierPayload(BaseModel):
@@ -316,6 +345,14 @@ class LeadAgent:
         citations_payload: list[dict[str, Any]],
         brief: ResearchBrief | None = None,
     ) -> FinalReportDraft:
+        self.last_llm_usage = None
+        if request.writer == "sectioned":
+            sectioned = await self._build_sectioned_report(
+                request, iteration_summaries, evidence_payload, citations_payload, brief
+            )
+            if sectioned is not None:
+                return sectioned
+            logger.warning("Sectioned writer produced no report; using the single writer")
         payload = {
             "query": request.query,
             "brief": _brief_payload(brief),
@@ -326,37 +363,17 @@ class LeadAgent:
             "today": date.today().isoformat(),
         }
         target_words = self._word_target(request.detail_level)
-        worker = Worker(
-            name="LeadReporter",
-            model=self._writer_model or self._runtime.settings.model,
-            instructions=reporter_instructions(),
+        markdown, reason = await self._markdown_call(
+            "LeadReporter", "reporter", reporter_instructions(), reporter_job(payload, target_words)
         )
-        job_input = reporter_job(payload, target_words)
-        self.last_llm_usage = None
-        try:
-            for _ in range(_REPORTER_ATTEMPTS):
-                job = Job(input=job_input, expected_output=reporter_expected_output())
-                report = await self._runtime.desk.arun(worker, job)
-                self.last_llm_usage = _add_usage(
-                    self.last_llm_usage, collect_llm_usage(report)
-                )
-                if report.status != "completed":
-                    reason = _failure_reason(report, "reporter")
-                    break
-                content = getattr(report, "content", None)
-                if isinstance(content, str) and content.strip():
-                    markdown = content.strip()
-                    return FinalReportDraft(
-                        title=self._extract_title(markdown, request.query),
-                        executive_summary=self._extract_summary(markdown),
-                        sections=[],
-                        markdown=markdown,
-                    )
-                reason = "reporter returned empty content"
-            logger.warning("Lead reporter call did not complete: %s", reason)
-        except Exception:
-            reason = "reporter raised before completing"
-            logger.warning("Lead reporter call failed", exc_info=True)
+        if markdown is not None:
+            return FinalReportDraft(
+                title=self._extract_title(markdown, request.query),
+                executive_summary=self._extract_summary(markdown),
+                sections=[],
+                markdown=markdown,
+            )
+        logger.warning("Lead reporter call did not complete: %s", reason)
 
         self.fallback_count += 1
         self.last_fallback_reason = reason
@@ -395,11 +412,197 @@ class LeadAgent:
             sections=sections,
         )
 
-    @staticmethod
-    def _compact_evidence(
+    async def _markdown_call(
+        self, name: str, label: str, instructions: str, job_input: str
+    ) -> tuple[str | None, str]:
+        """Run a writing call and return its markdown, or None and the reason.
+
+        A reasoning model sometimes drafts the whole text inside its reasoning
+        channel and completes with empty content, so that case is retried.
+        """
+        worker = Worker(
+            name=name,
+            model=self._writer_model or self._runtime.settings.model,
+            instructions=instructions,
+        )
+        reason = f"{label} returned empty content"
+        try:
+            for _ in range(_REPORTER_ATTEMPTS):
+                job = Job(input=job_input, expected_output=reporter_expected_output())
+                report = await self._runtime.desk.arun(worker, job)
+                self.last_llm_usage = _add_usage(
+                    self.last_llm_usage, collect_llm_usage(report)
+                )
+                if report.status != "completed":
+                    return None, _failure_reason(report, label)
+                content = getattr(report, "content", None)
+                if isinstance(content, str) and content.strip():
+                    return content.strip(), ""
+        except Exception:
+            logger.warning("%s call failed", name, exc_info=True)
+            return None, f"{label} raised before completing"
+        return None, reason
+
+    async def _build_sectioned_report(
+        self,
+        request: ResearchRequest,
+        iteration_summaries: list[IterationSynthesis],
         evidence_payload: list[dict[str, Any]],
         citations_payload: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        brief: ResearchBrief | None,
+    ) -> FinalReportDraft | None:
+        """Outline, draft each section from its own evidence, then edit.
+
+        Returns None when no outline or no section comes back, so the caller
+        falls back to the single-call writer.
+        """
+        records = [EvidenceRecord.model_validate(entry) for entry in evidence_payload]
+        citation_ids = self._citation_ids(citations_payload)
+        findings = build_findings(records)
+        finding_rows = [
+            {
+                "id": index,
+                "statement": finding.statement,
+                "sub_questions": finding.sub_questions,
+                "citation_ids": sorted(
+                    {
+                        citation_ids[evidence_id]
+                        for evidence_id in finding.evidence_ids
+                        if evidence_id in citation_ids
+                    }
+                ),
+                "independent_sources": len(finding.domains),
+                "confidence": round(finding.confidence, 2),
+            }
+            for index, finding in enumerate(findings, start=1)
+        ]
+        total_words = int(
+            self._word_target(request.detail_level) * _EFFORT_LENGTH[request.effort]
+        )
+        outline_worker = Worker(
+            name="LeadOutliner",
+            model=self._writer_model or self._runtime.settings.model,
+            instructions=outliner_instructions(),
+        )
+        outline_job = Job(
+            input=outliner_job(
+                {
+                    "query": request.query,
+                    "brief": _brief_payload(brief),
+                    "iterations": [
+                        {"summary": summary.summary, "key_findings": summary.key_findings}
+                        for summary in iteration_summaries
+                    ],
+                    "findings": finding_rows,
+                    "today": date.today().isoformat(),
+                },
+                total_words,
+            ),
+            response_schema=_OutlinePayload,
+        )
+        try:
+            report = await self._runtime.desk.arun(outline_worker, outline_job)
+        except Exception:
+            logger.warning("Outline call failed", exc_info=True)
+            return None
+        self.last_llm_usage = _add_usage(self.last_llm_usage, collect_llm_usage(report))
+        if report.status != "completed" or not isinstance(report.data, _OutlinePayload):
+            logger.warning("Outline call did not complete: %s", _failure_reason(report, "outliner"))
+            return None
+        outline = report.data
+        sections = [section for section in outline.sections if section.heading.strip()]
+        if not sections:
+            return None
+        semaphore = asyncio.Semaphore(_SECTION_CONCURRENCY)
+        sub_questions = brief.sub_questions if brief is not None else []
+
+        async def write(section: _OutlineSection) -> str | None:
+            chosen = [
+                findings[index - 1]
+                for index in dict.fromkeys(section.finding_ids)
+                if 1 <= index <= len(findings)
+            ] or [
+                finding
+                for finding in findings
+                if set(finding.sub_questions) & set(section.sub_questions)
+            ]
+            supporting = {evidence_id for finding in chosen for evidence_id in finding.evidence_ids}
+            section_evidence = [
+                entry for entry in evidence_payload if entry.get("evidence_id") in supporting
+            ]
+            payload = {
+                "query": request.query,
+                "heading": section.heading.strip(),
+                "purpose": section.purpose,
+                "answers": [
+                    sub_questions[index - 1]
+                    for index in section.sub_questions
+                    if 1 <= index <= len(sub_questions)
+                ],
+                "target_words": section.target_words,
+                "findings": [
+                    {
+                        "statement": finding.statement,
+                        "quotes": finding.quotes[:3],
+                        "citation_ids": sorted(
+                            {
+                                citation_ids[evidence_id]
+                                for evidence_id in finding.evidence_ids
+                                if evidence_id in citation_ids
+                            }
+                        ),
+                    }
+                    for finding in chosen
+                ],
+                "evidence": self._compact_evidence(section_evidence, citations_payload),
+                "citations": self._compact_citations(citations_payload),
+                "today": date.today().isoformat(),
+            }
+            async with semaphore:
+                markdown, reason = await self._markdown_call(
+                    "SectionWriter",
+                    "section writer",
+                    section_writer_instructions(),
+                    section_writer_job(payload),
+                )
+            if markdown is None:
+                logger.warning("Section %r was not written: %s", section.heading, reason)
+            return markdown
+
+        drafts = await asyncio.gather(*(write(section) for section in sections[:_MAX_SECTIONS]))
+        written = [draft for draft in drafts if draft]
+        if not written:
+            return None
+        title = outline.title.strip() or request.query.strip()[:180]
+        draft = "\n\n".join(written)
+        edited, reason = await self._markdown_call(
+            "LeadEditor",
+            "editor",
+            editor_instructions(),
+            editor_job({"title": title, "brief": _brief_payload(brief), "draft": draft}),
+        )
+        headings = re.findall(r"^##\s+.+$", draft, flags=re.MULTILINE)
+        if (
+            edited is not None
+            and all(heading in edited for heading in headings)
+            and len(edited.split()) >= _EDIT_MIN_RATIO * len(draft.split())
+        ):
+            markdown = edited
+        else:
+            logger.warning(
+                "Editor output rejected (%s); keeping the section drafts",
+                reason or "it dropped sections or content",
+            )
+            markdown = f"# {title}\n\n{draft}"
+        return FinalReportDraft(
+            title=self._extract_title(markdown, request.query),
+            executive_summary=self._extract_summary(markdown),
+            sections=[],
+            markdown=markdown,
+        )
+
+    @staticmethod
+    def _citation_ids(citations_payload: list[dict[str, Any]]) -> dict[str, int]:
         citation_by_evidence: dict[str, int] = {}
         for candidate in citations_payload:
             try:
@@ -411,6 +614,14 @@ class LeadAgent:
             for evidence_id in candidate.get("evidence_ids") or []:
                 if evidence_id:
                     citation_by_evidence.setdefault(str(evidence_id), citation_id)
+        return citation_by_evidence
+
+    @staticmethod
+    def _compact_evidence(
+        evidence_payload: list[dict[str, Any]],
+        citations_payload: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        citation_by_evidence = LeadAgent._citation_ids(citations_payload)
         text_chars = max(
             _MIN_EVIDENCE_TEXT_CHARS,
             _REPORTER_EVIDENCE_BUDGET // max(1, len(evidence_payload)),

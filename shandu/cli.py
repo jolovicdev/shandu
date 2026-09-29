@@ -247,6 +247,13 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     type=click.Choice(["pipeline", "agentic"]),
     help="How each task gathers evidence.",
 )
+@click.option(
+    "--writer",
+    default="single",
+    show_default=True,
+    type=click.Choice(["single", "sectioned"]),
+    help="Write the report in one call, or outline, draft sections, then edit.",
+)
 def run_command(
     query: str,
     max_iterations: int | None,
@@ -264,6 +271,7 @@ def run_command(
     since: datetime | None,
     effort: str | None,
     researcher: str,
+    writer: str,
 ) -> None:
     diag = err_console if (json_output and not output) else console
     default_detail = _resolve_detail_level(
@@ -298,6 +306,7 @@ def run_command(
             exclude_domains=list(exclude_domains),
             since=since.date() if since else None,
             researcher=cast(Literal["pipeline", "agentic"], researcher),
+            writer=cast(Literal["single", "sectioned"], writer),
         )
     except ValidationError as exc:
         problems = "; ".join(
@@ -442,12 +451,14 @@ def resume_command(
 @click.argument("run_id")
 @click.option("--detail-level", default=None, type=click.Choice(["concise", "standard", "high"]))
 @click.option("--model", default=None, help="Model for the report writer.")
+@click.option("--writer", default=None, type=click.Choice(["single", "sectioned"]))
 @click.option("--output", default=None)
 @click.option("--json-output", is_flag=True)
 def report_command(
     run_id: str,
     detail_level: str | None,
     model: str | None,
+    writer: str | None,
     output: str | None,
     json_output: bool,
 ) -> None:
@@ -470,7 +481,10 @@ def report_command(
         engine,
         request,
         lambda on_event: engine.rewrite_report(
-            run_id, level, progress_callback=on_event
+            run_id,
+            level,
+            progress_callback=on_event,
+            writer=cast(Literal["single", "sectioned"] | None, writer),
         ),
         diag,
     )

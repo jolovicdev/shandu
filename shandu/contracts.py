@@ -56,6 +56,9 @@ class ResearchRequest(BaseModel):
     # "pipeline" searches, ranks, then reads in one pass per task; "agentic"
     # runs each task as a tool loop that searches, reads, and follows links.
     researcher: Literal["pipeline", "agentic"] = "pipeline"
+    # "single" writes the report in one call; "sectioned" outlines it,
+    # drafts each section from its own evidence, then edits the whole.
+    writer: Literal["single", "sectioned"] = "single"
     max_searches_per_task: int = Field(default=6, ge=1, le=12)
     effort: Literal["low", "medium", "high", "max"] = "medium"
 

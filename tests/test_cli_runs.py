@@ -26,8 +26,8 @@ def _isolated_storage(tmp_path, monkeypatch):
 def test_report_rewrites_with_writer_model_and_detail_level(monkeypatch, tmp_path) -> None:
     seen: dict[str, object] = {}
 
-    async def rewrite_report(run_id, detail_level=None, progress_callback=None):
-        seen["rewrite"] = (run_id, detail_level)
+    async def rewrite_report(run_id, detail_level=None, progress_callback=None, writer=None):
+        seen["rewrite"] = (run_id, detail_level, writer)
         return ResearchRunResult(
             run_id=run_id, request=ResearchRequest(query="q"), report_markdown="Rewritten body"
         )
@@ -48,11 +48,24 @@ def test_report_rewrites_with_writer_model_and_detail_level(monkeypatch, tmp_pat
     monkeypatch.setattr(ShanduEngine, "from_config", classmethod(from_config))
 
     result = CliRunner(mix_stderr=False).invoke(
-        cli, ["report", "r1", "--model", "openai/gpt-x", "--detail-level", "concise"]
+        cli,
+        [
+            "report",
+            "r1",
+            "--model",
+            "openai/gpt-x",
+            "--detail-level",
+            "concise",
+            "--writer",
+            "sectioned",
+        ],
     )
 
     assert result.exit_code == 0, result.output
-    assert seen == {"writer_model": "openai/gpt-x", "rewrite": ("r1", "concise")}
+    assert seen == {
+        "writer_model": "openai/gpt-x",
+        "rewrite": ("r1", "concise", "sectioned"),
+    }
     assert "Rewritten body" in result.stdout
 
 

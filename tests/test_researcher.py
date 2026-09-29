@@ -220,3 +220,26 @@ def test_orchestrator_hands_task_memos_to_synthesizer(tmp_path) -> None:
     asyncio.run(orchestrator.run(ResearchRequest(query="q", max_iterations=1, parallelism=1)))
 
     assert lead.task_memos == [{"task_id": "t1", "focus": "KIVI memory", "memo": "found it"}]
+
+
+def test_parallel_researchers_do_not_read_one_page_twice() -> None:
+    async def script(tools, replies):
+        replies.append(await tools["read_page"](url=_PAPER))
+
+    shared: set[str] = set()
+    scrape = _Scrape()
+    first, second = _ModelDesk(script), _ModelDesk(script)
+
+    asyncio.run(
+        _researcher(first, scrape=scrape).execute_task(
+            "run:r", _task(), ResearchRequest(query="q"), extracted_urls=shared
+        )
+    )
+    asyncio.run(
+        _researcher(second, scrape=scrape).execute_task(
+            "run:r", _task(), ResearchRequest(query="q"), extracted_urls=shared
+        )
+    )
+
+    assert scrape.requested == [_PAPER]
+    assert second.replies[0].startswith("Already read in this run")

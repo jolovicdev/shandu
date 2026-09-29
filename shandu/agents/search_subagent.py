@@ -169,7 +169,7 @@ class SearchSubagent:
         task: SubagentTask,
         request: ResearchRequest,
         progress_callback: SearchTraceCallback | None = None,
-        extracted_urls: Collection[str] | None = None,
+        extracted_urls: set[str] | None = None,
         brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
@@ -282,10 +282,23 @@ class SearchSubagent:
         unseen = await self._rank_candidates(
             task, unseen, request.max_pages_per_task, progress_callback
         )
-        all_hits = unseen + already_seen
+        # Sibling tasks claim pages while this one ranks; a page claimed in
+        # the meantime moves behind the pages nobody is reading yet.
+        claimed = set(extracted_urls or ())
+
+        def is_claimed(entry: dict[str, str]) -> bool:
+            return (self._canonicalize_url(entry["url"]) or entry["url"]) in claimed
+
+        all_hits = (
+            [entry for entry in unseen if not is_claimed(entry)]
+            + [entry for entry in unseen if is_claimed(entry)]
+            + already_seen
+        )
 
         urls = [entry["url"] for entry in all_hits[: request.max_pages_per_task]]
         canonical_urls = {url: self._canonicalize_url(url) or url for url in urls}
+        if extracted_urls is not None:
+            extracted_urls.update(canonical_urls.values())
         await self._emit_trace(
             progress_callback,
             "scrape_started",

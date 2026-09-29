@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .contracts import (
@@ -117,9 +117,15 @@ class SearchSubagentLike(Protocol):
         task: SubagentTask,
         request: ResearchRequest,
         progress_callback: Callable[[str, dict[str, Any]], Any] | None = None,
-        extracted_urls: Collection[str] | None = None,
+        extracted_urls: set[str] | None = None,
         brief: ResearchBrief | None = None,
-    ) -> list[EvidenceRecord]: ...
+    ) -> list[EvidenceRecord]:
+        """Gather evidence for one task.
+
+        ``extracted_urls`` is shared by every task of an iteration: it holds
+        the pages earlier iterations read, and each task adds the pages it
+        starts reading so parallel tasks do not extract one page twice.
+        """
 
 
 class CitationAgentLike(Protocol):

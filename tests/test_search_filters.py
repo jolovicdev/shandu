@@ -130,3 +130,47 @@ def test_scholarly_task_also_searches_papers_and_drops_old_ones_before_scraping(
     assert papers.queries == ["kv cache"]
     assert "https://arxiv.org/abs/new" in scrape.requested
     assert "https://arxiv.org/abs/old" not in scrape.requested
+
+
+def test_pipeline_claims_its_pages_and_ranks_claimed_pages_last() -> None:
+    search = _RecordingSearch(["https://example.org/a", "https://example.org/b"])
+    scrape = _EchoScrape()
+    shared = {"https://example.org/a"}
+
+    asyncio.run(
+        _subagent(search, scrape).execute_task(
+            "run:r", _task(), ResearchRequest(query="q", max_pages_per_task=1), extracted_urls=shared
+        )
+    )
+
+    assert scrape.requested == ["https://example.org/b"]
+    assert shared == {"https://example.org/a", "https://example.org/b"}
+
+
+def test_pipeline_skips_a_page_a_sibling_claims_while_it_ranks() -> None:
+    from shandu.agents.search_subagent import _SelectionPayload
+
+    shared: set[str] = set()
+
+    class _SiblingClaimsDuringRanking:
+        async def arun(self, worker, job):
+            if worker.name == "SubagentSelector":
+                shared.add("https://example.org/a")
+                return SimpleNamespace(
+                    status="completed", data=_SelectionPayload(ranked_ids=[0, 1, 2]), metrics={}
+                )
+            return await _ExtractDesk().arun(worker, job)
+
+    search = _RecordingSearch(
+        ["https://example.org/a", "https://example.org/b", "https://example.org/c"]
+    )
+    scrape = _EchoScrape()
+    runtime = SimpleNamespace(settings=SimpleNamespace(model="m"), desk=_SiblingClaimsDuringRanking())
+
+    asyncio.run(
+        SearchSubagent(runtime, search, scrape).execute_task(
+            "run:r", _task(), ResearchRequest(query="q", max_pages_per_task=1), extracted_urls=shared
+        )
+    )
+
+    assert scrape.requested == ["https://example.org/b"]

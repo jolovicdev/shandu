@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Collection, Sequence
+from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
@@ -53,11 +53,12 @@ class ResearcherAgent(SearchSubagent):
         task: SubagentTask,
         request: ResearchRequest,
         progress_callback: SearchTraceCallback | None = None,
-        extracted_urls: Collection[str] | None = None,
+        extracted_urls: set[str] | None = None,
         brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
         evidence: list[EvidenceRecord] = []
+        claimed = extracted_urls if extracted_urls is not None else set()
         hits_by_url: dict[str, dict[str, str]] = {}
         replies: dict[str, str] = {}
         known = {self._canonicalize_url(url) or url for url in extracted_urls or ()}
@@ -155,13 +156,17 @@ class ResearcherAgent(SearchSubagent):
             canonical = self._canonicalize_url(url) or url
             if canonical in replies:
                 return replies[canonical]
-            if canonical in known:
-                return "Already read earlier in this run; choose another source."
+            if canonical in known or canonical in claimed:
+                return (
+                    "Already read in this run; its evidence reaches the report. "
+                    "Choose another source."
+                )
             if not allowed(url):
                 return "Outside the allowed domains; choose another source."
             if budget["reads"] <= 0:
                 return _BUDGET_SPENT
             budget["reads"] -= 1
+            claimed.add(canonical)
             await self._emit_trace(
                 progress_callback,
                 "scrape_started",
@@ -283,7 +288,7 @@ class ResearcherByRequest:
         task: SubagentTask,
         request: ResearchRequest,
         progress_callback: SearchTraceCallback | None = None,
-        extracted_urls: Collection[str] | None = None,
+        extracted_urls: set[str] | None = None,
         brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]:
         researcher = self._agentic if request.researcher == "agentic" else self._pipeline

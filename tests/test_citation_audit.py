@@ -232,3 +232,48 @@ def test_audit_off_leaves_report_unchecked(tmp_path) -> None:
     assert auditor.calls == 0
     assert len(result.citations) == 2
     assert "citation_audit" not in result.run_stats
+
+
+def test_cited_units_ignore_code_and_links_and_keep_trailing_markers() -> None:
+    body = (
+        "Revenue grew 12% in 2024. [1] Margins fell to 8% [2].\n"
+        "Costs rose sharply. [3]\n"
+        "```python\n"
+        "x = values[1]\n"
+        "```\n"
+        "Use `items[2]` and see [the guide](https://example.org/a[3]) for details [4]."
+    )
+
+    units = _cited_units(body)
+
+    assert [(unit.text, unit.citation_ids) for unit in units] == [
+        ("Revenue grew 12% in 2024. [1]", (1,)),
+        ("Margins fell to 8% [2].", (2,)),
+        ("Costs rose sharply. [3]", (3,)),
+        ("Use `items[2]` and see [the guide](https://example.org/a[3]) for details [4].", (4,)),
+    ]
+
+
+def test_audit_never_edits_code_that_looks_like_a_marker() -> None:
+    report = "Intro claim [2].\n\nUse `data[2]` as shown [2].\n\n## References\n\n- [2] x"
+
+    class _Unsupported:
+        async def arun(self, worker, job):
+            payload = json.loads(job.input.split("Input JSON:\n", 1)[1])
+            return SimpleNamespace(
+                status="completed",
+                data=_AuditPayload(
+                    units=[
+                        _UnitVerdict(
+                            unit_id=unit["unit_id"],
+                            markers=[_MarkerVerdict(citation_id=2, verdict="unsupported")],
+                        )
+                        for unit in payload["units"]
+                    ]
+                ),
+                metrics={},
+            )
+
+    outcome = asyncio.run(_auditor(_Unsupported()).audit(report, _CITATIONS, _EVIDENCE))
+
+    assert outcome.markdown.startswith("Intro claim.\n\nUse `data[2]` as shown.")

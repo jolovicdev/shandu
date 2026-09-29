@@ -24,8 +24,11 @@ _BATCH_CONCURRENCY = 4
 _SOURCE_CHARS = 12_000
 _MARKER = re.compile(r"\[(\d+)\]")
 # A sentence ends at terminal punctuation followed by space and a capital,
-# digit, quote, or bracket; decimals and abbreviations like "e.g." stay whole.
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"(\[])")
+# digit, quote, or parenthesis; decimals and abbreviations like "e.g." stay
+# whole. Markers right after the punctuation belong to the sentence they close.
+_SENTENCE_END = re.compile(r"(?<=[.!?])((?:\s*\[\d+\])*)\s+(?=[A-Z0-9\"(])")
+# Inline code and links can hold bracketed digits that are not citations.
+_CODE_OR_LINK = re.compile(r"(`+).+?\1|\[[^\[\]\n]*\]\([^)\n]*\)")
 
 
 class _MarkerVerdict(BaseModel):
@@ -49,7 +52,12 @@ class _Unit:
     start: int
     end: int
     text: str
-    citation_ids: tuple[int, ...]
+    # (start, end, citation id) of each marker, relative to ``text``.
+    markers: tuple[tuple[int, int, int], ...]
+
+    @property
+    def citation_ids(self) -> tuple[int, ...]:
+        return tuple(dict.fromkeys(citation_id for _, _, citation_id in self.markers))
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,26 +69,39 @@ class AuditOutcome:
 
 
 def _cited_units(markdown: str) -> list[_Unit]:
-    """Sentences, bullet lines, and table rows that carry citation markers."""
+    """Sentences, bullet lines, and table rows that carry citation markers.
+
+    Fenced code is skipped, and inline code and links are masked, so digits
+    in brackets there are never read as markers or sentence ends.
+    """
     units: list[_Unit] = []
+    in_fence = False
     for line_index, line in enumerate(markdown.split("\n")):
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
             continue
+        if in_fence or not stripped or stripped.startswith("#"):
+            continue
+        masked = _CODE_OR_LINK.sub(lambda match: "\x00" * len(match.group()), line)
         if stripped.startswith("|"):
             spans = [(0, len(line))]
         else:
             spans = []
             cursor = 0
-            for match in _SENTENCE_END.finditer(line):
-                spans.append((cursor, match.start()))
+            for match in _SENTENCE_END.finditer(masked):
+                spans.append((cursor, match.end(1)))
                 cursor = match.end()
             spans.append((cursor, len(line)))
         for start, end in spans:
-            text = line[start:end]
-            ids = tuple(dict.fromkeys(int(token) for token in _MARKER.findall(text)))
-            if ids:
-                units.append(_Unit(len(units) + 1, line_index, start, end, text, ids))
+            markers = tuple(
+                (match.start() - start, match.end() - start, int(match.group(1)))
+                for match in _MARKER.finditer(masked, start, end)
+            )
+            if markers:
+                units.append(
+                    _Unit(len(units) + 1, line_index, start, end, line[start:end], markers)
+                )
     return units
 
 
@@ -189,9 +210,11 @@ class CitationAuditor:
                         sentence=sentence, url=entry.url if entry else "", verdict=verdict
                     )
                 )
-                if verdict == "unsupported":
-                    marker = f"[{citation_id}]"
-                    text = text.replace(f" {marker}", "").replace(marker, "")
+            for start, end, citation_id in reversed(unit.markers):
+                if unit_verdicts.get(citation_id) == "unsupported":
+                    # Take the space before the marker along with it.
+                    start -= 1 if start > 0 and text[start - 1] == " " else 0
+                    text = text[:start] + text[end:]
             verdicts[0:0] = unit_list
             if text != unit.text:
                 line = lines[unit.line]

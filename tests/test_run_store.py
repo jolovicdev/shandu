@@ -231,3 +231,33 @@ def test_cost_budget_stops_research_before_the_next_iteration(tmp_path) -> None:
     assert lead.planned == [0]
     assert result.run_stats["stopped_at_cost_budget"] is True
     assert result.report_markdown.startswith("# T")
+
+
+def test_rewriting_an_interrupted_run_leaves_it_resumable(tmp_path) -> None:
+    store = RunStore(tmp_path)
+    run_id = _crashed_run(store)
+
+    asyncio.run(_orchestrator(store, _Lead(), _NoSearch()).rewrite_report(run_id))
+    assert store.load(run_id).status["status"] == "failed"
+
+    lead = _Lead()
+    asyncio.run(_orchestrator(store, lead, _Subagent("new")).resume(run_id))
+    assert lead.planned == [1]
+
+
+class _BrokenWriter(_Lead):
+    async def build_final_report(self, *args, **kwargs):
+        raise RuntimeError("writer down")
+
+
+def test_failed_rewrite_keeps_a_completed_run_completed(tmp_path) -> None:
+    store = RunStore(tmp_path)
+    request = ResearchRequest(query="q", max_iterations=1, parallelism=1)
+    result = asyncio.run(_orchestrator(store, _Lead(), _Subagent("a")).run(request))
+
+    with pytest.raises(RuntimeError, match="writer down"):
+        asyncio.run(
+            _orchestrator(store, _BrokenWriter(), _NoSearch()).rewrite_report(result.run_id)
+        )
+
+    assert store.load(result.run_id).status["status"] == "completed"

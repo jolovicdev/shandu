@@ -173,7 +173,12 @@ class LeadOrchestrator:
         state = _RunState.from_stored(stored, include_partial=True)
         state.research_done = True
         return await self._execute(
-            run_id, request, state, progress_callback, "Rewriting report from stored evidence"
+            run_id,
+            request,
+            state,
+            progress_callback,
+            "Rewriting report from stored evidence",
+            rewrite=True,
         )
 
     async def _execute(
@@ -183,7 +188,14 @@ class LeadOrchestrator:
         state: _RunState,
         progress_callback: ProgressCallback | None,
         start_message: str,
+        rewrite: bool = False,
     ) -> ResearchRunResult:
+        """Research as far as the state allows, then write and audit the report.
+
+        A rewrite leaves the run's status and research progress as stored:
+        rewriting an interrupted run must not stop it from being resumed, and
+        a failed rewrite must not mark a finished run failed.
+        """
         started = time.perf_counter()
 
         async def emit(event: RunEvent) -> None:
@@ -191,7 +203,8 @@ class LeadOrchestrator:
             await self._emit(progress_callback, event)
 
         try:
-            self._store.set_status(run_id, "running")
+            if not rewrite:
+                self._store.set_status(run_id, "running")
             await emit(
                 RunEvent(
                     stage="bootstrap",
@@ -529,7 +542,8 @@ class LeadOrchestrator:
                         break
                 elif not synthesis.continue_loop:
                     break
-            self._store.mark_research_done(run_id)
+            if not rewrite:
+                self._store.mark_research_done(run_id)
 
             citations = await self._citation.build_citations(request.query, state.evidence)
             citation_metrics = with_model_call_count({"citations": len(citations)})
@@ -659,7 +673,8 @@ class LeadOrchestrator:
             self._store.save_report(
                 run_id, report_markdown, report_citations, run_stats, citation_audit
             )
-            self._store.set_status(run_id, "completed")
+            if not rewrite:
+                self._store.set_status(run_id, "completed")
             await emit(
                 RunEvent(
                     stage="complete",
@@ -670,6 +685,8 @@ class LeadOrchestrator:
             )
             return result
         except BaseException as exc:
+            if rewrite:
+                raise
             terminal_status = (
                 "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
             )

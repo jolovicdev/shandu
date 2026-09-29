@@ -96,6 +96,6 @@ def test_result_and_source_views_escape_web_text() -> None:
 def test_query_echo_escapes_markup() -> None:
     ui, console = _ui()
 
-    console.print(ui.query_line(POISON))
+    console.print(ui.header(POISON, [POISON]))
 
     assert "[/notopen]" in console.export_text()

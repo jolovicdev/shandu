@@ -15,7 +15,6 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from .. import __version__
 from ..contracts import AISearchResult, ResearchRequest, ResearchRunResult, RunEvent
 from ..services.run_store import RunSummary
 
@@ -23,6 +22,9 @@ from ..services.run_store import RunSummary
 _READING_WIDTH = 88
 
 _STAGE_WIDTH = 11
+# Width of the "HH:MM:SS " event timestamp, so the header's question starts in
+# the same column as the stage words below it.
+_GUTTER_WIDTH = 9
 _TASK_WIDTH = 15
 
 # Metrics that describe a single trace event, not the run so far.
@@ -115,16 +117,15 @@ class ShanduUI:
             console.push_theme(theme)
             self.console = console
 
-    def banner(self) -> RenderableType:
-        line = Text.assemble(
-            ("shandu", "brand"),
-            (f" {__version__}", "muted"),
-            ("   deep research agent", "muted"),
-        )
-        return Group(line, Rule(style="panel"))
-
-    def print_banner(self, target: Console | None = None) -> None:
-        (target or self.console).print(self.banner())
+    def header(self, question: str, details: list[str]) -> RenderableType:
+        """The question a command works on, then the settings it runs under."""
+        table = Table.grid()
+        table.add_column(width=_GUTTER_WIDTH, no_wrap=True)
+        table.add_column(overflow="fold")
+        table.add_row(Text("shandu", style="brand"), Text(question, style="accent"))
+        if details:
+            table.add_row("", Text("  ·  ".join(details), style="muted"))
+        return Padding(Constrain(table, _READING_WIDTH), (0, 0, 1, 0))
 
     def new_snapshot(self, request: ResearchRequest, model: str) -> RunSnapshot:
         return RunSnapshot(request=request, model=model)
@@ -158,9 +159,6 @@ class ShanduUI:
                 escape(run.query),
             )
         return Group(Text("Runs", style="title"), Padding(table, (0, 0, 1, 2)))
-
-    def query_line(self, query: str) -> Text:
-        return Text.assemble(("researching  ", "label"), (query, "accent"))
 
     def event_line(self, event: RunEvent) -> Text:
         # One event, one line: a wrapped stream loses the column alignment.

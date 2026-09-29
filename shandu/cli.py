@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
 
+from . import __version__
 from .config import config, infer_api_key_env_name
 from .contracts import ResearchRequest, ResearchRunResult, RunEvent
 from .engine import ShanduEngine
@@ -58,7 +59,6 @@ def cli() -> None:
 
 @cli.command()
 def info() -> None:
-    ui.print_banner()
     api_key_env = config.get_api_key_env_name()
     key_in_env = bool(api_key_env and os.getenv(api_key_env))
     key_in_config = bool(str(config.get("api", "api_key", "")).strip())
@@ -73,6 +73,7 @@ def info() -> None:
             ("API Key", "provider-managed"),
         ]
     rows = [
+        ("Version", __version__),
         ("Model", config.get("api", "model")),
         ("Temperature", config.get("api", "temperature")),
         ("Max Tokens", config.get("api", "max_tokens")),
@@ -86,7 +87,6 @@ def info() -> None:
 
 @cli.command()
 def configure() -> None:
-    ui.print_banner()
     model = click.prompt("Default model", default=config.get("api", "model"))
     inferred_env_name = infer_api_key_env_name(model)
     api_key_env = click.prompt(
@@ -144,7 +144,6 @@ def configure() -> None:
 @click.option("--auth", default=None, help="Basic auth credentials as user:pass.")
 @click.option("--browser/--no-browser", default=False, show_default=True)
 def gui_command(host: str, port: int, share: bool, auth: str | None, browser: bool) -> None:
-    ui.print_banner()
     credentials = _parse_gui_auth(auth)
     if share and credentials is None:
         raise click.ClickException("--share requires --auth user:pass.")
@@ -201,7 +200,6 @@ def run_command(
     verbose: bool,
 ) -> None:
     diag = err_console if (json_output and not output) else console
-    ui.print_banner(diag)
     default_detail = _resolve_detail_level(
         str(config.get("orchestration", "detail_level", "high")),
         "high",
@@ -236,7 +234,17 @@ def run_command(
         raise click.ClickException(f"Invalid research options: {problems}") from exc
 
     engine = ShanduEngine.from_config()
-    diag.print(ui.query_line(request.query))
+    diag.print(
+        ui.header(
+            request.query,
+            [
+                str(config.get("api", "model")),
+                f"{request.max_iterations} iterations",
+                f"{request.parallelism} tasks",
+                f"{request.detail_level} detail",
+            ],
+        )
+    )
     result = _run_to_completion(
         engine,
         request,
@@ -327,10 +335,11 @@ def resume_command(
 ) -> None:
     """Continue a stopped run after its last completed iteration."""
     diag = err_console if (json_output and not output) else console
-    ui.print_banner(diag)
     engine = ShanduEngine.from_config()
     request = _load_request(engine, run_id)
-    diag.print(ui.query_line(request.query))
+    diag.print(
+        ui.header(request.query, [f"resuming {run_id}", str(config.get("api", "model"))])
+    )
     result = _run_to_completion(
         engine,
         request,
@@ -356,11 +365,19 @@ def report_command(
 ) -> None:
     """Rewrite a run's report from its stored evidence, without new searches."""
     diag = err_console if (json_output and not output) else console
-    ui.print_banner(diag)
     engine = ShanduEngine.from_config(writer_model=model)
     request = _load_request(engine, run_id)
-    diag.print(ui.query_line(request.query))
     level = cast(DetailLevel | None, detail_level)
+    diag.print(
+        ui.header(
+            request.query,
+            [
+                f"rewriting report {run_id}",
+                model or str(config.get("api", "model")),
+                f"{level or request.detail_level} detail",
+            ],
+        )
+    )
     result = _run_to_completion(
         engine,
         request,
@@ -376,7 +393,6 @@ def report_command(
 @click.option("--limit", default=20, type=int, show_default=True)
 def list_command(limit: int) -> None:
     """List stored research runs, newest first."""
-    ui.print_banner()
     engine = ShanduEngine.from_config()
     try:
         runs = engine.list_runs()[:limit]
@@ -392,7 +408,6 @@ def list_command(limit: int) -> None:
 @click.argument("run_id")
 def show_command(run_id: str) -> None:
     """Print a stored run's summary and report."""
-    ui.print_banner()
     engine = ShanduEngine.from_config()
     try:
         result = engine.load_run(run_id)
@@ -423,7 +438,12 @@ def ai_search_command(
     json_output: bool,
 ) -> None:
     diag = err_console if (json_output and not output) else console
-    ui.print_banner(diag)
+    diag.print(
+        ui.header(
+            query,
+            [str(config.get("api", "model")), "quick answer", f"{max_pages} pages"],
+        )
+    )
     engine = ShanduEngine.from_config()
     try:
         result = engine.ai_search_sync(
@@ -456,7 +476,6 @@ def ai_search_command(
 @cli.command()
 @click.argument("run_id")
 def inspect(run_id: str) -> None:
-    ui.print_banner()
     engine = ShanduEngine.from_config()
     payload = engine.inspect_run(run_id)
     if not payload.get("exists"):
@@ -468,7 +487,6 @@ def inspect(run_id: str) -> None:
 @cli.command()
 @click.option("--force", is_flag=True)
 def clean(force: bool) -> None:
-    ui.print_banner()
     runtime_dir = Path(
         str(config.get("runtime", "storage_dir"))
     ).expanduser().resolve()

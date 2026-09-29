@@ -59,11 +59,14 @@ def test_event_line_renders_trace_query_and_url() -> None:
     assert "https://example.com/article" in line.plain
 
 
-def test_banner_shows_version() -> None:
-    from shandu import __version__
-
+def test_header_question_aligns_with_event_stage_column() -> None:
     console = Console(record=True, width=100)
     ui = ShanduUI(console=console)
-    ui.print_banner()
+    console.print(ui.header("Why is the sky blue?", ["deepseek/deepseek-flash"]))
+    console.print(ui.event_line(RunEvent(stage="plan", message="Iteration 1 plan ready")))
 
-    assert __version__ in console.export_text()
+    lines = console.export_text().splitlines()
+    question = next(line for line in lines if "Why is the sky blue?" in line)
+    details = next(line for line in lines if "deepseek/deepseek-flash" in line)
+    event = next(line for line in lines if "plan ready" in line)
+    assert question.index("Why") == details.index("deepseek") == event.index("plan")

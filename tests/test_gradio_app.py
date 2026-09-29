@@ -183,4 +183,4 @@ def test_gradio_strip_shows_citation_audit_counts() -> None:
 
     strip = state.strip_html(running=False)
 
-    assert "citations checked <b>36 supported · 2 removed</b>" in strip
+    assert "citations checked <b>36 supported · 2 removed · 1 unchecked</b>" in strip

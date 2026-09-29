@@ -268,7 +268,12 @@ class ShanduUI:
             rows.append(("findings", str(findings)))
         audit = stats.get("citation_audit")
         if isinstance(audit, dict):
-            labels = {"supported": "supported", "partial": "partial", "unsupported": "removed"}
+            labels = {
+                "supported": "supported",
+                "partial": "partial",
+                "unsupported": "removed",
+                "unchecked": "unchecked",
+            }
             checked = " · ".join(
                 f"{audit[key]} {label}" for key, label in labels.items() if audit.get(key)
             )

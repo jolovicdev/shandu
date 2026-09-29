@@ -104,10 +104,10 @@ def test_result_summary_shows_citation_audit_counts() -> None:
         request=ResearchRequest(query="q"),
         report_markdown="# R",
         run_stats={
-            "citation_audit": {"supported": 36, "partial": 3, "unsupported": 2, "unchecked": 0}
+            "citation_audit": {"supported": 36, "partial": 3, "unsupported": 2, "unchecked": 4}
         },
     )
 
     console.print(ui.result_summary(result))
 
-    assert "36 supported · 3 partial · 2 removed" in console.export_text()
+    assert "36 supported · 3 partial · 2 removed · 4 unchecked" in console.export_text()

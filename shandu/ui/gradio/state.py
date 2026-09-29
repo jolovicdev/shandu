@@ -410,7 +410,12 @@ class GuiRunState:
         counts = self.run_stats.get("citation_audit")
         if not isinstance(counts, dict):
             return ""
-        labels = {"supported": "supported", "partial": "partial", "unsupported": "removed"}
+        labels = {
+            "supported": "supported",
+            "partial": "partial",
+            "unsupported": "removed",
+            "unchecked": "unchecked",
+        }
         return " · ".join(
             f"{counts[key]} {label}" for key, label in labels.items() if counts.get(key)
         )

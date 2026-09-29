@@ -87,7 +87,7 @@ def test_coverage_matrix_rates_independent_credible_support() -> None:
         _record("e5", "c.org", 0.3, Claim(statement="gamma", quote="x", sub_question=3)),
     ]
 
-    matrix = coverage_matrix(brief, evidence, build_findings(evidence))
+    matrix = coverage_matrix(brief, evidence)
 
     assert [(item.strength, item.credible_sources) for item in matrix] == [
         ("strong", 2),

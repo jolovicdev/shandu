@@ -10,9 +10,8 @@ from blackgeorge import Desk
 from blackgeorge.memory.sqlite import SQLiteMemoryStore
 import litellm
 
-from ..config import DEFAULT_MODEL, DEFAULT_STORAGE_DIR, config
+from ..config import DEFAULT_MODEL, DEFAULT_STORAGE_DIR, ROLES, config
 from .cost_tracker import CostTracker
-from .roles import ROLES
 
 logger = logging.getLogger(__name__)
 

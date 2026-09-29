@@ -88,6 +88,10 @@ def test_sections_see_only_their_evidence_and_the_edit_is_kept() -> None:
         for payload in desk.section_payloads
     }
     assert by_heading == {"## Caching": ["e1"], "## Serving": ["e2"]}
+    assert [
+        [entry["citation_id"] for entry in payload["citations"]]
+        for payload in desk.section_payloads
+    ] == [[1], [2]]
     assert desk.section_payloads[0]["findings"][0]["citation_ids"] == [1]
     assert draft.markdown.startswith("# Serving and Caching\n\n## Executive Summary")
     assert "Body for Serving" in draft.markdown

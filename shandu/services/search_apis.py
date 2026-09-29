@@ -44,32 +44,16 @@ class ApiSearchClient:
                 json={"query": query, "max_results": count, "search_depth": "basic"},
                 headers={"Authorization": f"Bearer {self._credential}"},
             )
-            return [
-                {
-                    "href": item.get("url"),
-                    "title": item.get("title"),
-                    "body": item.get("content"),
-                    "published_at": item.get("published_date"),
-                }
-                for item in payload.get("results") or []
-            ]
-        if self.provider == "brave":
+            items, body, date = payload.get("results"), "content", "published_date"
+        elif self.provider == "brave":
             payload = await self._request(
                 "GET",
                 "https://api.search.brave.com/res/v1/web/search",
                 params={"q": query, "count": count},
                 headers={"X-Subscription-Token": self._credential, "Accept": "application/json"},
             )
-            return [
-                {
-                    "href": item.get("url"),
-                    "title": item.get("title"),
-                    "body": item.get("description"),
-                    "published_at": item.get("page_age"),
-                }
-                for item in (payload.get("web") or {}).get("results") or []
-            ]
-        if self.provider == "exa":
+            items, body, date = (payload.get("web") or {}).get("results"), "description", "page_age"
+        elif self.provider == "exa":
             payload = await self._request(
                 "POST",
                 "https://api.exa.ai/search",
@@ -81,29 +65,27 @@ class ApiSearchClient:
                 },
                 headers={"x-api-key": self._credential},
             )
-            return [
+            items, body, date = payload.get("results"), "highlights", "publishedDate"
+        else:
+            payload = await self._request(
+                "GET",
+                f"{self._credential.rstrip('/')}/search",
+                params={"q": query, "format": "json"},
+            )
+            items, body, date = payload.get("results"), "content", "publishedDate"
+        entries: list[Mapping[str, Any]] = []
+        for item in (items or [])[:count]:
+            text = item.get(body)
+            entries.append(
                 {
                     "href": item.get("url"),
                     "title": item.get("title"),
-                    "body": " ".join(item.get("highlights") or []),
-                    "published_at": item.get("publishedDate"),
+                    # Exa returns highlight passages instead of one snippet.
+                    "body": " ".join(text) if isinstance(text, list) else text,
+                    "published_at": item.get(date),
                 }
-                for item in payload.get("results") or []
-            ]
-        payload = await self._request(
-            "GET",
-            f"{self._credential.rstrip('/')}/search",
-            params={"q": query, "format": "json"},
-        )
-        return [
-            {
-                "href": item.get("url"),
-                "title": item.get("title"),
-                "body": item.get("content"),
-                "published_at": item.get("publishedDate"),
-            }
-            for item in (payload.get("results") or [])[:count]
-        ]
+            )
+        return entries
 
     async def aclose(self) -> None:
         if self._session is not None and not self._session.closed:

@@ -24,3 +24,15 @@ def collect_llm_usage(report: Any) -> dict[str, Any] | None:
     if _is_number(cost):
         collected["cost_usd"] = cost
     return collected or None
+
+
+def add_usage(
+    total: dict[str, Any] | None, usage: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not usage:
+        return total
+    merged = dict(total or {})
+    for key, value in usage.items():
+        merged[key] = merged.get(key, 0) + value
+    merged["llm_calls"] = (total or {}).get("llm_calls", 0) + 1
+    return merged

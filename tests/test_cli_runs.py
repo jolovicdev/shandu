@@ -77,7 +77,6 @@ def test_list_prints_stored_runs(monkeypatch) -> None:
             query="How much memory do KV cache compression methods save at 128k context?",
             status="completed",
             created_at="2026-09-29T10:00:00+00:00",
-            updated_at="2026-09-29T10:05:00+00:00",
             citation_count=12,
             usd_spent=0.33,
             report_path=None,

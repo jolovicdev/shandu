@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 from dotenv import find_dotenv, load_dotenv
 
@@ -57,6 +57,9 @@ def infer_api_key_env_name(model: str) -> str:
 
 DEFAULT_MODEL = "deepseek/deepseek-flash"
 DEFAULT_STORAGE_DIR = "~/.shandu/storage"
+# Research roles that can each run on their own model.
+Role = Literal["planner", "researcher", "extractor", "synthesizer", "writer", "auditor"]
+ROLES: tuple[Role, ...] = get_args(Role)
 _LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 
 
@@ -154,9 +157,7 @@ class Config:
         if model:
             self._config["api"]["model"] = model
 
-        # The role names mirror runtime.roles.ROLES; importing them here would
-        # cycle through the runtime package back into this module.
-        for role in ("planner", "researcher", "extractor", "synthesizer", "writer", "auditor"):
+        for role in ROLES:
             role_model = os.getenv(f"SHANDU_MODEL_{role.upper()}")
             if role_model:
                 models = dict(self._config["api"].get("models") or {})

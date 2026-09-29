@@ -479,9 +479,7 @@ class LeadOrchestrator:
                     iteration,
                 )
                 if state.brief is not None:
-                    matrix = coverage_matrix(
-                        state.brief, state.evidence, build_findings(state.evidence)
-                    )
+                    matrix = coverage_matrix(state.brief, state.evidence)
                     gaps = {item.index for item in matrix if item.strength != "strong"}
                     synthesis = synthesis.model_copy(
                         update={

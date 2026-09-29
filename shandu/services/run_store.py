@@ -35,7 +35,6 @@ class CompletedIteration:
 
 @dataclass(frozen=True, slots=True)
 class StoredRun:
-    run_id: str
     request: ResearchRequest
     brief: ResearchBrief | None
     status: dict[str, Any]
@@ -49,7 +48,6 @@ class RunSummary:
     query: str
     status: str
     created_at: str
-    updated_at: str
     citation_count: int | None
     usd_spent: float | None
     report_path: Path | None
@@ -127,21 +125,23 @@ class RunStore:
         )
 
     def set_status(self, run_id: str, status: str, error: str | None = None) -> None:
-        path = self.run_dir(run_id) / "status.json"
-        payload = _read_json(path) or {}
-        payload.update({"status": status, "updated_at": _now()})
-        payload.pop("error", None)
-        if error:
-            payload["error"] = error
-        _write_json(path, payload)
+        self._patch_status(run_id, status=status, updated_at=_now(), error=error or None)
 
     def save_brief(self, run_id: str, brief: ResearchBrief) -> None:
         _write_json(self.run_dir(run_id) / "brief.json", brief.model_dump(mode="json"))
 
     def mark_research_done(self, run_id: str) -> None:
+        self._patch_status(run_id, research_done=True)
+
+    def _patch_status(self, run_id: str, **fields: Any) -> None:
+        """Update status.json fields; a None value removes the field."""
         path = self.run_dir(run_id) / "status.json"
         payload = _read_json(path) or {}
-        payload["research_done"] = True
+        for key, value in fields.items():
+            if value is None:
+                payload.pop(key, None)
+            else:
+                payload[key] = value
         _write_json(path, payload)
 
     def append_event(self, run_id: str, event: RunEvent) -> None:
@@ -195,12 +195,6 @@ class RunStore:
         )
         _write_json(directory / "result.json", {"run_stats": run_stats})
 
-    def exists(self, run_id: str) -> bool:
-        try:
-            return (self.run_dir(run_id) / "request.json").is_file()
-        except RunNotFoundError:
-            return False
-
     def load(self, run_id: str) -> StoredRun:
         directory = self.run_dir(run_id)
         request_payload = _read_json(directory / "request.json")
@@ -225,7 +219,6 @@ class RunStore:
         )
         brief_payload = _read_json(directory / "brief.json")
         return StoredRun(
-            run_id=run_id,
             request=ResearchRequest.model_validate(request_payload),
             brief=ResearchBrief.model_validate(brief_payload)
             if isinstance(brief_payload, dict)
@@ -280,7 +273,6 @@ class RunStore:
                     query=str(request.get("query", "")),
                     status=str(status.get("status", "unknown")),
                     created_at=str(status.get("created_at", "")),
-                    updated_at=str(status.get("updated_at", "")),
                     citation_count=citations if isinstance(citations, int) else None,
                     usd_spent=float(cost)
                     if isinstance(cost, (int, float)) and cost > 0

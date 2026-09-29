@@ -1,16 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
-Role = Literal["planner", "researcher", "extractor", "synthesizer", "writer", "auditor"]
-ROLES: tuple[Role, ...] = (
-    "planner",
-    "researcher",
-    "extractor",
-    "synthesizer",
-    "writer",
-    "auditor",
-)
+from ..config import Role
 
 
 def role_model(settings: Any, role: Role) -> str:

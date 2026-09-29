@@ -93,17 +93,14 @@ def build_findings(evidence: Iterable[EvidenceRecord]) -> list[Finding]:
 
 
 def coverage_matrix(
-    brief: ResearchBrief,
-    evidence: Iterable[EvidenceRecord],
-    findings: Iterable[Finding],
+    brief: ResearchBrief, evidence: list[EvidenceRecord]
 ) -> list[SubQuestionCoverage]:
     """Rate each sub-question by how many independent credible sites support it."""
-    evidence = list(evidence)
+    findings = build_findings(evidence)
     credibility = {
         record.evidence_id: record.credibility_score or 0.0 for record in evidence
     }
     domains = {record.evidence_id: record.domain or record.requested_url for record in evidence}
-    findings = list(findings)
     matrix: list[SubQuestionCoverage] = []
     for index, question in enumerate(brief.sub_questions, start=1):
         supporting = [finding for finding in findings if index in finding.sub_questions]

@@ -14,6 +14,7 @@ from ..contracts import (
     CoverageAssessment,
     EvidenceRecord,
     FinalReportDraft,
+    Finding,
     IterationPlan,
     IterationSynthesis,
     ReportSection,
@@ -41,7 +42,7 @@ from ..prompts import (
     synthesizer_instructions,
     synthesizer_job,
 )
-from ..runtime.costing import collect_llm_usage
+from ..runtime.costing import add_usage, collect_llm_usage
 from ..runtime.roles import role_model
 from ..services.findings import build_findings
 
@@ -65,18 +66,6 @@ _EFFORT_LENGTH = {"low": 0.75, "medium": 1.0, "high": 1.5, "max": 2.0}
 # An edit shorter than this share of the draft lost content, not repetition.
 _EDIT_MIN_RATIO = 0.6
 _MAX_CLARIFYING_QUESTIONS = 3
-
-
-def _add_usage(
-    total: dict[str, Any] | None, usage: dict[str, Any] | None
-) -> dict[str, Any] | None:
-    if not usage:
-        return total
-    merged = dict(total or {})
-    for key, value in usage.items():
-        merged[key] = merged.get(key, 0) + value
-    merged["llm_calls"] = (total or {}).get("llm_calls", 0) + 1
-    return merged
 
 
 def _failure_reason(report: Any, label: str) -> str:
@@ -368,12 +357,7 @@ class LeadAgent:
             "LeadReporter", "reporter", reporter_instructions(), reporter_job(payload, target_words)
         )
         if markdown is not None:
-            return FinalReportDraft(
-                title=self._extract_title(markdown, request.query),
-                executive_summary=self._extract_summary(markdown),
-                sections=[],
-                markdown=markdown,
-            )
+            return self._draft_from_markdown(markdown, request.query)
         logger.warning("Lead reporter call did not complete: %s", reason)
 
         self.fallback_count += 1
@@ -431,7 +415,7 @@ class LeadAgent:
             for _ in range(_REPORTER_ATTEMPTS):
                 job = Job(input=job_input, expected_output=reporter_expected_output())
                 report = await self._runtime.desk.arun(worker, job)
-                self.last_llm_usage = _add_usage(
+                self.last_llm_usage = add_usage(
                     self.last_llm_usage, collect_llm_usage(report)
                 )
                 if report.status != "completed":
@@ -460,18 +444,22 @@ class LeadAgent:
         records = [EvidenceRecord.model_validate(entry) for entry in evidence_payload]
         citation_ids = self._citation_ids(citations_payload)
         findings = build_findings(records)
+
+        def cited(finding: Finding) -> list[int]:
+            return sorted(
+                {
+                    citation_ids[evidence_id]
+                    for evidence_id in finding.evidence_ids
+                    if evidence_id in citation_ids
+                }
+            )
+
         finding_rows = [
             {
                 "id": index,
                 "statement": finding.statement,
                 "sub_questions": finding.sub_questions,
-                "citation_ids": sorted(
-                    {
-                        citation_ids[evidence_id]
-                        for evidence_id in finding.evidence_ids
-                        if evidence_id in citation_ids
-                    }
-                ),
+                "citation_ids": cited(finding),
                 "independent_sources": len(finding.domains),
                 "confidence": round(finding.confidence, 2),
             }
@@ -506,7 +494,7 @@ class LeadAgent:
         except Exception:
             logger.warning("Outline call failed", exc_info=True)
             return None
-        self.last_llm_usage = _add_usage(self.last_llm_usage, collect_llm_usage(report))
+        self.last_llm_usage = add_usage(self.last_llm_usage, collect_llm_usage(report))
         if report.status != "completed" or not isinstance(report.data, _OutlinePayload):
             logger.warning("Outline call did not complete: %s", _failure_reason(report, "outliner"))
             return None
@@ -533,6 +521,9 @@ class LeadAgent:
             section_evidence = [
                 entry for entry in evidence_payload if entry.get("evidence_id") in supporting
             ] or evidence_payload
+            section_citations = {
+                citation_ids.get(str(entry.get("evidence_id"))) for entry in section_evidence
+            }
             payload = {
                 "query": request.query,
                 "heading": section.heading.strip(),
@@ -547,18 +538,19 @@ class LeadAgent:
                     {
                         "statement": finding.statement,
                         "quotes": finding.quotes[:3],
-                        "citation_ids": sorted(
-                            {
-                                citation_ids[evidence_id]
-                                for evidence_id in finding.evidence_ids
-                                if evidence_id in citation_ids
-                            }
-                        ),
+                        "citation_ids": cited(finding),
                     }
                     for finding in chosen
                 ],
                 "evidence": self._compact_evidence(section_evidence, citations_payload),
-                "citations": self._compact_citations(citations_payload),
+                # Only the ledger entries this section's evidence can cite.
+                "citations": self._compact_citations(
+                    [
+                        entry
+                        for entry in citations_payload
+                        if entry.get("citation_id") in section_citations
+                    ]
+                ),
                 "today": date.today().isoformat(),
             }
             async with semaphore:
@@ -597,9 +589,13 @@ class LeadAgent:
                 reason or "it dropped sections or content",
             )
             markdown = f"# {title}\n\n{draft}"
+        return self._draft_from_markdown(markdown, request.query)
+
+    @classmethod
+    def _draft_from_markdown(cls, markdown: str, query: str) -> FinalReportDraft:
         return FinalReportDraft(
-            title=self._extract_title(markdown, request.query),
-            executive_summary=self._extract_summary(markdown),
+            title=cls._extract_title(markdown, query),
+            executive_summary=cls._extract_summary(markdown),
             sections=[],
             markdown=markdown,
         )

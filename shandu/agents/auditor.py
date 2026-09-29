@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from ..contracts import CitationEntry, CitationVerdict, EvidenceRecord
 from ..interfaces import RuntimeExecutionLike
 from ..prompts import auditor_instructions, auditor_job
-from ..runtime.costing import collect_llm_usage
+from ..runtime.costing import add_usage, collect_llm_usage
 from ..runtime.roles import role_model
 
 logger = logging.getLogger(__name__)
@@ -154,12 +154,7 @@ class CitationAuditor:
                     logger.warning("Citation audit batch failed", exc_info=True)
                     return {}
             calls += 1
-            batch_usage = collect_llm_usage(report)
-            if batch_usage:
-                merged = dict(usage or {})
-                for key, value in batch_usage.items():
-                    merged[key] = merged.get(key, 0) + value
-                usage = merged
+            usage = add_usage(usage, collect_llm_usage(report))
             if report.status != "completed" or not isinstance(report.data, _AuditPayload):
                 logger.warning(
                     "Citation audit batch did not complete: %s", getattr(report, "errors", None)

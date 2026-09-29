@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
+import lxml.etree
+import lxml.html
 from bs4 import BeautifulSoup
 
 from .constants import (
@@ -422,22 +424,34 @@ def _parse_plaintext(data: bytes) -> _ExtractionResult:
     return _ExtractionResult(title="", text=text)
 
 
+_UTF8_HTML_PARSER = lxml.html.HTMLParser(encoding="utf-8")
+
+
 def _extract_links(html: str, base_url: str) -> list[PageLink]:
     """Outbound links with their anchor text, links to other hosts first.
 
     Links to other hosts are where a page cites its sources, so they lead;
     site chrome is dropped before the scan so menus do not fill the list.
     """
-    soup = BeautifulSoup(html, "lxml")
-    for tag in soup(["nav", "header", "footer", "aside", "script", "style"]):
-        tag.decompose()
+    # Plain lxml: a second BeautifulSoup tree per page costs about 20 times
+    # more. UTF-8 bytes, because lxml rejects a str that carries an XML
+    # encoding declaration.
+    try:
+        document = lxml.html.fromstring(html.encode("utf-8"), parser=_UTF8_HTML_PARSER)
+    except lxml.etree.ParserError:
+        return []
+    for tag in document.xpath("//nav|//header|//footer|//aside|//script|//style"):
+        tag.drop_tree()
     base_host = urlsplit(base_url).netloc.lower().removeprefix("www.")
     external: list[PageLink] = []
     internal: list[PageLink] = []
     seen = {base_url}
-    for anchor in soup.find_all("a", href=True):
-        url = urljoin(base_url, str(anchor["href"])).split("#", 1)[0]
-        text = " ".join(anchor.get_text(" ").split())
+    for anchor in document.iter("a"):
+        href = anchor.get("href")
+        if not href:
+            continue
+        url = urljoin(base_url, href.strip()).split("#", 1)[0]
+        text = " ".join(anchor.text_content().split())
         if not url.startswith(("http://", "https://")) or url in seen or len(text) < 3:
             continue
         seen.add(url)

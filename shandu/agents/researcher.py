@@ -8,7 +8,6 @@ from typing import Any
 
 from blackgeorge import Job, Worker
 from blackgeorge.tools import Tool, tool
-from pydantic import BaseModel
 
 from ..contracts import EvidenceRecord, ResearchBrief, ResearchRequest, SubagentTask
 from ..interfaces import SearchServiceLike, SearchSubagentLike
@@ -30,10 +29,6 @@ _BUDGET_SPENT = "Budget spent. Stop calling tools and write your memo."
 # a dozen reads inside the loop's context.
 _EVIDENCE_CHARS_FOR_MODEL = 4000
 _LINKS_FOR_MODEL = 15
-
-
-class _FindingsMemo(BaseModel):
-    memo: str
 
 
 class ResearcherAgent(SearchSubagent):
@@ -246,15 +241,18 @@ class ResearcherAgent(SearchSubagent):
                     "today": date.today().isoformat(),
                 }
             ),
-            response_schema=_FindingsMemo,
+            # The memo is prose, so it stays plain text: DeepSeek in thinking
+            # mode rejects the forced tool_choice that structured retries send.
+            expected_output="A findings memo in markdown.",
         )
         memo = ""
         llm_usage: dict[str, Any] | None = None
         try:
             report = await self._runtime.desk.arun(worker, job)
             llm_usage = collect_llm_usage(report)
-            if report.status == "completed" and isinstance(report.data, _FindingsMemo):
-                memo = report.data.memo.strip()
+            content = getattr(report, "content", None)
+            if report.status == "completed" and isinstance(content, str) and content.strip():
+                memo = content.strip()
             else:
                 logger.warning(
                     "Researcher did not finish %s: %s", task.task_id, _report_reason(report)

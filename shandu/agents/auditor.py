@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 
 _UNITS_PER_BATCH = 12
 _BATCH_CONCURRENCY = 4
-_SOURCE_CHARS = 3000
+# Enough for the extractor's whole evidence text plus its quotes: the writer
+# saw that much, and a shorter cut marks true citations unsupported.
+_SOURCE_CHARS = 12_000
 _MARKER = re.compile(r"\[(\d+)\]")
 # A sentence ends at terminal punctuation followed by space and a capital,
 # digit, quote, or bracket; decimals and abbreviations like "e.g." stay whole.

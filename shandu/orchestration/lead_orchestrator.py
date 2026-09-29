@@ -596,6 +596,9 @@ class LeadOrchestrator:
             report_usage = absorb_llm_usage(
                 getattr(self._lead, "last_llm_usage", None)
             )
+            # The sectioned writer makes an outline, section, and edit call.
+            if report_usage and isinstance(report_usage.get("llm_calls"), int):
+                state.agent_model_calls += max(0, report_usage["llm_calls"] - 1)
             report_metrics = with_model_call_count(
                 {"report_words": len(rendered_report.markdown.split())}
             )
@@ -702,7 +705,9 @@ class LeadOrchestrator:
                 run_stats=run_stats,
             )
 
-            self._store.save_report(run_id, report_markdown, report_citations, run_stats)
+            self._store.save_report(
+                run_id, report_markdown, report_citations, run_stats, citation_audit
+            )
             self._store.set_status(run_id, "completed")
             await emit(
                 RunEvent(

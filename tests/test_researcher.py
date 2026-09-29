@@ -8,7 +8,6 @@ from shandu.agents.researcher import (
     _BUDGET_SPENT,
     ResearcherAgent,
     ResearcherByRequest,
-    _FindingsMemo,
 )
 from shandu.agents.search_subagent import _ExtractionPayload
 from shandu.contracts import (
@@ -78,7 +77,7 @@ class _ModelDesk:
         await self.script(tools, self.replies)
         return SimpleNamespace(
             status="completed",
-            data=_FindingsMemo(memo="KIVI saves 2.6x memory [arxiv]"),
+            content="KIVI saves 2.6x memory [arxiv]",
             metrics={"usage": {"total_tokens": 10}, "cost_usd": 0.001},
         )
 

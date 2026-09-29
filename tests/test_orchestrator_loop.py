@@ -430,7 +430,7 @@ def test_orchestrator_adds_cost_stats_when_available(tmp_path) -> None:
     request = ResearchRequest(query="cost-test", max_iterations=1, parallelism=1)
     result = asyncio.run(orchestrator.run(request))
 
-    assert result.run_stats["agent_model_calls"] == 4
+    assert result.run_stats["agent_model_calls"] == 5
     assert result.run_stats["metered_calls"] == 8
     assert result.run_stats["cost_coverage"] == "full"
     assert result.run_stats["llm_tokens"] == 12000

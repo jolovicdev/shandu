@@ -127,6 +127,18 @@ def test_audit_strips_only_unsupported_markers_where_they_appear() -> None:
     assert (outcome.calls, outcome.llm_usage["cost_usd"]) == (1, 0.001)
 
 
+def test_auditor_sees_long_evidence_whole() -> None:
+    desk = _AuditDesk()
+    long_text = "KIVI result sentence. " * 400
+
+    asyncio.run(
+        _auditor(desk).audit(_REPORT, _CITATIONS, [_record("e1", long_text), _EVIDENCE[1]])
+    )
+
+    source = next(item for item in desk.payloads[0]["sources"] if item["citation_id"] == 1)
+    assert source["text"] == long_text
+
+
 def test_failed_audit_batch_leaves_markers_unchecked() -> None:
     outcome = asyncio.run(_auditor(_AuditDesk(fail=True)).audit(_REPORT, _CITATIONS, _EVIDENCE))
 
@@ -187,7 +199,7 @@ def _run(tmp_path, audit: bool):
         lead_agent=_Lead(),
         search_subagent=_Subagent(),
         citation_agent=_Citations(),
-        run_store=RunStore(tmp_path),
+        run_store=RunStore(tmp_path / "runs"),
         report_service=ReportService(),
         auditor=auditor,
     )
@@ -210,6 +222,8 @@ def test_orchestrator_rerenders_after_audit_and_counts_verdicts(tmp_path) -> Non
         "unchecked": 0,
     }
     assert [item.verdict for item in result.citation_audit] == ["supported", "unsupported"]
+    stored = RunStore(tmp_path / "runs").load_result(result.run_id)
+    assert stored.citation_audit == result.citation_audit
 
 
 def test_audit_off_leaves_report_unchecked(tmp_path) -> None:

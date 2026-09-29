@@ -10,6 +10,7 @@ from typing import Any
 from ..config import config
 from ..contracts import (
     CitationEntry,
+    CitationVerdict,
     EvidenceRecord,
     IterationPlan,
     IterationSynthesis,
@@ -180,9 +181,14 @@ class RunStore:
         markdown: str,
         citations: list[CitationEntry],
         run_stats: dict[str, Any],
+        citation_audit: list[CitationVerdict] | None = None,
     ) -> None:
         directory = self.run_dir(run_id)
         (directory / "report.md").write_text(markdown, encoding="utf-8")
+        _write_json(
+            directory / "audit.json",
+            [verdict.model_dump(mode="json") for verdict in citation_audit or []],
+        )
         _write_json(
             directory / "citations.json",
             [entry.model_dump(mode="json") for entry in citations],
@@ -234,6 +240,7 @@ class RunStore:
         directory = self.run_dir(run_id)
         report = directory / "report.md"
         citations = _read_json(directory / "citations.json") or []
+        audit = _read_json(directory / "audit.json") or []
         result = _read_json(directory / "result.json") or {}
         return ResearchRunResult(
             run_id=run_id,
@@ -241,6 +248,7 @@ class RunStore:
             brief=stored.brief,
             report_markdown=report.read_text(encoding="utf-8") if report.is_file() else "",
             citations=[CitationEntry.model_validate(entry) for entry in citations],
+            citation_audit=[CitationVerdict.model_validate(entry) for entry in audit],
             evidence=[record for _, record in stored.evidence],
             iteration_summaries=[item.synthesis for item in stored.iterations],
             run_stats=dict(result.get("run_stats") or {}),

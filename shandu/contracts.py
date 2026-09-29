@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 SourceClass = Literal[
     "primary",
@@ -48,6 +48,22 @@ class ResearchRequest(BaseModel):
     # Answers the user gave to clarifying questions, one "question answer"
     # line each.
     clarifications: list[str] = Field(default_factory=list)
+    # Bare hosts; a host also matches its subdomains.
+    include_domains: list[str] = Field(default_factory=list)
+    exclude_domains: list[str] = Field(default_factory=list)
+    # Pages dated entirely before this day are skipped; undated pages stay.
+    since: date | None = None
+
+    @field_validator("include_domains", "exclude_domains")
+    @classmethod
+    def _bare_hosts(cls, domains: list[str]) -> list[str]:
+        hosts: list[str] = []
+        for domain in domains:
+            host = domain.strip().lower().split("://")[-1].split("/")[0]
+            host = host.removeprefix("www.")
+            if host and host not in hosts:
+                hosts.append(host)
+        return hosts
 
 
 class ResearchBrief(BaseModel):

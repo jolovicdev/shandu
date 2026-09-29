@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import Callable, Coroutine
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -190,6 +191,18 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 @click.option(
     "--clarify", is_flag=True, help="Answer up to three clarifying questions first."
 )
+@click.option(
+    "--include-domain", "include_domains", multiple=True, help="Only use this site; repeatable."
+)
+@click.option(
+    "--exclude-domain", "exclude_domains", multiple=True, help="Never use this site; repeatable."
+)
+@click.option(
+    "--since",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Skip pages dated before this day (YYYY-MM-DD).",
+)
 def run_command(
     query: str,
     max_iterations: int | None,
@@ -202,6 +215,9 @@ def run_command(
     json_output: bool,
     verbose: bool,
     clarify: bool,
+    include_domains: tuple[str, ...],
+    exclude_domains: tuple[str, ...],
+    since: datetime | None,
 ) -> None:
     diag = err_console if (json_output and not output) else console
     default_detail = _resolve_detail_level(
@@ -229,6 +245,9 @@ def run_command(
             max_pages_per_task=max_pages_per_task
             if max_pages_per_task is not None
             else int(config.get("orchestration", "max_pages_per_task", 6)),
+            include_domains=list(include_domains),
+            exclude_domains=list(exclude_domains),
+            since=since.date() if since else None,
         )
     except ValidationError as exc:
         problems = "; ".join(

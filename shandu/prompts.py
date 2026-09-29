@@ -35,7 +35,8 @@ def brief_instructions() -> str:
         "answer with evidence, a comparison table with a recommendation, a "
         "timeline, or an explainer.\n\n"
         "Use the clarifications when present; they override your reading of the "
-        "query. Do not answer the query."
+        "query. A since date bounds time_window, and include_domains or "
+        "exclude_domains bound source_types. Do not answer the query."
     )
 
 

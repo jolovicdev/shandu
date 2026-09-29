@@ -113,6 +113,9 @@ class LeadAgent:
         payload = {
             "query": request.query,
             "clarifications": request.clarifications,
+            "since": request.since.isoformat() if request.since else None,
+            "include_domains": request.include_domains,
+            "exclude_domains": request.exclude_domains,
             "today": date.today().isoformat(),
         }
         worker = Worker(

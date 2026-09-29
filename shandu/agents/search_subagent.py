@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import logging
+import re
 from collections.abc import Awaitable, Callable, Collection, Sequence
+from datetime import date
 from itertools import zip_longest
 from typing import Any, Literal
 from urllib.parse import urlparse, urlsplit, urlunsplit
@@ -34,6 +37,29 @@ _SNIPPET_FALLBACK_METHOD = "search_snippet_fallback"
 _SNIPPET_ONLY_CREDIBILITY = 0.20
 _MAX_QUERIES_PER_TASK = 6
 _EXTRACTION_CONCURRENCY = 8
+
+
+def _host_matches(url: str, domains: Collection[str]) -> bool:
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
+def _dated_before(published_at: str | None, since: date) -> bool:
+    """True only when the whole period a date names ends before ``since``.
+
+    A bare year counts as its last day and a year-month as the month's last
+    day, so a coarse date never excludes a page that may fall in range.
+    """
+    match = re.match(r"(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?", (published_at or "").strip())
+    if match is None:
+        return False
+    year = int(match.group(1))
+    month = int(match.group(2) or 12)
+    try:
+        day = int(match.group(3) or calendar.monthrange(year, month)[1])
+        return date(year, month, day) < since
+    except ValueError:
+        return False
 
 
 def _report_reason(report: Any) -> str:
@@ -136,6 +162,12 @@ class SearchSubagent:
     ) -> list[EvidenceRecord]:
         del run_scope
         queries = (task.search_queries or [task.focus])[:_MAX_QUERIES_PER_TASK]
+        if request.include_domains:
+            queries = [
+                f"{query} site:{domain}"
+                for query in queries
+                for domain in request.include_domains
+            ][:_MAX_QUERIES_PER_TASK]
 
         async def run_query(query: str) -> Sequence[Any]:
             await self._emit_trace(
@@ -183,6 +215,12 @@ class SearchSubagent:
             entries: list[dict[str, str]] = []
             for hit in hits:
                 if hit.url in seen:
+                    continue
+                if request.include_domains and not _host_matches(
+                    hit.url, request.include_domains
+                ):
+                    continue
+                if _host_matches(hit.url, request.exclude_domains):
                     continue
                 seen.add(hit.url)
                 entries.append(
@@ -234,6 +272,13 @@ class SearchSubagent:
         successful_pages = [p for p in pages if p.fetch_error is None]
         missed_pages = [p for p in pages if p.fetch_error is not None]
         missed_count = max(scrape_missed, len(missed_pages), max(0, len(urls) - len(pages)))
+        since = request.since
+        too_old = [
+            page
+            for page in successful_pages
+            if since is not None and _dated_before(page.published_at, since)
+        ]
+        successful_pages = [p for p in successful_pages if p not in too_old]
         await self._emit_trace(
             progress_callback,
             "scrape_completed",
@@ -241,6 +286,7 @@ class SearchSubagent:
                 "task_id": task.task_id,
                 "scraped": len(successful_pages),
                 "missed": missed_count,
+                "dated_before_since": len(too_old),
                 "urls": [page.url for page in successful_pages],
             },
         )
@@ -353,7 +399,7 @@ class SearchSubagent:
             )
 
         evidence: list[EvidenceRecord] = await asyncio.gather(
-            *(process_page(page) for page in pages)
+            *(process_page(page) for page in pages if page not in too_old)
         )
 
         for url in urls:

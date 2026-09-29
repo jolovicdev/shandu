@@ -89,6 +89,13 @@ class ShanduEngine:
         runner = get_async_runner()
         return runner.run(self.run(request, progress_callback))
 
+    async def clarifying_questions(self, query: str) -> list[str]:
+        acquire_bootstrap_run()
+        try:
+            return await self._orchestrator.clarifying_questions(query)
+        finally:
+            release_bootstrap_run()
+
     async def resume(
         self,
         run_id: str,

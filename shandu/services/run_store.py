@@ -13,6 +13,7 @@ from ..contracts import (
     EvidenceRecord,
     IterationPlan,
     IterationSynthesis,
+    ResearchBrief,
     ResearchRequest,
     ResearchRunResult,
     RunEvent,
@@ -35,6 +36,7 @@ class CompletedIteration:
 class StoredRun:
     run_id: str
     request: ResearchRequest
+    brief: ResearchBrief | None
     status: dict[str, Any]
     evidence: list[tuple[int, EvidenceRecord]]
     iterations: list[CompletedIteration]
@@ -132,6 +134,9 @@ class RunStore:
             payload["error"] = error
         _write_json(path, payload)
 
+    def save_brief(self, run_id: str, brief: ResearchBrief) -> None:
+        _write_json(self.run_dir(run_id) / "brief.json", brief.model_dump(mode="json"))
+
     def mark_research_done(self, run_id: str) -> None:
         path = self.run_dir(run_id) / "status.json"
         payload = _read_json(path) or {}
@@ -212,9 +217,13 @@ class RunStore:
             ),
             key=lambda item: item.index,
         )
+        brief_payload = _read_json(directory / "brief.json")
         return StoredRun(
             run_id=run_id,
             request=ResearchRequest.model_validate(request_payload),
+            brief=ResearchBrief.model_validate(brief_payload)
+            if isinstance(brief_payload, dict)
+            else None,
             status=_read_json(directory / "status.json") or {},
             evidence=evidence,
             iterations=iterations,
@@ -229,6 +238,7 @@ class RunStore:
         return ResearchRunResult(
             run_id=run_id,
             request=stored.request,
+            brief=stored.brief,
             report_markdown=report.read_text(encoding="utf-8") if report.is_file() else "",
             citations=[CitationEntry.model_validate(entry) for entry in citations],
             evidence=[record for _, record in stored.evidence],

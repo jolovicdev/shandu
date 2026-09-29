@@ -187,6 +187,9 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 @click.option("--output", default=None)
 @click.option("--json-output", is_flag=True)
 @click.option("--verbose", is_flag=True)
+@click.option(
+    "--clarify", is_flag=True, help="Answer up to three clarifying questions first."
+)
 def run_command(
     query: str,
     max_iterations: int | None,
@@ -198,6 +201,7 @@ def run_command(
     output: str | None,
     json_output: bool,
     verbose: bool,
+    clarify: bool,
 ) -> None:
     diag = err_console if (json_output and not output) else console
     default_detail = _resolve_detail_level(
@@ -234,6 +238,10 @@ def run_command(
         raise click.ClickException(f"Invalid research options: {problems}") from exc
 
     engine = ShanduEngine.from_config()
+    if clarify:
+        request = request.model_copy(
+            update={"clarifications": _ask_clarifications(engine, query)}
+        )
     diag.print(
         ui.header(
             request.query,
@@ -253,6 +261,16 @@ def run_command(
         verbose,
     )
     _deliver(engine, result, output, json_output, diag)
+
+
+def _ask_clarifications(engine: ShanduEngine, query: str) -> list[str]:
+    questions = get_async_runner().run(engine.clarifying_questions(query))
+    answers: list[str] = []
+    for question in questions:
+        answer = click.prompt(question, default="", show_default=False, err=True).strip()
+        if answer:
+            answers.append(f"{question} {answer}")
+    return answers
 
 
 def _run_to_completion(

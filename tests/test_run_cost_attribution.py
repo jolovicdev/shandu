@@ -9,7 +9,7 @@ from blackgeorge.core.event import Event
 
 from shandu.agents.lead import LeadAgent, _PlanPayload, _SynthesisPayload
 from shandu.agents.search_subagent import SearchSubagent, _ExtractionPayload
-from shandu.contracts import ResearchRequest, SubagentTask
+from shandu.contracts import ResearchBrief, ResearchRequest, SubagentTask
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
 from shandu.runtime.bootstrap import RuntimeBootstrap, RuntimeSettings
 from shandu.services.ai_search import AISearchService
@@ -46,7 +46,10 @@ class _LeadDesk:
     async def arun(self, worker, job):
         del worker
         schema = getattr(job, "response_schema", None)
-        if schema is _PlanPayload:
+        if schema is ResearchBrief:
+            data = ResearchBrief(scope="s", sub_questions=["q"])
+            content = None
+        elif schema is _PlanPayload:
             data = _PlanPayload(
                 goals=["g"], subagent_tasks=[], continue_loop=False, stop_reason=None
             )
@@ -112,10 +115,10 @@ def test_lead_usage_reaches_completion_events_and_run_stats(tmp_path) -> None:
     assert plan_events[0].metrics.get("llm_usage") == _USAGE
     usage = result.run_stats.get("llm_usage")
     assert usage is not None
-    assert usage["prompt_tokens"] == 240
-    assert usage["completion_tokens"] == 80
-    assert usage["total_tokens"] == 320
-    assert usage["cost_usd"] == pytest.approx(0.025)
+    assert usage["prompt_tokens"] == 360
+    assert usage["completion_tokens"] == 120
+    assert usage["total_tokens"] == 480
+    assert usage["cost_usd"] == pytest.approx(0.0375)
 
 
 class _ExtractionDesk:
@@ -222,8 +225,11 @@ class _UsageLead:
     def last_llm_usage(self) -> dict | None:
         return self.usage
 
+    async def create_brief(self, request):
+        return ResearchBrief(scope=request.query, sub_questions=[request.query])
+
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         from shandu.contracts import IterationPlan, SubagentTask
 
@@ -243,7 +249,7 @@ class _UsageLead:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None
     ):
         from shandu.contracts import IterationSynthesis
 
@@ -251,7 +257,7 @@ class _UsageLead:
         return IterationSynthesis(summary="s")
 
     async def build_final_report(
-        self, request, iteration_summaries, evidence_payload, citations_payload
+        self, request, iteration_summaries, evidence_payload, citations_payload, brief=None
     ):
         from shandu.contracts import FinalReportDraft
 
@@ -291,12 +297,12 @@ def test_overlapping_runs_report_independent_costs(tmp_path) -> None:
 
     first, second = asyncio.run(main())
 
-    assert first.run_stats["metered_calls"] == 3
-    assert first.run_stats["llm_tokens"] == 300
-    assert first.run_stats["usd_spent"] == pytest.approx(0.03)
-    assert second.run_stats["metered_calls"] == 3
-    assert second.run_stats["llm_tokens"] == 600
-    assert second.run_stats["usd_spent"] == pytest.approx(0.06)
+    assert first.run_stats["metered_calls"] == 4
+    assert first.run_stats["llm_tokens"] == 400
+    assert first.run_stats["usd_spent"] == pytest.approx(0.04)
+    assert second.run_stats["metered_calls"] == 4
+    assert second.run_stats["llm_tokens"] == 800
+    assert second.run_stats["usd_spent"] == pytest.approx(0.08)
 
 
 def test_inspect_run_aggregates_usage(tmp_path) -> None:

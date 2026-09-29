@@ -12,6 +12,7 @@ from blackgeorge.utils import new_id
 from ..contracts import (
     EvidenceRecord,
     IterationSynthesis,
+    ResearchBrief,
     ResearchRequest,
     ResearchRunResult,
     RunEvent,
@@ -43,6 +44,7 @@ def _empty_llm_totals() -> dict[str, Any]:
 
 @dataclass
 class _RunState:
+    brief: ResearchBrief | None = None
     evidence: list[EvidenceRecord] = field(default_factory=list)
     summaries: list[IterationSynthesis] = field(default_factory=list)
     task_focuses: list[str] = field(default_factory=list)
@@ -74,7 +76,7 @@ class _RunState:
         when ``include_partial`` is set: a resumed run re-plans that
         iteration, while a report rewrite uses everything that was read.
         """
-        state = cls()
+        state = cls(brief=stored.brief)
         completed = {item.index for item in stored.iterations}
         state.evidence = [
             record
@@ -119,6 +121,9 @@ class LeadOrchestrator:
         self._runtime_settings = (
             dict(runtime_settings) if runtime_settings is not None else None
         )
+
+    async def clarifying_questions(self, query: str) -> list[str]:
+        return await self._lead.clarifying_questions(query)
 
     async def run(
         self,
@@ -224,6 +229,36 @@ class LeadOrchestrator:
                     updated["agent_model_calls"] = state.agent_model_calls
                 return updated
 
+            if state.brief is None and not state.research_done:
+                state.agent_model_calls += 1
+                state.brief = await self._lead.create_brief(request)
+                brief_usage = absorb_llm_usage(
+                    getattr(self._lead, "last_llm_usage", None)
+                )
+                if lead_fell_back():
+                    await emit(
+                        RunEvent(
+                            stage="error",
+                            message="Lead brief writer fell back to the raw query",
+                            payload=self._fallback_payload("create_brief"),
+                        ),
+                    )
+                    self._record_fallback_reason(state.fallback_reasons, "create_brief")
+                self._store.save_brief(run_id, state.brief)
+                brief_metrics = with_model_call_count(
+                    {"sub_questions": len(state.brief.sub_questions)}
+                )
+                if brief_usage:
+                    brief_metrics["llm_usage"] = brief_usage
+                await emit(
+                    RunEvent(
+                        stage="plan",
+                        message="Research brief ready",
+                        metrics=brief_metrics,
+                        payload={"sub_questions": list(state.brief.sub_questions)},
+                    ),
+                )
+
             for iteration in range(
                 state.next_iteration,
                 state.next_iteration if state.research_done else request.max_iterations,
@@ -238,6 +273,7 @@ class LeadOrchestrator:
                     iteration=iteration,
                     prior_summaries=state.summaries,
                     memory_context=memory_context,
+                    brief=state.brief,
                 )
                 plan_usage = absorb_llm_usage(
                     getattr(self._lead, "last_llm_usage", None)
@@ -408,6 +444,7 @@ class LeadOrchestrator:
                         item.model_dump(mode="json") for item in iteration_evidence
                     ],
                     prior_summaries=state.summaries,
+                    brief=state.brief,
                 )
                 synthesis_usage = absorb_llm_usage(
                     getattr(self._lead, "last_llm_usage", None)
@@ -464,7 +501,11 @@ class LeadOrchestrator:
                     if iteration + 1 >= request.max_iterations:
                         break
                     if not self._adaptive_should_continue(
-                        synthesis.coverage, state.evidence, request.max_iterations, iteration
+                        synthesis.coverage,
+                        state.evidence,
+                        request.max_iterations,
+                        iteration,
+                        open_sub_questions=len(synthesis.open_sub_questions),
                     ):
                         break
                 elif not synthesis.continue_loop:
@@ -487,6 +528,7 @@ class LeadOrchestrator:
                 iteration_summaries=state.summaries,
                 evidence_payload=[item.model_dump(mode="json") for item in state.evidence],
                 citations_payload=[entry.model_dump(mode="json") for entry in citations],
+                brief=state.brief,
             )
             if lead_fell_back():
                 await emit(
@@ -552,6 +594,7 @@ class LeadOrchestrator:
             result = ResearchRunResult(
                 run_id=run_id,
                 request=request,
+                brief=state.brief,
                 report_markdown=report_markdown,
                 citations=report_citations,
                 evidence=state.evidence,
@@ -615,9 +658,14 @@ class LeadOrchestrator:
         cumulative_evidence: list[Any],
         max_iterations: int,
         iteration: int,
+        open_sub_questions: int = 0,
     ) -> bool:
         if iteration + 1 >= max_iterations:
             return False
+        # An unanswered brief sub-question outweighs every other stop signal
+        # while the iteration budget lasts.
+        if open_sub_questions > 0:
+            return True
 
         domains: set[str] = set()
         high_conf = 0

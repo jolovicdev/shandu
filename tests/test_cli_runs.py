@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -88,3 +89,29 @@ def test_legacy_storage_in_cwd_prints_notice(monkeypatch, tmp_path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "legacy storage" in result.stderr
+
+
+def test_run_clarify_sends_answered_questions_with_request(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def clarifying_questions(query):
+        return ["Which region?", "Which year?"]
+
+    async def run(request, progress_callback=None):
+        seen["clarifications"] = request.clarifications
+        return ResearchRunResult(run_id="r1", request=request, report_markdown="Body")
+
+    engine = SimpleNamespace(
+        clarifying_questions=clarifying_questions,
+        run=run,
+        report_path=lambda run_id: Path("missing.md"),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    result = CliRunner(mix_stderr=False).invoke(
+        cli, ["run", "q", "--clarify"], input="EU\n\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["clarifications"] == ["Which region? EU"]

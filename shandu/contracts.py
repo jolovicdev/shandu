@@ -45,6 +45,18 @@ class ResearchRequest(BaseModel):
     depth_policy: Literal["adaptive", "fixed"] = "adaptive"
     max_results_per_query: int = Field(default=8, ge=1, le=20)
     max_pages_per_task: int = Field(default=6, ge=1, le=10)
+    # Answers the user gave to clarifying questions, one "question answer"
+    # line each.
+    clarifications: list[str] = Field(default_factory=list)
+
+
+class ResearchBrief(BaseModel):
+    scope: str
+    sub_questions: list[str] = Field(default_factory=list)
+    time_window: str | None = None
+    region: str | None = None
+    source_types: list[str] = Field(default_factory=list)
+    deliverable: str = ""
 
 
 class SubagentTask(BaseModel):
@@ -52,6 +64,8 @@ class SubagentTask(BaseModel):
     focus: str
     search_queries: list[str] = Field(default_factory=list)
     expected_output: str = ""
+    # 1-based indices into ResearchBrief.sub_questions that this task serves.
+    sub_questions: list[int] = Field(default_factory=list)
 
 
 class IterationPlan(BaseModel):
@@ -111,6 +125,8 @@ class IterationSynthesis(BaseModel):
     continue_loop: bool = True
     stop_reason: str | None = None
     coverage: CoverageAssessment | None = None
+    # 1-based indices of brief sub-questions the evidence does not yet answer.
+    open_sub_questions: list[int] = Field(default_factory=list)
 
 
 class ReportSection(BaseModel):
@@ -159,6 +175,7 @@ class RunEvent(BaseModel):
 class ResearchRunResult(BaseModel):
     run_id: str
     request: ResearchRequest
+    brief: ResearchBrief | None = None
     report_markdown: str
     citations: list[CitationEntry] = Field(default_factory=list)
     evidence: list[EvidenceRecord] = Field(default_factory=list)

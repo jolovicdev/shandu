@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from shandu.contracts import (
+    ResearchBrief,
     EvidenceRecord,
     FinalReportDraft,
     IterationPlan,
@@ -24,15 +25,22 @@ class _Lead:
 
     def __init__(self, fail_synthesis_at: int | None = None) -> None:
         self.fail_synthesis_at = fail_synthesis_at
+        self.briefs_written = 0
+        self.briefs_seen: list[ResearchBrief | None] = []
         self.planned: list[int] = []
         self.report_request: ResearchRequest | None = None
         self.report_summaries: list[str] = []
         self.report_evidence_ids: list[str] = []
 
+    async def create_brief(self, request):
+        self.briefs_written += 1
+        return ResearchBrief(scope=request.query, sub_questions=["sq one", "sq two"])
+
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         del request, prior_summaries, memory_context
+        self.briefs_seen.append(brief)
         self.planned.append(iteration)
         return IterationPlan(
             iteration_index=iteration,
@@ -46,17 +54,19 @@ class _Lead:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None
     ):
         del request, iteration_evidence, prior_summaries
+        self.briefs_seen.append(brief)
         if iteration == self.fail_synthesis_at:
             raise RuntimeError("synthesis boom")
         return IterationSynthesis(summary=f"summary {iteration}")
 
     async def build_final_report(
-        self, request, iteration_summaries, evidence_payload, citations_payload
+        self, request, iteration_summaries, evidence_payload, citations_payload, brief=None
     ):
         del citations_payload
+        self.briefs_seen.append(brief)
         self.report_request = request
         self.report_summaries = [item.summary for item in iteration_summaries]
         self.report_evidence_ids = [item["evidence_id"] for item in evidence_payload]
@@ -137,6 +147,19 @@ def test_resume_continues_after_last_completed_iteration(tmp_path) -> None:
     assert result.run_id == run_id
     assert store.load(run_id).status["status"] == "completed"
     assert store.report_path(run_id).read_text(encoding="utf-8").startswith("# T")
+
+
+def test_brief_reaches_every_lead_call_and_survives_resume(tmp_path) -> None:
+    store = RunStore(tmp_path)
+    run_id = _crashed_run(store)
+    lead = _Lead()
+
+    result = asyncio.run(_orchestrator(store, lead, _Subagent("new")).resume(run_id))
+
+    assert lead.briefs_written == 0
+    assert [brief.sub_questions for brief in lead.briefs_seen] == [["sq one", "sq two"]] * 3
+    assert result.brief is not None
+    assert result.brief.sub_questions == ["sq one", "sq two"]
 
 
 def test_rewrite_report_uses_stored_evidence_without_searching(tmp_path) -> None:

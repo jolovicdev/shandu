@@ -9,6 +9,7 @@ import pytest
 from shandu.agents.lead import LeadAgent
 from shandu.agents.search_subagent import SearchSubagent
 from shandu.contracts import (
+    ResearchBrief,
     IterationPlan,
     IterationSynthesis,
     ResearchRequest,
@@ -39,12 +40,15 @@ def _request() -> ResearchRequest:
 
 @pytest.mark.parametrize(
     "method",
-    ["create_iteration_plan", "synthesize_iteration", "build_final_report"],
+    ["create_brief", "create_iteration_plan", "synthesize_iteration", "build_final_report"],
 )
 def test_lead_failure_logs_and_exposes_reason(caplog, method) -> None:
     agent = LeadAgent(runtime=_ModelRuntime(_FailedDesk()))
     with caplog.at_level(logging.WARNING, logger="shandu.agents.lead"):
-        if method == "create_iteration_plan":
+        if method == "create_brief":
+            brief = asyncio.run(agent.create_brief(_request()))
+            assert brief.sub_questions == ["q"]
+        elif method == "create_iteration_plan":
             plan = asyncio.run(agent.create_iteration_plan(_request(), 0, [], []))
             assert isinstance(plan, IterationPlan)
         elif method == "synthesize_iteration":
@@ -162,8 +166,11 @@ class _FailingLead:
     fallback_count = 0
     last_fallback_reason: str | None = None
 
+    async def create_brief(self, request):
+        return ResearchBrief(scope=request.query, sub_questions=[request.query])
+
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         del request, prior_summaries, memory_context
         type(self).fallback_count += 1
@@ -176,12 +183,12 @@ class _FailingLead:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None
     ):
         raise AssertionError("unreachable")
 
     async def build_final_report(
-        self, request, iteration_summaries, evidence_payload, citations_payload
+        self, request, iteration_summaries, evidence_payload, citations_payload, brief=None
     ):
         from shandu.contracts import FinalReportDraft
 
@@ -349,6 +356,19 @@ def test_normalize_tasks_drops_empty_focus_and_repairs_ids() -> None:
     assert tasks[0].search_queries == ["first lane"]
     assert tasks[1].task_id != "dup"
     assert tasks[1].task_id.startswith("iter_1_task_")
+
+
+def test_normalize_tasks_keeps_only_existing_sub_question_indices() -> None:
+    request = ResearchRequest(query="q", max_iterations=2, parallelism=3)
+
+    tasks = LeadAgent._normalize_tasks(
+        [SubagentTask(task_id="t1", focus="lane", sub_questions=[3, 0, 2, 9, 2])],
+        request,
+        0,
+        sub_question_count=3,
+    )
+
+    assert tasks[0].sub_questions == [2, 3]
 
 
 def test_fallback_tasks_cover_parallelism_with_unique_ids() -> None:

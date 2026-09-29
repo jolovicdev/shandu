@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from shandu.contracts import (
+    ResearchBrief,
     CitationEntry,
     CoverageAssessment,
     EvidenceRecord,
@@ -22,8 +23,11 @@ from shandu.services.report import ReportService
 class FakeLeadAgent:
     fallback_count = 0
 
+    async def create_brief(self, request):
+        return ResearchBrief(scope=request.query, sub_questions=[request.query])
+
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         del request, prior_summaries, memory_context
         return IterationPlan(
@@ -41,7 +45,7 @@ class FakeLeadAgent:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None
     ):
         del request, iteration_evidence, prior_summaries
         return IterationSynthesis(
@@ -53,7 +57,7 @@ class FakeLeadAgent:
         )
 
     async def build_final_report(
-        self, request, iteration_summaries, evidence_payload, citations_payload
+        self, request, iteration_summaries, evidence_payload, citations_payload, brief=None
     ):
         del request, evidence_payload, citations_payload
         from shandu.contracts import FinalReportDraft, ReportSection
@@ -167,7 +171,7 @@ def test_orchestrator_returns_report_normalized_citation_ledger(tmp_path) -> Non
 
 class ParallelLeadAgent(FakeLeadAgent):
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         del request, prior_summaries, memory_context
         if iteration > 0:
@@ -211,7 +215,7 @@ class ParallelLeadAgent(FakeLeadAgent):
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None
     ):
         del request, iteration_evidence, prior_summaries
         return IterationSynthesis(
@@ -425,11 +429,11 @@ def test_orchestrator_adds_cost_stats_when_available(tmp_path) -> None:
     request = ResearchRequest(query="cost-test", max_iterations=1, parallelism=1)
     result = asyncio.run(orchestrator.run(request))
 
-    assert result.run_stats["agent_model_calls"] == 3
-    assert result.run_stats["metered_calls"] == 6
+    assert result.run_stats["agent_model_calls"] == 4
+    assert result.run_stats["metered_calls"] == 8
     assert result.run_stats["cost_coverage"] == "full"
-    assert result.run_stats["llm_tokens"] == 9000
-    assert result.run_stats["usd_spent"] == 0.06
+    assert result.run_stats["llm_tokens"] == 12000
+    assert result.run_stats["usd_spent"] == 0.08
 
 
 def test_run_stats_include_source_class_and_dated_summary(tmp_path) -> None:
@@ -592,6 +596,44 @@ def test_adaptive_loop_weighs_credibility() -> None:
     assert LeadOrchestrator._adaptive_should_continue(coverage, unscored, 3, 0) is False
 
 
+def test_adaptive_continues_while_brief_sub_questions_stay_open() -> None:
+    coverage = SimpleNamespace(
+        coverage_score=0.9,
+        open_question_severity=0.1,
+        contradiction_count=0,
+        should_continue=False,
+    )
+    strong = [
+        EvidenceRecord(
+            evidence_id=f"e{i}",
+            task_id="t",
+            query="q",
+            requested_url=f"https://d{i}.example/a",
+            domain=f"d{i}.example",
+            title="T",
+            snippet="s",
+            extracted_text="x",
+            confidence=0.9,
+            credibility_score=0.9,
+        )
+        for i in range(3)
+    ]
+
+    assert LeadOrchestrator._adaptive_should_continue(coverage, strong, 3, 0) is False
+    assert (
+        LeadOrchestrator._adaptive_should_continue(
+            coverage, strong, 3, 0, open_sub_questions=1
+        )
+        is True
+    )
+    assert (
+        LeadOrchestrator._adaptive_should_continue(
+            coverage, strong, 3, 2, open_sub_questions=1
+        )
+        is False
+    )
+
+
 class CapturingSearchSubagent(FakeSearchSubagent):
     def __init__(self) -> None:
         self.seen_calls: list[set[str]] = []
@@ -631,7 +673,7 @@ class _StoppingLead(FakeLeadAgent):
         self._coverage = coverage
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None
     ):
         del request, iteration, iteration_evidence, prior_summaries
         return IterationSynthesis(
@@ -736,7 +778,7 @@ def test_adaptive_without_coverage_uses_evidence_signals(tmp_path) -> None:
 
 class _PlanStoppingLead(FakeLeadAgent):
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         del request, prior_summaries, memory_context
         return IterationPlan(
@@ -784,7 +826,7 @@ class _ContextCapturingLead(FakeLeadAgent):
         self.contexts: list[list[tuple[str, object]]] = []
 
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         self.contexts.append(list(memory_context))
         return await super().create_iteration_plan(
@@ -808,7 +850,7 @@ def test_planner_context_lists_prior_focuses_and_queries_only(tmp_path) -> None:
 
 class _RaisingLead(FakeLeadAgent):
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         raise RuntimeError("plan boom")
 
@@ -847,7 +889,7 @@ def test_failed_run_persists_failed_status_and_events(tmp_path) -> None:
 
 class _BlockingLead(FakeLeadAgent):
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         await asyncio.sleep(3600)
 

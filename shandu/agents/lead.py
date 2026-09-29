@@ -14,11 +14,16 @@ from ..contracts import (
     IterationPlan,
     IterationSynthesis,
     ReportSection,
+    ResearchBrief,
     ResearchRequest,
     SubagentTask,
 )
 from ..interfaces import RuntimeExecutionLike
 from ..prompts import (
+    brief_instructions,
+    brief_job,
+    clarifier_instructions,
+    clarifier_job,
     planner_instructions,
     planner_job,
     reporter_expected_output,
@@ -41,6 +46,8 @@ _MIN_EVIDENCE_TEXT_CHARS = 2200
 # channel and then stops, so the call completes with empty content. The report
 # is the one call a run cannot do without, so that case is retried.
 _REPORTER_ATTEMPTS = 3
+_MAX_SUB_QUESTIONS = 8
+_MAX_CLARIFYING_QUESTIONS = 3
 
 
 def _add_usage(
@@ -70,6 +77,10 @@ class _PlanPayload(BaseModel):
     stop_reason: str | None = None
 
 
+class _ClarifierPayload(BaseModel):
+    questions: list[str] = Field(default_factory=list)
+
+
 class _SynthesisPayload(BaseModel):
     summary: str
     key_findings: list[str] = Field(default_factory=list)
@@ -81,6 +92,11 @@ class _SynthesisPayload(BaseModel):
     contradiction_count: int = Field(default=0, ge=0)
     recency_score: float = Field(default=0.5, ge=0.0, le=1.0)
     coverage_should_continue: bool = True
+    open_sub_questions: list[int] = Field(default_factory=list)
+
+
+def _brief_payload(brief: ResearchBrief | None) -> dict[str, Any] | None:
+    return brief.model_dump(mode="json") if brief is not None else None
 
 
 class LeadAgent:
@@ -93,15 +109,73 @@ class LeadAgent:
         self.last_fallback_reason: str | None = None
         self.last_llm_usage: dict[str, Any] | None = None
 
+    async def create_brief(self, request: ResearchRequest) -> ResearchBrief:
+        payload = {
+            "query": request.query,
+            "clarifications": request.clarifications,
+            "today": date.today().isoformat(),
+        }
+        worker = Worker(
+            name="LeadBriefWriter",
+            model=self._runtime.settings.model,
+            instructions=brief_instructions(),
+        )
+        job = Job(input=brief_job(payload), response_schema=ResearchBrief)
+        self.last_llm_usage = None
+        try:
+            report = await self._runtime.desk.arun(worker, job)
+            self.last_llm_usage = collect_llm_usage(report)
+            if report.status == "completed" and isinstance(report.data, ResearchBrief):
+                sub_questions = [
+                    question.strip()
+                    for question in report.data.sub_questions
+                    if question.strip()
+                ][:_MAX_SUB_QUESTIONS]
+                if sub_questions:
+                    return report.data.model_copy(update={"sub_questions": sub_questions})
+                reason = "brief writer returned no sub-questions"
+            else:
+                reason = _failure_reason(report, "brief writer")
+            logger.warning("Lead brief call did not complete: %s", reason)
+        except Exception:
+            reason = "brief writer raised before completing"
+            logger.warning("Lead brief call failed", exc_info=True)
+
+        self.fallback_count += 1
+        self.last_fallback_reason = reason
+        return ResearchBrief(scope=request.query, sub_questions=[request.query])
+
+    async def clarifying_questions(self, query: str) -> list[str]:
+        worker = Worker(
+            name="LeadClarifier",
+            model=self._runtime.settings.model,
+            instructions=clarifier_instructions(),
+        )
+        job = Job(input=clarifier_job(query), response_schema=_ClarifierPayload)
+        try:
+            report = await self._runtime.desk.arun(worker, job)
+        except Exception:
+            logger.warning("Clarifier call failed", exc_info=True)
+            return []
+        if report.status != "completed" or not isinstance(report.data, _ClarifierPayload):
+            logger.warning(
+                "Clarifier call did not complete: %s", _failure_reason(report, "clarifier")
+            )
+            return []
+        questions = [item.strip() for item in report.data.questions if item.strip()]
+        return questions[:_MAX_CLARIFYING_QUESTIONS]
+
     async def create_iteration_plan(
         self,
         request: ResearchRequest,
         iteration: int,
         prior_summaries: list[IterationSynthesis],
         memory_context: list[tuple[str, Any]],
+        brief: ResearchBrief | None = None,
     ) -> IterationPlan:
         payload = {
             "query": request.query,
+            "brief": _brief_payload(brief),
             "iteration": iteration + 1,
             "max_iterations": request.max_iterations,
             "parallelism": request.parallelism,
@@ -127,6 +201,7 @@ class LeadAgent:
                     report.data.subagent_tasks,
                     request=request,
                     iteration=iteration,
+                    sub_question_count=len(brief.sub_questions) if brief else 0,
                 )
                 # An empty plan is the planner's stop signal; tasks that all
                 # lack a focus are a malformed plan.
@@ -163,9 +238,11 @@ class LeadAgent:
         iteration: int,
         iteration_evidence: list[dict[str, Any]],
         prior_summaries: list[IterationSynthesis],
+        brief: ResearchBrief | None = None,
     ) -> IterationSynthesis:
         payload = {
             "query": request.query,
+            "brief": _brief_payload(brief),
             "iteration": iteration + 1,
             "max_iterations": request.max_iterations,
             "detail_level": request.detail_level,
@@ -199,6 +276,13 @@ class LeadAgent:
                         recency_score=report.data.recency_score,
                         should_continue=report.data.coverage_should_continue,
                     ),
+                    open_sub_questions=sorted(
+                        {
+                            index
+                            for index in report.data.open_sub_questions
+                            if brief is not None and 1 <= index <= len(brief.sub_questions)
+                        }
+                    ),
                 )
             reason = _failure_reason(report, "synthesizer")
             logger.warning("Lead synthesizer call did not complete: %s", reason)
@@ -225,9 +309,11 @@ class LeadAgent:
         iteration_summaries: list[IterationSynthesis],
         evidence_payload: list[dict[str, Any]],
         citations_payload: list[dict[str, Any]],
+        brief: ResearchBrief | None = None,
     ) -> FinalReportDraft:
         payload = {
             "query": request.query,
+            "brief": _brief_payload(brief),
             "detail_level": request.detail_level,
             "iterations": [summary.model_dump(mode="json") for summary in iteration_summaries],
             "evidence": self._compact_evidence(evidence_payload, citations_payload),
@@ -403,6 +489,7 @@ class LeadAgent:
         tasks: list[SubagentTask],
         request: ResearchRequest,
         iteration: int,
+        sub_question_count: int = 0,
     ) -> list[SubagentTask]:
         target = max(1, min(request.parallelism, 8))
         normalized: list[SubagentTask] = []
@@ -426,6 +513,13 @@ class LeadAgent:
                     search_queries=queries,
                     expected_output=task.expected_output.strip()
                     or "High quality evidence with primary-source links",
+                    sub_questions=sorted(
+                        {
+                            index
+                            for index in task.sub_questions
+                            if 1 <= index <= sub_question_count
+                        }
+                    ),
                 )
             )
 

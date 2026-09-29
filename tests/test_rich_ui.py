@@ -92,3 +92,22 @@ def test_result_summary_shows_sub_question_coverage() -> None:
 
     assert "3 strong · 1 moderate · 2 none" in text
     assert "41" in text
+
+
+def test_result_summary_shows_citation_audit_counts() -> None:
+    from shandu.contracts import ResearchRunResult
+
+    console = Console(record=True, width=100)
+    ui = ShanduUI(console=console)
+    result = ResearchRunResult(
+        run_id="r1",
+        request=ResearchRequest(query="q"),
+        report_markdown="# R",
+        run_stats={
+            "citation_audit": {"supported": 36, "partial": 3, "unsupported": 2, "unchecked": 0}
+        },
+    )
+
+    console.print(ui.result_summary(result))
+
+    assert "36 supported · 3 partial · 2 removed" in console.export_text()

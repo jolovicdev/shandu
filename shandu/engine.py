@@ -7,6 +7,7 @@ from typing import Any, Literal
 from collections.abc import AsyncIterator, Callable
 
 from .agents import CitationAgent, LeadAgent, SearchSubagent
+from .agents.auditor import CitationAuditor
 from .agents.researcher import ResearcherAgent, ResearcherByRequest
 from .contracts import AISearchResult, ResearchRequest, ResearchRunResult, RunEvent
 from .interfaces import (
@@ -74,6 +75,7 @@ class ShanduEngine:
             run_store=run_store,
             report_service=report_service,
             runtime_settings=asdict(runtime.settings),
+            auditor=CitationAuditor(runtime),
         )
         ai_search_service = AISearchService(runtime, search_service, scrape_service)
         return cls(
@@ -129,11 +131,12 @@ class ShanduEngine:
         detail_level: DetailLevel | None = None,
         progress_callback: ProgressCallback | None = None,
         writer: Literal["single", "sectioned"] | None = None,
+        audit: bool | None = None,
     ) -> ResearchRunResult:
         acquire_bootstrap_run()
         try:
             return await self._orchestrator.rewrite_report(
-                run_id, detail_level, progress_callback, writer
+                run_id, detail_level, progress_callback, writer, audit
             )
         finally:
             release_bootstrap_run()

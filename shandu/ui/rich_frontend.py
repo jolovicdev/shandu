@@ -266,6 +266,14 @@ class ShanduUI:
         findings = stats.get("findings")
         if isinstance(findings, int) and findings > 0:
             rows.append(("findings", str(findings)))
+        audit = stats.get("citation_audit")
+        if isinstance(audit, dict):
+            labels = {"supported": "supported", "partial": "partial", "unsupported": "removed"}
+            checked = " · ".join(
+                f"{audit[key]} {label}" for key, label in labels.items() if audit.get(key)
+            )
+            if checked:
+                rows.append(("citations checked", checked))
         model_calls = stats.get("agent_model_calls")
         if isinstance(model_calls, int) and model_calls > 0:
             rows.append(("Model Calls", str(model_calls)))

@@ -173,6 +173,7 @@ class GuiRunState:
             _field("evidence", self._evidence_count()),
             _field("pages", self._scraped_pages() or ""),
             _field("citations", self._citation_count() or ""),
+            _field("citations checked", self._audit_summary()),
             _field("model calls", self._model_calls()),
             _field("events", self.event_count),
             _field("cost", self._cost_summary()),
@@ -404,6 +405,15 @@ class GuiRunState:
         if isinstance(count, int):
             return count
         return len(self.citations)
+
+    def _audit_summary(self) -> str:
+        counts = self.run_stats.get("citation_audit")
+        if not isinstance(counts, dict):
+            return ""
+        labels = {"supported": "supported", "partial": "partial", "unsupported": "removed"}
+        return " · ".join(
+            f"{counts[key]} {label}" for key, label in labels.items() if counts.get(key)
+        )
 
     def _model_calls(self) -> int | None:
         value = self.run_stats.get(

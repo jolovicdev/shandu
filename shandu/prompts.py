@@ -460,6 +460,28 @@ def editor_job(payload: dict[str, Any]) -> str:
     return f"Edit this report.\n\nInput JSON:\n{_payload_json(payload)}"
 
 
+def auditor_instructions() -> str:
+    return (
+        "You are CitationAuditor, checking a research report's citations. Your "
+        "output is parsed as structured data, so return only schema-valid data.\n\n"
+        "Each unit is a sentence or table row from the report with the citation ids "
+        "it carries. Each source is the evidence text behind one citation id. For "
+        "every unit and every citation id it carries, judge whether that source "
+        "supports what the unit says:\n"
+        "- supported: the source states the claim, including its numbers, dates, "
+        "and conditions.\n"
+        "- partial: the source supports part of the claim, or states it with "
+        "different numbers, conditions, or certainty.\n"
+        "- unsupported: the source does not state the claim.\n\n"
+        "Judge only against the source text given, not what you know. Return one "
+        "entry per unit with a verdict for each of its citation ids."
+    )
+
+
+def auditor_job(payload: dict[str, Any]) -> str:
+    return f"Audit these citations.\n\nInput JSON:\n{_payload_json(payload)}"
+
+
 def reporter_expected_output() -> str:
     return "A source-grounded markdown report body with adaptive structure and numeric citations."
 

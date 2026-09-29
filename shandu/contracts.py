@@ -59,6 +59,9 @@ class ResearchRequest(BaseModel):
     # "single" writes the report in one call; "sectioned" outlines it,
     # drafts each section from its own evidence, then edits the whole.
     writer: Literal["single", "sectioned"] = "single"
+    # Check every cited sentence against its sources and drop markers the
+    # sources do not support.
+    audit: bool = True
     max_searches_per_task: int = Field(default=6, ge=1, le=12)
     effort: Literal["low", "medium", "high", "max"] = "medium"
 
@@ -159,6 +162,12 @@ class SubQuestionCoverage(BaseModel):
     credible_sources: int = 0
 
 
+class CitationVerdict(BaseModel):
+    sentence: str
+    url: str
+    verdict: Literal["supported", "partial", "unsupported", "unchecked"]
+
+
 class CitationEntry(BaseModel):
     citation_id: int
     evidence_ids: list[str] = Field(default_factory=list)
@@ -239,5 +248,6 @@ class ResearchRunResult(BaseModel):
     citations: list[CitationEntry] = Field(default_factory=list)
     evidence: list[EvidenceRecord] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
+    citation_audit: list[CitationVerdict] = Field(default_factory=list)
     iteration_summaries: list[IterationSynthesis] = Field(default_factory=list)
     run_stats: dict[str, Any] = Field(default_factory=dict)

@@ -10,6 +10,7 @@ from typing import Any, Literal
 from blackgeorge.utils import new_id
 
 from ..contracts import (
+    CitationVerdict,
     EvidenceRecord,
     IterationSynthesis,
     ResearchBrief,
@@ -20,6 +21,7 @@ from ..contracts import (
 )
 from ..interfaces import (
     CitationAgentLike,
+    CitationAuditorLike,
     LeadAgentLike,
     ProgressCallback,
     ReportServiceLike,
@@ -113,12 +115,14 @@ class LeadOrchestrator:
         run_store: RunStore,
         report_service: ReportServiceLike,
         runtime_settings: dict[str, Any] | None = None,
+        auditor: CitationAuditorLike | None = None,
     ) -> None:
         self._lead = lead_agent
         self._search_subagent = search_subagent
         self._citation = citation_agent
         self._store = run_store
         self._report = report_service
+        self._auditor = auditor
         self._runtime_settings = (
             dict(runtime_settings) if runtime_settings is not None else None
         )
@@ -158,6 +162,7 @@ class LeadOrchestrator:
         detail_level: Literal["concise", "standard", "high"] | None = None,
         progress_callback: ProgressCallback | None = None,
         writer: Literal["single", "sectioned"] | None = None,
+        audit: bool | None = None,
     ) -> ResearchRunResult:
         stored = self._store.load(run_id)
         request = stored.request
@@ -165,6 +170,8 @@ class LeadOrchestrator:
             request = request.model_copy(update={"detail_level": detail_level})
         if writer is not None:
             request = request.model_copy(update={"writer": writer})
+        if audit is not None:
+            request = request.model_copy(update={"audit": audit})
         state = _RunState.from_stored(stored, include_partial=True)
         state.research_done = True
         return await self._execute(
@@ -570,13 +577,11 @@ class LeadOrchestrator:
                 )
                 self._record_fallback_reason(state.fallback_reasons, "build_final_report")
             rendered_report = self._report.render_result(request, draft, citations)
-            report_markdown = rendered_report.markdown
-            report_citations = rendered_report.citations
             report_usage = absorb_llm_usage(
                 getattr(self._lead, "last_llm_usage", None)
             )
             report_metrics = with_model_call_count(
-                {"report_words": len(report_markdown.split())}
+                {"report_words": len(rendered_report.markdown.split())}
             )
             if report_usage:
                 report_metrics["llm_usage"] = report_usage
@@ -587,6 +592,40 @@ class LeadOrchestrator:
                     metrics=report_metrics,
                 ),
             )
+
+            citation_audit: list[CitationVerdict] = []
+            if self._auditor is not None and request.audit and rendered_report.citations:
+                outcome = await self._auditor.audit(
+                    rendered_report.markdown, rendered_report.citations, state.evidence
+                )
+                state.agent_model_calls += outcome.calls
+                audit_usage = absorb_llm_usage(
+                    {**outcome.llm_usage, "llm_calls": outcome.calls}
+                    if outcome.llm_usage
+                    else None
+                )
+                citation_audit = outcome.verdicts
+                # Re-rendering drops references that lost their last marker
+                # and renumbers the rest.
+                rendered_report = self._report.render_result(
+                    request,
+                    draft.model_copy(update={"markdown": outcome.markdown}),
+                    rendered_report.citations,
+                )
+                audit_metrics = with_model_call_count(
+                    {"citation_audit": self._audit_counts(citation_audit)}
+                )
+                if audit_usage:
+                    audit_metrics["llm_usage"] = audit_usage
+                await emit(
+                    RunEvent(
+                        stage="report",
+                        message="Citation audit completed",
+                        metrics=audit_metrics,
+                    ),
+                )
+            report_markdown = rendered_report.markdown
+            report_citations = rendered_report.citations
 
             llm_totals = state.llm_totals
             elapsed = time.perf_counter() - started
@@ -622,6 +661,8 @@ class LeadOrchestrator:
             run_stats.update(self._quality_summary(state.evidence))
             findings = build_findings(state.evidence)
             run_stats["findings"] = len(findings)
+            if citation_audit:
+                run_stats["citation_audit"] = self._audit_counts(citation_audit)
             final_matrix = state.summaries[-1].coverage_matrix if state.summaries else []
             if final_matrix:
                 strengths = [item.strength for item in final_matrix]
@@ -638,6 +679,7 @@ class LeadOrchestrator:
                 citations=report_citations,
                 evidence=state.evidence,
                 findings=findings,
+                citation_audit=citation_audit,
                 iteration_summaries=state.summaries,
                 run_stats=run_stats,
             )
@@ -750,6 +792,13 @@ class LeadOrchestrator:
             return True
 
         return False
+
+    @staticmethod
+    def _audit_counts(verdicts: list[CitationVerdict]) -> dict[str, int]:
+        return {
+            verdict: sum(1 for item in verdicts if item.verdict == verdict)
+            for verdict in ("supported", "partial", "unsupported", "unchecked")
+        }
 
     @staticmethod
     def _quality_summary(evidence: list[EvidenceRecord]) -> dict[str, Any]:

@@ -163,3 +163,24 @@ def test_launch_gui_allows_runs_dir(monkeypatch, tmp_path) -> None:
     app_module.launch_gui()
 
     assert launched.get("allowed_paths") == [str(tmp_path / "storage" / "runs")]
+
+
+def test_gradio_strip_shows_citation_audit_counts() -> None:
+    from shandu.contracts import ResearchRequest, ResearchRunResult
+
+    state = GuiRunState(query="q")
+    state.apply_result(
+        ResearchRunResult(
+            run_id="r1",
+            request=ResearchRequest(query="q"),
+            report_markdown="# R",
+            run_stats={
+                "citation_audit": {"supported": 36, "partial": 0, "unsupported": 2, "unchecked": 1}
+            },
+        )
+    )
+    state.stage = "complete"
+
+    strip = state.strip_html(running=False)
+
+    assert "citations checked <b>36 supported · 2 removed</b>" in strip

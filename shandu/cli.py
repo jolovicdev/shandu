@@ -254,6 +254,7 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     type=click.Choice(["single", "sectioned"]),
     help="Write the report in one call, or outline, draft sections, then edit.",
 )
+@click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
 def run_command(
     query: str,
     max_iterations: int | None,
@@ -272,6 +273,7 @@ def run_command(
     effort: str | None,
     researcher: str,
     writer: str,
+    no_audit: bool,
 ) -> None:
     diag = err_console if (json_output and not output) else console
     default_detail = _resolve_detail_level(
@@ -307,6 +309,7 @@ def run_command(
             since=since.date() if since else None,
             researcher=cast(Literal["pipeline", "agentic"], researcher),
             writer=cast(Literal["single", "sectioned"], writer),
+            audit=not no_audit,
         )
     except ValidationError as exc:
         problems = "; ".join(
@@ -452,6 +455,7 @@ def resume_command(
 @click.option("--detail-level", default=None, type=click.Choice(["concise", "standard", "high"]))
 @click.option("--model", default=None, help="Model for the report writer.")
 @click.option("--writer", default=None, type=click.Choice(["single", "sectioned"]))
+@click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
 @click.option("--output", default=None)
 @click.option("--json-output", is_flag=True)
 def report_command(
@@ -459,6 +463,7 @@ def report_command(
     detail_level: str | None,
     model: str | None,
     writer: str | None,
+    no_audit: bool,
     output: str | None,
     json_output: bool,
 ) -> None:
@@ -485,6 +490,7 @@ def report_command(
             level,
             progress_callback=on_event,
             writer=cast(Literal["single", "sectioned"] | None, writer),
+            audit=False if no_audit else None,
         ),
         diag,
     )

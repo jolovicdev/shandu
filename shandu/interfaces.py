@@ -130,6 +130,15 @@ class CitationAgentLike(Protocol):
     ) -> list[CitationEntry]: ...
 
 
+class CitationAuditorLike(Protocol):
+    async def audit(
+        self,
+        markdown: str,
+        citations: list[CitationEntry],
+        evidence: list[EvidenceRecord],
+    ) -> Any: ...
+
+
 class ReportServiceLike(Protocol):
     def render_result(
         self,
@@ -163,6 +172,7 @@ class OrchestratorLike(Protocol):
         detail_level: DetailLevel | None = None,
         progress_callback: ProgressCallback | None = None,
         writer: Literal["single", "sectioned"] | None = None,
+        audit: bool | None = None,
     ) -> ResearchRunResult: ...
 
 

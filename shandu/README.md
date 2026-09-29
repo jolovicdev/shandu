@@ -1,20 +1,21 @@
-# Shandu Package Architecture (3.2.0)
+# Shandu Package Architecture (4.0.0)
 
 ## Component Map
 
-- CLI and Python API: user-facing entrypoints for execution and inspection.
-- Engine: stable facade for run, stream, inspect, and AI-search flows.
-- Orchestrator: controls iterative research loop and concurrency.
-- Lead agent: builds plans, synthesizes findings, drafts final reports.
-- Search subagents: gather evidence through search, layered scraping, document parsing, and extraction.
-- Citation agent: builds and normalizes citation ledger.
-- Services layer: search backend, scraping pipeline, memory access, report rendering, one-shot AI search.
-- Runtime layer: model setup, desk/memory wiring, and async runner bridge.
-- UI layer: rich terminal and Gradio rendering for events, traces, summaries, and final outputs.
+- CLI and Python API: user-facing entry points for running, resuming, re-reporting, and inspecting research.
+- Engine: stable facade over the orchestrator, the run store, and one-shot AI search.
+- Orchestrator: research brief, iterative loop, task fan-out, coverage-driven stopping, report assembly, citation audit.
+- Lead agent: brief, clarifying questions, planning, synthesis, and the single and sectioned writers.
+- Researchers: the pipeline and agentic researchers gather evidence per task; both extract and score every page the same way.
+- Citation agent and auditor: build the citation ledger, then check every cited sentence against its sources.
+- Services layer: web and scholarly search, the scraping pipeline, findings and coverage, report rendering, run store, one-shot AI search.
+- Runtime layer: model setup, per-role models, desk wiring, and the async runner bridge.
+- UI layer: rich terminal and Gradio rendering for events, summaries, and final reports.
 
 ## Runtime Boundaries
 
-- Runtime owns model execution, run store, and persistent memory.
+- Runtime owns model execution and the blackgeorge desk.
+- The run store owns everything a run leaves on disk.
 - Orchestrator owns control flow, fan-out, merge, and completion.
 - Agents own reasoning logic only; no direct CLI responsibilities.
 - Services own external I/O and transformation boundaries.
@@ -23,6 +24,7 @@
 ## Design Intent
 
 - Replaceable black-box modules with explicit contracts.
-- Async-first execution with deterministic sync bridge.
-- Persistent run state and memory through Blackgeorge storage.
+- Async-first execution with a deterministic sync bridge.
+- Every run persisted as it happens, so it can be resumed or re-reported.
+- Model output checked by code wherever it can be: quotes, coverage, citations.
 - UI concerns separated from orchestration and runtime logic.

@@ -1,142 +1,172 @@
-# Shandu 3.2 Architecture
+# Shandu 4.0 Architecture
 
-This document describes how Shandu 3.2 executes research runs end-to-end.
+This document describes how Shandu 4.0 executes a research run end to end.
 
 ## 1) System Topology
 
 ```mermaid
 flowchart TD
-    user[User CLI and API] --> engine[Engine]
+    user[CLI, GUI, Python API] --> engine[Engine]
     engine --> orch[Orchestrator]
+    engine --> store[(Run store)]
 
     orch --> lead[Lead agent]
-    orch --> suba[Search subagent A]
-    orch --> subb[Search subagent B]
+    orch --> router[Researcher router]
     orch --> cite[Citation agent]
-
-    suba --> search[Search service]
-    suba --> scrape[Scrape service]
-    subb --> search
-    subb --> scrape
-
-    orch --> mem[Memory service]
+    orch --> audit[Citation auditor]
     orch --> report[Report service]
+    orch --> store
+
+    router --> pipeline[Pipeline researcher]
+    router --> agentic[Agentic researcher]
+    pipeline --> web[Web search]
+    pipeline --> papers[Scholarly search]
+    pipeline --> scrape[Scrape service]
+    agentic --> web
+    agentic --> papers
+    agentic --> scrape
+
+    web --> ddgs[ddgs or a search API]
+    papers --> apis[arXiv, OpenAlex, PubMed]
 ```
 
-## 2) Iterative Run Loop
+## 2) Run Lifecycle
 
 ```mermaid
 flowchart TD
-    start([Start run]) --> plan[Lead agent creates plan]
-    plan --> fanout[Run subagent tasks in parallel]
-    fanout --> synth[Lead agent synthesizes evidence]
-    synth --> decision{Continue loop?}
+    start([Request]) --> brief[Lead writes the research brief]
+    brief --> plan[Lead plans tasks against open sub-questions]
+    plan --> tasks[Researchers run tasks in parallel]
+    tasks --> synth[Lead synthesizes; code rates sub-question coverage]
+    synth --> decision{Open sub-questions, budget left?}
     decision -->|Yes| plan
-    decision -->|No| cite[Citation agent builds ledger]
-    cite --> draft[Lead agent builds final draft]
-    draft --> render[Report service renders markdown]
-    render --> done([Complete and persist result])
+    decision -->|No| ledger[Citation agent builds the ledger]
+    ledger --> write[Single or sectioned writer]
+    write --> render[Report service renders]
+    render --> check[Auditor checks every cited sentence]
+    check --> rerender[Re-render without unsupported markers]
+    rerender --> done([Report, findings, verdicts, stats])
 ```
 
-## 3) Control Flow (Vertical)
+Every step writes to the run store, so a run can be resumed after its last
+completed iteration, or re-reported from stored evidence with no new searches.
+
+## 3) Research Brief
+
+Before planning, the lead turns the query (plus any `--clarify` answers and the
+domain and date filters) into a brief: scope, 3-8 concrete sub-questions, time
+window, region, source types, and the deliverable shape. The sub-questions are
+the run's checklist:
+
+- The planner tags each task with the sub-questions it serves.
+- The extractor tags each claim with the sub-question it answers.
+- The coverage matrix rates each sub-question after every iteration.
+- The writer answers each sub-question in the deliverable's shape.
+
+## 4) Researchers
+
+Each task runs through one of two researchers, chosen per run with
+`--researcher`:
+
+- **Pipeline** (default): search every planned query, rank the hits with a model
+  call, scrape the top pages, extract each one.
+- **Agentic**: a tool loop with `web_search`, `search_papers`, and `read_page`.
+  The model writes sharper queries from what it reads, follows a page's outbound
+  links to the primary source it cites, and stops when the task is covered.
+  Tools enforce the search and read budget so the loop always ends with a memo,
+  which reaches the synthesizer next to the evidence.
+
+Tasks the planner marks `scholarly` also search arXiv, OpenAlex, and PubMed.
+Pages an iteration's tasks start reading go into a shared set, so parallel tasks
+do not extract the same page twice.
+
+## 5) Evidence Model
 
 ```mermaid
 flowchart TD
-    a[User submits query] --> b[Engine runs request]
-    b --> c[Orchestrator bootstraps run and writes memory]
-    c --> d[Lead agent creates iteration plan]
-    d --> e[Search subagents execute in parallel]
-    e --> f[Evidence merged]
-    f --> g[Lead agent synthesizes iteration]
-    g --> h{Need another loop}
-    h -->|Yes| d
-    h -->|No| i[Citation agent builds citations]
-    i --> j[Lead agent builds final report]
-    j --> k[Report service renders markdown]
-    k --> l[Persist result and events]
-    l --> m[Return research result]
+    page[Scraped page] --> extract[Extractor call]
+    extract --> text[Evidence text]
+    extract --> cls[Source class, authorship, intent]
+    extract --> claims[Claims with verbatim quotes]
+    cls --> score[credibility_score, quality_flags]
+    claims --> verify[Code keeps quotes found in the page]
+    verify --> findings[Findings ledger: claims merged across pages]
+    findings --> matrix[Coverage matrix per sub-question]
 ```
 
-## 4) Data Model Pipeline
+- **Credibility** comes from a pure scoring function over the extractor's source
+  classification: a per-class tier, minus penalties for undated, anonymous,
+  promotional, and secondhand pages.
+- **Claims** keep only quotes that appear verbatim (ignoring whitespace and case)
+  in the text the extractor read.
+- **Findings** merge claims whose word sets overlap by 80% or more, carrying every
+  supporting evidence id, quote, and site.
+- **Coverage** rates each sub-question: none, weak (no credible page), moderate
+  (credible pages from one site), or strong (credible pages from two or more
+  independent sites).
 
-```mermaid
-flowchart TD
-    req[Research request]
-    plan[Iteration plan]
-    ev[Evidence records]
-    syn[Iteration summaries]
-    cit[Citation entries]
-    draft[Final report draft]
-    result[Research result]
+## 6) Stopping Rules
 
-    req --> plan
-    plan --> ev
-    ev --> syn
-    ev --> cit
-    syn --> draft
-    cit --> draft
-    draft --> result
-```
+- With a brief, the adaptive loop continues while any sub-question is short of
+  strong or sources conflict, until `max_iterations`. Without one, the model's
+  coverage assessment and evidence signals decide.
+- `--max-cost` stops research before the next iteration once metered spend
+  reaches the budget; the report is still written.
+- `--effort low|medium|high|max` sets iterations, parallel tasks, pages and
+  searches per task, and results per query together.
 
-## 5) Parallelism Model
+## 7) Writers
 
-- `--parallelism` is the hard upper bound for concurrent subagent task execution per iteration.
-- The planner returns roughly parallelism tasks, capped by what the query needs.
-- The orchestrator enforces concurrency with an async semaphore.
+- **Single** (default): one call writes the report from compacted evidence.
+- **Sectioned**: an outline assigns each body section its sub-questions,
+  findings, and a word target; sections draft in parallel from only their own
+  findings, quotes, and evidence; an editor adds the executive summary and joins
+  the sections into one argument. The edit is kept only when every section
+  heading survives and it keeps at least 60% of the draft. Length scales with
+  effort.
 
-```mermaid
-flowchart TD
-    p[Parallelism N] --> sem[Semaphore limit N]
-    sem --> t1[Task 1]
-    sem --> t2[Task 2]
-    sem --> t3[Task 3]
-    sem --> tx[More tasks]
-    t1 --> out[Evidence merged]
-    t2 --> out
-    t3 --> out
-    tx --> out
-```
+## 8) Citation Guarantees
 
-## 6) Citation Guarantees
+- Final reports use numeric markers only (`[1]`, `[2]`, ...); internal evidence
+  ids never reach the rendered markdown.
+- References are rebuilt from the citation ledger; unused entries drop out and
+  the rest renumber.
+- Evidence below the credibility bar stays out of the ledger unless nothing
+  stronger exists; URL variants of the same work merge into one entry.
+- Tables with a dedicated provenance column are rewritten at render time.
+- The auditor checks every cited sentence, bullet, and table row against the
+  evidence text and verified quotes behind each marker, and removes unsupported
+  markers. Verdicts are recorded on the result and counted in the run stats.
 
-- Final rendered reports use numeric citation markers only (`[1]`, `[2]`, ...).
-- Internal evidence IDs are removed from rendered markdown.
-- References are rebuilt from citation ledger ordering for stable output.
-- Evidence below the credibility bar is excluded from the ledger unless no stronger evidence exists.
-- URL variants of the same work (same site, same title) merge into one ledger entry.
-- Ledger titles are sanitized; boilerplate or bare-URL titles fall back to the publisher.
-- Tables with dedicated provenance columns (Source, Reference, ...) are rewritten at render
-  time: the column is dropped and its citation markers move into the row.
+## 9) Run Store
 
-## 7) Module Boundaries (Black Box View)
+Each run lives in `<storage_dir>/runs/<run_id>/`:
 
-- Engine: public runtime entrypoint (`run`, `stream`, `inspect`, `ai_search`).
-- Orchestrator: iterative loop control, task fan-out, progress events, and result assembly.
-- Lead agent: planning, synthesis, and final report drafting.
-- Search subagents: concurrent search queries, model-ranked selection of which hits to open
-  (search-rank order when the ranking call fails), and whole-document extraction for each
-  planned task.
-  The extractor classifies every source (class, authorship, promotional intent, secondhand
-  summaries) and a pure scoring function derives `credibility_score` and `quality_flags`;
-  the synthesizer, reporter, and adaptive loop consume them.
-- Citation agent: citation ledger generation and normalization; filters low-credibility
-  evidence, merges same-work URL variants, and sanitizes titles.
-- Search service: web search backend abstraction with a bounded LRU result cache.
-- Scrape service: layered HTML extraction pipeline (trafilatura → readability-lxml → BS4),
-  document-format parsers (PDF/DOCX/XLSX/CSV/plaintext/markdown), structured content blocks
-  (headings, paragraphs, tables, code, blockquotes), fetch-error classification (paywall,
-  captcha, empty JS shell, blocked), per-domain rate limiting with exponential backoff,
-  status-aware retries with jitter (timeouts capped at one retry), one shared HTTP session
-  per service, in-flight request deduplication, LRU-bounded cross-task URL caching,
-  publication-date extraction from OpenGraph/JSON-LD/meta/time tags, PDF creation dates,
-  and arXiv version stamps, full-paper fetch for arXiv abstract URLs, redirect-aware
-  provenance tracking, and search-snippet fallback evidence when scraping fails.
-- Memory service: persistent run memory and retrieval.
-- Report service: citation normalization and final markdown rendering.
-- AI search service: one-shot search + explanation workflow.
-- Runtime bootstrap: model/runtime/memory wiring.
-- Terminal UI: live progress, dashboards, and final display panels.
+| File | Contents |
+|---|---|
+| `request.json`, `settings.json` | The request and the runtime settings it ran under |
+| `status.json` | Status, timestamps, error, whether research finished |
+| `brief.json` | The research brief |
+| `events.jsonl` | Every run event, appended live |
+| `evidence.jsonl` | Evidence records with their iteration, after every task |
+| `iterations.json` | Each completed iteration's plan, synthesis, and counters |
+| `citations.json`, `report.md`, `result.json` | The rendered report, its ledger, run stats |
 
-## 8) Example Output
+## 10) Module Boundaries
 
-- Example long-form report: see the `examples` directory.
+- Engine: public entry point (`run`, `resume`, `rewrite_report`, `stream`,
+  `inspect_run`, `list_runs`, `ai_search`).
+- Orchestrator: brief, loop control, task fan-out, coverage, stopping, report
+  assembly, audit, persistence.
+- Lead agent: brief, clarifying questions, planning, synthesis, both writers.
+- Researchers: evidence gathering per task; extraction and source scoring.
+- Citation agent: deterministic ledger.
+- Citation auditor: per-marker support verdicts.
+- Findings service: claim verification, findings ledger, coverage matrix.
+- Search services: ddgs or a search API for the web; arXiv, OpenAlex, and PubMed
+  for papers.
+- Scrape service: layered HTML extraction, document parsers, outbound links,
+  publication dates, SSRF-safe fetching with per-domain backoff.
+- Report service: marker normalization and rendering.
+- Run store: one directory per run.
+- Runtime: model wiring, per-role models, async bridge.

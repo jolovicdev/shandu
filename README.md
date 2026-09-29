@@ -14,13 +14,24 @@ Gradio web GUI.
 
 ## How It Works
 
-- Lead orchestrator plans iterative research loops (plan, search, synthesize, repeat).
-- Parallel search subagents run web search and evidence extraction concurrently.
-- Citation ledger built deterministically from evidence URLs.
-- SQLite-backed memory tracks run context across steps.
-- CLI streams one aligned line per event, then prints the report at reading width.
-- Web GUI shows the run while it happens and the finished report with its references.
-- Scraper pipeline normalizes URLs, strips boilerplate HTML, and favors main-content blocks.
+- The lead turns your question into a research brief: scope, concrete
+  sub-questions, time window, and the shape of answer you want.
+- It plans iterative research loops against the sub-questions still open, and
+  parallel researchers search the web and, when papers can answer a task, arXiv,
+  OpenAlex, and PubMed.
+- Researchers read whole pages and documents, score every source for
+  credibility, and extract claims with verbatim quotes that code checks against
+  the page. An agentic researcher (`--researcher agentic`) also follows links to
+  the primary sources a page cites.
+- After each loop, code rates every sub-question by how many independent credible
+  sources back it, and research continues until each has two or the budget ends.
+- A single call, or an outline-then-sections writer (`--writer sectioned`),
+  writes the report; an auditor then checks every cited sentence against its
+  sources and removes unsupported citations.
+- Every run is saved as it happens, so you can resume it or rewrite its report
+  without searching again.
+- The CLI streams one aligned line per event; the web GUI shows the run live and
+  the finished report with its references.
 
 ## Installation
 
@@ -133,15 +144,29 @@ Precedence:
 ## CLI
 
 ```bash
-shandu run "Who is the current president of the United States?" \
-  --max-iterations 1 \
-  --parallelism 2 \
-  --max-results-per-query 2 \
-  --max-pages-per-task 2 \
+shandu run "What did the SELECT trial find about semaglutide and cardiovascular events?" \
+  --effort medium \
+  --researcher agentic \
+  --writer sectioned \
   --output report.md
 ```
 
-`--parallelism` caps how many subagent tasks execute concurrently inside each iteration.
+Research options for `shandu run`:
+
+- `--effort low|medium|high|max`: iterations, parallel tasks, pages and searches
+  per task, and results per query together. Explicit flags below override it.
+- `--max-iterations`, `--parallelism`, `--max-pages-per-task`,
+  `--max-results-per-query`: the individual budgets. `--parallelism` caps how
+  many tasks run at once inside each iteration.
+- `--researcher pipeline|agentic`: a fixed search, rank, and read pass per task,
+  or a tool loop that searches, reads, and follows links.
+- `--writer single|sectioned`: one writing call, or outline, per-section drafts,
+  and an edit. Sectioned reports grow with effort.
+- `--include-domain`, `--exclude-domain` (repeatable), `--since YYYY-MM-DD`:
+  source filters.
+- `--clarify`: answer up to three clarifying questions before research starts.
+- `--max-cost USD`: stop researching once this much is spent, then write the report.
+- `--no-audit`: skip checking citations against their sources.
 
 During `shandu run`, progress events stream live in the terminal:
 
@@ -176,7 +201,7 @@ Other commands:
 - `shandu aisearch <query>`
 - `shandu list`: stored runs, newest first
 - `shandu show <run_id>`: a stored run's summary and report
-- `shandu report <run_id> [--detail-level] [--model] [--output]`: rewrite the report from stored evidence, with no new searches
+- `shandu report <run_id> [--detail-level] [--model] [--writer] [--no-audit] [--output]`: rewrite the report from stored evidence, with no new searches
 - `shandu resume <run_id>`: continue a stopped run after its last completed iteration
 - `shandu inspect <run_id>`
 - `shandu clean`
@@ -266,5 +291,7 @@ undated blogs and marketing pages.
 - The synthesizer and reporter weight claims by credibility and name weak-only support explicitly; undated evidence is treated as stale for time-sensitive queries.
 - The adaptive loop treats high-confidence but low-credibility evidence as weak, so weak-source corpora keep searching; run stats report source-class counts and the fraction of dated evidence.
 - The citation ledger excludes evidence below the credibility bar (weak pages can still inform caveats in prose), merges URL variants of the same work (abstract/HTML/PDF) into one reference, and sanitizes boilerplate titles.
+- Claims carry verbatim quotes; a claim whose quote is not in the page it came from is dropped before it can reach the report.
+- After writing, every cited sentence, bullet, and table row is checked against the evidence behind its markers. Unsupported citations are removed, and the run summary counts supported, partial, and removed citations.
 
 MIT license.

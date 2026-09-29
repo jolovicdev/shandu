@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
@@ -18,7 +18,6 @@ from .search_subagent import (
     SearchSubagent,
     SearchTraceCallback,
     _dated_before,
-    _host_matches,
     _report_reason,
 )
 
@@ -59,75 +58,31 @@ class ResearcherAgent(SearchSubagent):
         known = {self._canonicalize_url(url) or url for url in extracted_urls or ()}
         budget = {"searches": request.max_searches_per_task, "reads": request.max_pages_per_task}
 
-        def allowed(url: str) -> bool:
-            if request.include_domains and not _host_matches(url, request.include_domains):
-                return False
-            return not _host_matches(url, request.exclude_domains)
-
         async def run_search(service: SearchServiceLike, query: str, source: str) -> str:
             if budget["searches"] <= 0:
                 return _BUDGET_SPENT
             budget["searches"] -= 1
-            scoped = (
-                [f"{query} site:{domain}" for domain in request.include_domains]
-                if request.include_domains
-                else [query]
+            scoped = self._scoped_queries(query, request)
+            outcomes = await asyncio.gather(
+                *(
+                    self._traced_search(
+                        service, search_query, source, task, request, progress_callback
+                    )
+                    for search_query in scoped
+                )
             )
             found: list[dict[str, Any]] = []
-            for search_query in scoped:
-                await self._emit_trace(
-                    progress_callback,
-                    "query_started",
-                    {
-                        "task_id": task.task_id,
-                        "focus": task.focus,
-                        "query": search_query,
-                        "source": source,
-                        "max_results": request.max_results_per_query,
-                    },
-                )
-                hits: Sequence[Any] = await service.search(
-                    search_query, request.max_results_per_query
-                )
-                error_for = getattr(service, "last_error_for", None)
-                search_error = (
-                    error_for(search_query, request.max_results_per_query)
-                    if error_for
-                    else None
-                )
-                if search_error:
-                    await self._emit_trace(
-                        progress_callback,
-                        "search_failed",
-                        {"task_id": task.task_id, "query": search_query, "reason": search_error},
+            for search_query, (hits, _) in zip(scoped, outcomes):
+                for hit in hits:
+                    hits_by_url.setdefault(
+                        hit.url,
+                        {
+                            "url": hit.url,
+                            "title": hit.title,
+                            "snippet": hit.snippet,
+                            "query": search_query,
+                        },
                     )
-                kept = [
-                    hit
-                    for hit in hits
-                    if allowed(hit.url)
-                    and not (
-                        request.since is not None
-                        and _dated_before(getattr(hit, "published_at", None), request.since)
-                    )
-                ]
-                await self._emit_trace(
-                    progress_callback,
-                    "query_completed",
-                    {
-                        "task_id": task.task_id,
-                        "query": search_query,
-                        "hits": len(kept),
-                        "urls": [hit.url for hit in kept[:8]],
-                    },
-                )
-                for hit in kept:
-                    entry = {
-                        "url": hit.url,
-                        "title": hit.title,
-                        "snippet": hit.snippet,
-                        "query": search_query,
-                    }
-                    hits_by_url.setdefault(hit.url, entry)
                     found.append(
                         {
                             "url": hit.url,
@@ -136,8 +91,9 @@ class ResearcherAgent(SearchSubagent):
                             "published_at": getattr(hit, "published_at", None),
                         }
                     )
-            if search_error and not found:
-                return f"Search failed: {search_error}"
+            errors = [error for _, error in outcomes if error]
+            if errors and not found:
+                return f"Search failed: {errors[-1]}"
             return json.dumps(found, ensure_ascii=False)
 
         @tool()
@@ -156,7 +112,7 @@ class ResearcherAgent(SearchSubagent):
                     "Already read in this run; its evidence reaches the report. "
                     "Choose another source."
                 )
-            if not allowed(url):
+            if not self._in_scope(url, None, request):
                 return "Outside the allowed domains; choose another source."
             if budget["reads"] <= 0:
                 return _BUDGET_SPENT

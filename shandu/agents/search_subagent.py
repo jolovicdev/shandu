@@ -4,7 +4,7 @@ import asyncio
 import calendar
 import logging
 import re
-from collections.abc import Awaitable, Callable, Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection
 from datetime import date
 from itertools import zip_longest
 from typing import Any, Literal
@@ -173,81 +173,29 @@ class SearchSubagent:
         brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
-        queries = (task.search_queries or [task.focus])[: request.max_searches_per_task]
-        if request.include_domains:
-            queries = [
-                f"{query} site:{domain}"
-                for query in queries
-                for domain in request.include_domains
-            ][: request.max_searches_per_task]
-
+        queries = [
+            scoped
+            for query in task.search_queries or [task.focus]
+            for scoped in self._scoped_queries(query, request)
+        ][: request.max_searches_per_task]
         searches: list[tuple[str, SearchServiceLike, str]] = [
             (query, self._search, "web") for query in queries
         ]
         if task.scholarly and self._scholarly is not None:
             searches += [(query, self._scholarly, "scholarly") for query in queries]
-
-        async def run_query(
-            query: str, service: SearchServiceLike, source: str
-        ) -> Sequence[Any]:
-            await self._emit_trace(
-                progress_callback,
-                "query_started",
-                {
-                    "task_id": task.task_id,
-                    "focus": task.focus,
-                    "query": query,
-                    "source": source,
-                    "max_results": request.max_results_per_query,
-                },
+        outcomes = await asyncio.gather(
+            *(
+                self._traced_search(service, query, source, task, request, progress_callback)
+                for query, service, source in searches
             )
-            hits = await service.search(query, request.max_results_per_query)
-            error_for = getattr(service, "last_error_for", None)
-            search_error = (
-                error_for(query, request.max_results_per_query) if error_for else None
-            )
-            if search_error:
-                await self._emit_trace(
-                    progress_callback,
-                    "search_failed",
-                    {
-                        "task_id": task.task_id,
-                        "query": query,
-                        "reason": search_error,
-                    },
-                )
-            await self._emit_trace(
-                progress_callback,
-                "query_completed",
-                {
-                    "task_id": task.task_id,
-                    "query": query,
-                    "hits": len(hits),
-                    "urls": [hit.url for hit in hits[:8]],
-                },
-            )
-            return hits
-
-        query_hits = await asyncio.gather(
-            *(run_query(query, service, source) for query, service, source in searches)
         )
 
         per_query: list[list[dict[str, str]]] = []
         seen: set[str] = set()
-        for (query, _, _), hits in zip(searches, query_hits):
+        for (query, _, _), (hits, _) in zip(searches, outcomes):
             entries: list[dict[str, str]] = []
             for hit in hits:
                 if hit.url in seen:
-                    continue
-                if request.since is not None and _dated_before(
-                    getattr(hit, "published_at", None), request.since
-                ):
-                    continue
-                if request.include_domains and not _host_matches(
-                    hit.url, request.include_domains
-                ):
-                    continue
-                if _host_matches(hit.url, request.exclude_domains):
                     continue
                 seen.add(hit.url)
                 entries.append(
@@ -391,6 +339,68 @@ class SearchSubagent:
             )
 
         return evidence
+
+    @staticmethod
+    def _scoped_queries(query: str, request: ResearchRequest) -> list[str]:
+        if not request.include_domains:
+            return [query]
+        return [f"{query} site:{domain}" for domain in request.include_domains]
+
+    @staticmethod
+    def _in_scope(url: str, published_at: str | None, request: ResearchRequest) -> bool:
+        """Whether a source passes the request's domain and date filters."""
+        if request.include_domains and not _host_matches(url, request.include_domains):
+            return False
+        if _host_matches(url, request.exclude_domains):
+            return False
+        return request.since is None or not _dated_before(published_at, request.since)
+
+    async def _traced_search(
+        self,
+        service: SearchServiceLike,
+        query: str,
+        source: str,
+        task: SubagentTask,
+        request: ResearchRequest,
+        progress_callback: SearchTraceCallback | None,
+    ) -> tuple[list[Any], str | None]:
+        """Run one search with its trace events; return in-scope hits and any error."""
+        await self._emit_trace(
+            progress_callback,
+            "query_started",
+            {
+                "task_id": task.task_id,
+                "focus": task.focus,
+                "query": query,
+                "source": source,
+                "max_results": request.max_results_per_query,
+            },
+        )
+        hits = await service.search(query, request.max_results_per_query)
+        error_for = getattr(service, "last_error_for", None)
+        error = error_for(query, request.max_results_per_query) if error_for else None
+        if error:
+            await self._emit_trace(
+                progress_callback,
+                "search_failed",
+                {"task_id": task.task_id, "query": query, "reason": error},
+            )
+        kept = [
+            hit
+            for hit in hits
+            if self._in_scope(hit.url, getattr(hit, "published_at", None), request)
+        ]
+        await self._emit_trace(
+            progress_callback,
+            "query_completed",
+            {
+                "task_id": task.task_id,
+                "query": query,
+                "hits": len(kept),
+                "urls": [hit.url for hit in kept[:8]],
+            },
+        )
+        return kept, error
 
     async def _page_evidence(
         self,

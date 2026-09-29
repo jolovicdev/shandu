@@ -183,7 +183,7 @@ class _FailingLead:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries, brief=None
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         raise AssertionError("unreachable")
 

@@ -315,108 +315,14 @@ class SearchSubagent:
             if canonical_hit_url:
                 hits_by_url.setdefault(canonical_hit_url, entry)
 
-        async def process_page(page: ScrapedPageLike) -> EvidenceRecord:
-            if page.fetch_error is not None:
-                hit_payload = hits_by_url.get(page.requested_url)
-                snippet = str(hit_payload.get("snippet", "") if hit_payload else "").strip()
-                title = str(hit_payload.get("title", "") if hit_payload else page.title).strip() or page.url
-                await self._emit_trace(
-                    progress_callback,
-                    "fallback_evidence",
-                    {
-                        "task_id": task.task_id,
-                        "url": page.url,
-                        "title": title,
-                        "confidence": 0.33,
-                        "fetch_error": page.fetch_error,
-                    },
-                )
-                credibility, quality_flags = _SNIPPET_ONLY_CREDIBILITY, ["snippet_only"]
-                return EvidenceRecord(
-                    evidence_id=new_id(),
-                    task_id=task.task_id,
-                    query=task.focus,
-                    search_query=hit_payload.get("query") if hit_payload else None,
-                    requested_url=page.requested_url,
-                    domain=page.domain,
-                    title=title,
-                    site_name=page.site_name,
-                    snippet=snippet or title,
-                    extracted_text=snippet or title,
-                    confidence=0.33,
-                    source_type="search_snippet",
-                    extraction_method=_SNIPPET_FALLBACK_METHOD,
-                    relevance_score=0.33,
-                    credibility_score=credibility,
-                    quality_flags=quality_flags,
-                    fetch_error=page.fetch_error,
-                )
-
-            await self._emit_trace(
-                progress_callback,
-                "extract_started",
-                {
-                    "task_id": task.task_id,
-                    "url": page.url,
-                    "title": page.title,
-                },
-            )
-            extraction, assessed, extract_usage = await self._extract(
-                task, page.url, page.title, page.text, progress_callback
-            )
-            source_type, extraction_method = self._source_metadata(page.content_type, page.url)
-            if assessed:
-                source_class = extraction.source_class
-                credibility, quality_flags = assess_source_quality(
-                    extraction.source_class,
-                    extraction.authorship,
-                    extraction.is_promotional,
-                    extraction.summarizes_inaccessible_source,
-                    page.published_at is not None,
-                )
-            else:
-                source_class = None
-                credibility, quality_flags = None, ["unassessed"]
-            completed_payload: dict[str, Any] = {
-                "task_id": task.task_id,
-                "url": page.url,
-                "title": page.title,
-                "confidence": extraction.confidence,
-                "credibility": credibility,
-            }
-            if extract_usage:
-                completed_payload["llm_usage"] = extract_usage
-            await self._emit_trace(
-                progress_callback,
-                "extract_completed",
-                completed_payload,
-            )
-            extracted_hit = hits_by_url.get(page.requested_url)
-            return EvidenceRecord(
-                evidence_id=new_id(),
-                task_id=task.task_id,
-                query=task.focus,
-                search_query=extracted_hit.get("query") if extracted_hit else None,
-                requested_url=page.requested_url,
-                final_url=page.url,
-                domain=page.domain,
-                title=page.title,
-                site_name=page.site_name,
-                snippet=extraction.snippet,
-                extracted_text=extraction.extracted_text,
-                confidence=extraction.confidence,
-                fetched_at=page.fetched_at,
-                published_at=page.published_at,
-                source_type=source_type,
-                extraction_method=extraction_method,
-                relevance_score=extraction.confidence,
-                credibility_score=credibility,
-                source_class=source_class,
-                quality_flags=quality_flags,
-            )
-
         evidence: list[EvidenceRecord] = await asyncio.gather(
-            *(process_page(page) for page in pages if page not in too_old)
+            *(
+                self._page_evidence(
+                    task, page, hits_by_url.get(page.requested_url), progress_callback
+                )
+                for page in pages
+                if page not in too_old
+            )
         )
 
         for url in urls:
@@ -462,6 +368,114 @@ class SearchSubagent:
             )
 
         return evidence
+
+    async def _page_evidence(
+        self,
+        task: SubagentTask,
+        page: ScrapedPageLike,
+        hit_payload: dict[str, str] | None,
+        progress_callback: SearchTraceCallback | None,
+    ) -> EvidenceRecord:
+        """Turn a scraped page into evidence through extraction and source scoring.
+
+        A page that failed to fetch keeps its search snippet as weak evidence.
+        """
+        if page.fetch_error is not None:
+            snippet = str(hit_payload.get("snippet", "") if hit_payload else "").strip()
+            title = str(hit_payload.get("title", "") if hit_payload else page.title).strip() or page.url
+            await self._emit_trace(
+                progress_callback,
+                "fallback_evidence",
+                {
+                    "task_id": task.task_id,
+                    "url": page.url,
+                    "title": title,
+                    "confidence": 0.33,
+                    "fetch_error": page.fetch_error,
+                },
+            )
+            credibility, quality_flags = _SNIPPET_ONLY_CREDIBILITY, ["snippet_only"]
+            return EvidenceRecord(
+                evidence_id=new_id(),
+                task_id=task.task_id,
+                query=task.focus,
+                search_query=hit_payload.get("query") if hit_payload else None,
+                requested_url=page.requested_url,
+                domain=page.domain,
+                title=title,
+                site_name=page.site_name,
+                snippet=snippet or title,
+                extracted_text=snippet or title,
+                confidence=0.33,
+                source_type="search_snippet",
+                extraction_method=_SNIPPET_FALLBACK_METHOD,
+                relevance_score=0.33,
+                credibility_score=credibility,
+                quality_flags=quality_flags,
+                fetch_error=page.fetch_error,
+            )
+
+        await self._emit_trace(
+            progress_callback,
+            "extract_started",
+            {
+                "task_id": task.task_id,
+                "url": page.url,
+                "title": page.title,
+            },
+        )
+        extraction, assessed, extract_usage = await self._extract(
+            task, page.url, page.title, page.text, progress_callback
+        )
+        source_type, extraction_method = self._source_metadata(page.content_type, page.url)
+        if assessed:
+            source_class = extraction.source_class
+            credibility, quality_flags = assess_source_quality(
+                extraction.source_class,
+                extraction.authorship,
+                extraction.is_promotional,
+                extraction.summarizes_inaccessible_source,
+                page.published_at is not None,
+            )
+        else:
+            source_class = None
+            credibility, quality_flags = None, ["unassessed"]
+        completed_payload: dict[str, Any] = {
+            "task_id": task.task_id,
+            "url": page.url,
+            "title": page.title,
+            "confidence": extraction.confidence,
+            "credibility": credibility,
+        }
+        if extract_usage:
+            completed_payload["llm_usage"] = extract_usage
+        await self._emit_trace(
+            progress_callback,
+            "extract_completed",
+            completed_payload,
+        )
+        return EvidenceRecord(
+            evidence_id=new_id(),
+            task_id=task.task_id,
+            query=task.focus,
+            search_query=hit_payload.get("query") if hit_payload else None,
+            requested_url=page.requested_url,
+            final_url=page.url,
+            domain=page.domain,
+            title=page.title,
+            site_name=page.site_name,
+            snippet=extraction.snippet,
+            extracted_text=extraction.extracted_text,
+            confidence=extraction.confidence,
+            fetched_at=page.fetched_at,
+            published_at=page.published_at,
+            source_type=source_type,
+            extraction_method=extraction_method,
+            relevance_score=extraction.confidence,
+            credibility_score=credibility,
+            source_class=source_class,
+            quality_flags=quality_flags,
+        )
 
     @staticmethod
     def _canonicalize_url(url: str) -> str:

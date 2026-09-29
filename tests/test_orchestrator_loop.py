@@ -45,7 +45,7 @@ class FakeLeadAgent:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries, brief=None
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         del request, iteration_evidence, prior_summaries
         return IterationSynthesis(
@@ -215,7 +215,7 @@ class ParallelLeadAgent(FakeLeadAgent):
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries, brief=None
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         del request, iteration_evidence, prior_summaries
         return IterationSynthesis(
@@ -673,7 +673,7 @@ class _StoppingLead(FakeLeadAgent):
         self._coverage = coverage
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries, brief=None
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         del request, iteration, iteration_evidence, prior_summaries
         return IterationSynthesis(

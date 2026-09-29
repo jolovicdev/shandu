@@ -5,7 +5,7 @@ import shutil
 from collections.abc import Callable, Coroutine
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import click
 from pydantic import ValidationError
@@ -203,6 +203,13 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     default=None,
     help="Skip pages dated before this day (YYYY-MM-DD).",
 )
+@click.option(
+    "--researcher",
+    default="pipeline",
+    show_default=True,
+    type=click.Choice(["pipeline", "agentic"]),
+    help="How each task gathers evidence.",
+)
 def run_command(
     query: str,
     max_iterations: int | None,
@@ -218,6 +225,7 @@ def run_command(
     include_domains: tuple[str, ...],
     exclude_domains: tuple[str, ...],
     since: datetime | None,
+    researcher: str,
 ) -> None:
     diag = err_console if (json_output and not output) else console
     default_detail = _resolve_detail_level(
@@ -248,6 +256,7 @@ def run_command(
             include_domains=list(include_domains),
             exclude_domains=list(exclude_domains),
             since=since.date() if since else None,
+            researcher=cast(Literal["pipeline", "agentic"], researcher),
         )
     except ValidationError as exc:
         problems = "; ".join(
@@ -268,6 +277,7 @@ def run_command(
                 str(config.get("api", "model")),
                 f"{request.max_iterations} iterations",
                 f"{request.parallelism} tasks",
+                f"{request.researcher} researcher",
                 f"{request.detail_level} detail",
             ],
         )

@@ -7,19 +7,20 @@ import re
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
 from .constants import (
     _CAPTCHA_PATTERNS,
     _MAX_EXTRACTED_CHARS,
+    _MAX_PAGE_LINKS,
     _MAX_PDF_PAGES,
     _MAX_XLSX_ROWS,
     _MIN_ARTICLE_WORDS,
     _PAYWALL_PATTERNS,
 )
-from .models import ContentBlock, _ExtractionResult, _ParseError
+from .models import ContentBlock, PageLink, _ExtractionResult, _ParseError
 
 
 def _cap_text(text: str) -> str:
@@ -419,6 +420,31 @@ def _parse_plaintext(data: bytes) -> _ExtractionResult:
     if not text:
         raise _ParseError("non_text_content", "Empty text file")
     return _ExtractionResult(title="", text=text)
+
+
+def _extract_links(html: str, base_url: str) -> list[PageLink]:
+    """Outbound links with their anchor text, links to other hosts first.
+
+    Links to other hosts are where a page cites its sources, so they lead;
+    site chrome is dropped before the scan so menus do not fill the list.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(["nav", "header", "footer", "aside", "script", "style"]):
+        tag.decompose()
+    base_host = urlsplit(base_url).netloc.lower().removeprefix("www.")
+    external: list[PageLink] = []
+    internal: list[PageLink] = []
+    seen = {base_url}
+    for anchor in soup.find_all("a", href=True):
+        url = urljoin(base_url, str(anchor["href"])).split("#", 1)[0]
+        text = " ".join(anchor.get_text(" ").split())
+        if not url.startswith(("http://", "https://")) or url in seen or len(text) < 3:
+            continue
+        seen.add(url)
+        host = urlsplit(url).netloc.lower().removeprefix("www.")
+        target = internal if host == base_host else external
+        target.append(PageLink(url=url, text=text[:120]))
+    return (external + internal)[:_MAX_PAGE_LINKS]
 
 
 def _extract_published_at(html: str) -> str | None:

@@ -97,6 +97,7 @@ class LeadAgentLike(Protocol):
         iteration_evidence: list[dict[str, Any]],
         prior_summaries: list[IterationSynthesis],
         brief: ResearchBrief | None = None,
+        task_memos: list[dict[str, str]] | None = None,
     ) -> IterationSynthesis: ...
 
     async def build_final_report(

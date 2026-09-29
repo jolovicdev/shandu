@@ -7,6 +7,7 @@ from typing import Any
 from collections.abc import AsyncIterator, Callable
 
 from .agents import CitationAgent, LeadAgent, SearchSubagent
+from .agents.researcher import ResearcherAgent, ResearcherByRequest
 from .contracts import AISearchResult, ResearchRequest, ResearchRunResult, RunEvent
 from .interfaces import (
     AISearchServiceLike,
@@ -55,8 +56,13 @@ class ShanduEngine:
         report_service = ReportService()
 
         lead = LeadAgent(runtime, writer_model=writer_model)
-        subagent = SearchSubagent(
-            runtime, search_service, scrape_service, scholarly_service
+        subagent = ResearcherByRequest(
+            pipeline=SearchSubagent(
+                runtime, search_service, scrape_service, scholarly_service
+            ),
+            agentic=ResearcherAgent(
+                runtime, search_service, scrape_service, scholarly_service
+            ),
         )
         citation = CitationAgent()
         orchestrator = LeadOrchestrator(

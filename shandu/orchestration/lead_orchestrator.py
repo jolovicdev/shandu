@@ -318,6 +318,7 @@ class LeadOrchestrator:
                 task_total = len(plan.subagent_tasks)
                 completed_tasks = 0
                 completed_lock = asyncio.Lock()
+                task_memos: list[dict[str, str]] = []
 
                 async def run_task(
                     task_index: int, task: SubagentTask
@@ -343,8 +344,16 @@ class LeadOrchestrator:
                         trace_type: str,
                         payload: dict[str, Any],
                     ) -> None:
-                        if trace_type in ("extract_started", "urls_ranked"):
+                        if trace_type in ("extract_started", "urls_ranked", "task_memo"):
                             state.agent_model_calls += 1
+                        if trace_type == "task_memo" and payload.get("memo"):
+                            task_memos.append(
+                                {
+                                    "task_id": str(payload.get("task_id", "")),
+                                    "focus": str(payload.get("focus", "")),
+                                    "memo": str(payload["memo"]),
+                                }
+                            )
                         elif trace_type == "extraction_fallback":
                             state.extraction_fallbacks += 1
                             trace_reason = payload.get("reason")
@@ -445,6 +454,7 @@ class LeadOrchestrator:
                     ],
                     prior_summaries=state.summaries,
                     brief=state.brief,
+                    task_memos=task_memos,
                 )
                 synthesis_usage = absorb_llm_usage(
                     getattr(self._lead, "last_llm_usage", None)
@@ -792,6 +802,13 @@ class LeadOrchestrator:
             )
             if "url" in payload:
                 metrics["url"] = payload["url"]
+        elif trace_type == "task_memo":
+            message = (
+                f"Task {task_id} researcher finished" if task_id else "Researcher finished"
+            )
+            for key in ("searches", "reads"):
+                if key in payload:
+                    metrics[key] = payload[key]
         elif trace_type == "search_failed":
             stage = "error"
             message = (

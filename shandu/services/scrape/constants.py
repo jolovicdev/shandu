@@ -36,6 +36,7 @@ _MIN_ARTICLE_WORDS = 80
 _MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 # Sized to hold a full conference paper (results tables and appendix included).
 _MAX_EXTRACTED_CHARS = 120_000
+_MAX_PAGE_LINKS = 40
 _MAX_PDF_PAGES = 200
 _MAX_XLSX_ROWS = 50000
 

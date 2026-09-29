@@ -11,12 +11,18 @@ class ContentBlock(BaseModel):
     text: str
 
 
+class PageLink(BaseModel):
+    url: str
+    text: str
+
+
 class ScrapedPage(BaseModel):
     requested_url: str
     url: str
     title: str
     text: str
     blocks: list[ContentBlock] = Field(default_factory=list)
+    links: list[PageLink] = Field(default_factory=list)
     domain: str
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     published_at: str | None = None

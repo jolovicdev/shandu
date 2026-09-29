@@ -54,7 +54,7 @@ class _Lead:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries, brief=None
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         del request, iteration_evidence, prior_summaries
         self.briefs_seen.append(brief)

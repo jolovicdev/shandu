@@ -23,6 +23,7 @@ from .extraction import (
     _detect_fetch_error,
     _error_for_status,
     _extract_html,
+    _extract_links,
     _extract_published_at,
     _guess_format,
     _parse_csv,
@@ -441,12 +442,14 @@ class ScrapeService:
                                 fetch_error = _detect_fetch_error(html, result.text) or "empty_content"
                             else:
                                 fetch_error = _detect_fetch_error(html, result.text)
+                            links = await asyncio.to_thread(_extract_links, html, final_url)
                             page = ScrapedPage(
                                 requested_url=url,
                                 url=final_url,
                                 title=result.title or final_url,
                                 text=result.text,
                                 blocks=result.blocks,
+                                links=links,
                                 domain=urlparse(final_url).netloc,
                                 site_name=result.site_name,
                                 published_at=published_at,

@@ -53,6 +53,9 @@ class ResearchRequest(BaseModel):
     exclude_domains: list[str] = Field(default_factory=list)
     # Pages dated entirely before this day are skipped; undated pages stay.
     since: date | None = None
+    # "pipeline" searches, ranks, then reads in one pass per task; "agentic"
+    # runs each task as a tool loop that searches, reads, and follows links.
+    researcher: Literal["pipeline", "agentic"] = "pipeline"
 
     @field_validator("include_domains", "exclude_domains")
     @classmethod

@@ -589,3 +589,23 @@ def test_fetch_acquires_scheduler_slot_for_hop_domain() -> None:
     )
 
     assert acquired == ["hop.example"]
+
+
+def test_extract_links_leads_with_other_hosts_and_skips_site_chrome() -> None:
+    from shandu.services.scrape.extraction import _extract_links
+
+    html = """<html><body>
+    <nav><a href="https://other.org/menu">Menu item</a></nav>
+    <main><p>See <a href="/docs/spec">the spec page</a> and
+    <a href="https://arxiv.org/abs/1">the paper</a>, <a href="#top">back to top</a>,
+    <a href="mailto:a@b.org">mail us</a>, <a href="https://arxiv.org/abs/1#s2">same paper</a>,
+    <a href="https://x.org/y">ok</a></p></main>
+    <footer><a href="https://other.org/legal">Legal notice</a></footer>
+    </body></html>"""
+
+    links = _extract_links(html, "https://example.com/post")
+
+    assert [(link.url, link.text) for link in links] == [
+        ("https://arxiv.org/abs/1", "the paper"),
+        ("https://example.com/docs/spec", "the spec page"),
+    ]

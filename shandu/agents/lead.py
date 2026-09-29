@@ -242,10 +242,12 @@ class LeadAgent:
         iteration_evidence: list[dict[str, Any]],
         prior_summaries: list[IterationSynthesis],
         brief: ResearchBrief | None = None,
+        task_memos: list[dict[str, str]] | None = None,
     ) -> IterationSynthesis:
         payload = {
             "query": request.query,
             "brief": _brief_payload(brief),
+            "task_memos": task_memos or [],
             "iteration": iteration + 1,
             "max_iterations": request.max_iterations,
             "detail_level": request.detail_level,

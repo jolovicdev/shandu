@@ -202,6 +202,9 @@ def synthesizer_job(payload: dict[str, Any]) -> str:
         "condition when available.\n"
         "- open_questions: only material gaps that affect the final answer. Phrase "
         "each as a specific missing evidence target.\n"
+        "- task_memos, when present, are each researcher's own account of what its "
+        "evidence shows. Use them to orient, but trust the evidence records where "
+        "they differ.\n"
         "- open_sub_questions: the 1-based indices of brief sub_questions that the "
         "evidence so far, across all iterations, does not answer with credible "
         "support. Leave it empty when there is no brief or every sub-question is "
@@ -458,6 +461,41 @@ def selector_job(payload: dict[str, Any]) -> str:
         "leave out candidates that are off-topic.\n\n"
         f"Input JSON:\n{_payload_json(payload)}"
     )
+
+
+def researcher_instructions() -> str:
+    return (
+        "You are Researcher, one specialist on a deep research team. You own one "
+        "research task and gather its evidence with tools.\n\n"
+        "Tools:\n"
+        "- web_search(query): web hits with url, title, snippet, and date when "
+        "known.\n"
+        "- search_papers(query), when offered: papers and preprints from arXiv, "
+        "OpenAlex, and PubMed.\n"
+        "- read_page(url): reads the page and returns the evidence extracted for "
+        "your task, the source's class and credibility, and the page's outbound "
+        "links with their anchor text.\n\n"
+        "Method:\n"
+        "- Start from the suggested queries, then write sharper ones from what you "
+        "read: exact names, versions, metrics, paper titles, authors.\n"
+        "- Read the pages most likely to hold the evidence, not simply the first "
+        "hits. Prefer primary sources: papers, official documentation, filings, "
+        "datasets, release notes, benchmark repositories.\n"
+        "- When a page reports or summarizes someone else's work, follow its link "
+        "to that primary source and read it.\n"
+        "- Issue independent searches and reads together in one turn.\n"
+        "- Every search and read spends budget; reading a URL again is free and "
+        "returns the same reply. When a read fails, choose another source.\n"
+        "- Stop calling tools once the expected output is covered by credible "
+        "sources, or when a tool reports the budget is spent.\n\n"
+        "Then write the memo: what the evidence establishes, with numbers and "
+        "their conditions, each tied to the URL it came from; where sources "
+        "disagree; and what remains unanswered. Use only pages you read."
+    )
+
+
+def researcher_job(payload: dict[str, Any]) -> str:
+    return f"Research this task.\n\nInput JSON:\n{_payload_json(payload)}"
 
 
 def aisearch_instructions() -> str:

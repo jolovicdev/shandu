@@ -257,6 +257,12 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     help="Write the report in one call, or outline, draft sections, then edit.",
 )
 @click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
+@click.option(
+    "--max-cost",
+    type=float,
+    default=None,
+    help="Stop researching once this many USD are spent, then write the report.",
+)
 def run_command(
     query: str,
     max_iterations: int | None,
@@ -276,6 +282,7 @@ def run_command(
     researcher: str,
     writer: str,
     no_audit: bool,
+    max_cost: float | None,
 ) -> None:
     diag = err_console if (json_output and not output) else console
     default_detail = _resolve_detail_level(
@@ -312,6 +319,7 @@ def run_command(
             researcher=cast(Literal["pipeline", "agentic"], researcher),
             writer=cast(Literal["single", "sectioned"], writer),
             audit=not no_audit,
+            max_cost_usd=max_cost,
         )
     except ValidationError as exc:
         problems = "; ".join(

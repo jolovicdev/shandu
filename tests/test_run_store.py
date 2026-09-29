@@ -212,3 +212,20 @@ def test_engine_inspect_reads_run_store(tmp_path) -> None:
     assert payload["input"]["query"] == "stored question"
     assert payload["output_json"] == {"run_stats": {"iterations": 2}}
     assert engine.inspect_run("missing") == {"exists": False}
+
+
+class _PricedLead(_Lead):
+    last_llm_usage = {"cost_usd": 0.5}
+
+
+def test_cost_budget_stops_research_before_the_next_iteration(tmp_path) -> None:
+    lead = _PricedLead()
+    request = ResearchRequest(
+        query="q", max_iterations=3, parallelism=1, depth_policy="fixed", max_cost_usd=1.0
+    )
+
+    result = asyncio.run(_orchestrator(RunStore(tmp_path), lead, _Subagent("new")).run(request))
+
+    assert lead.planned == [0]
+    assert result.run_stats["stopped_at_cost_budget"] is True
+    assert result.report_markdown.startswith("# T")

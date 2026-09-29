@@ -62,6 +62,9 @@ class ResearchRequest(BaseModel):
     # Check every cited sentence against its sources and drop markers the
     # sources do not support.
     audit: bool = True
+    # Research stops before the next iteration once metered spend reaches
+    # this; the report is still written, so a run can end slightly above it.
+    max_cost_usd: float | None = Field(default=None, gt=0)
     max_searches_per_task: int = Field(default=6, ge=1, le=12)
     effort: Literal["low", "medium", "high", "max"] = "medium"
 

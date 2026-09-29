@@ -270,10 +270,26 @@ class LeadOrchestrator:
                     ),
                 )
 
+            budget_stopped = False
             for iteration in range(
                 state.next_iteration,
                 state.next_iteration if state.research_done else request.max_iterations,
             ):
+                budget = request.max_cost_usd
+                if budget is not None and state.llm_totals["cost_usd"] >= budget:
+                    budget_stopped = True
+                    await emit(
+                        RunEvent(
+                            stage="synthesize",
+                            message="Cost budget reached; writing the report",
+                            iteration=iteration,
+                            metrics={
+                                "usd_spent": round(state.llm_totals["cost_usd"], 6),
+                                "max_cost_usd": budget,
+                            },
+                        ),
+                    )
+                    break
                 memory_context = [
                     ("prior_task_focuses", list(state.task_focuses)),
                     ("queries_run", list(state.queries_run)),
@@ -661,6 +677,8 @@ class LeadOrchestrator:
             run_stats.update(self._quality_summary(state.evidence))
             findings = build_findings(state.evidence)
             run_stats["findings"] = len(findings)
+            if budget_stopped:
+                run_stats["stopped_at_cost_budget"] = True
             if citation_audit:
                 run_stats["citation_audit"] = self._audit_counts(citation_audit)
             final_matrix = state.summaries[-1].coverage_matrix if state.summaries else []

@@ -125,3 +125,20 @@ def test_word_budget_scales_with_effort() -> None:
     _write(desk, effort="max")
 
     assert "about 7200 words" in desk.outline_inputs[0]
+
+
+def test_sections_without_findings_draw_on_all_evidence() -> None:
+    desk = _WriterDesk(editor=lambda draft: draft)
+    agent = LeadAgent(SimpleNamespace(settings=SimpleNamespace(model="m"), desk=desk))
+    claimless = [{**entry, "claims": []} for entry in _EVIDENCE]
+
+    asyncio.run(
+        agent.build_final_report(
+            ResearchRequest(query="q", writer="sectioned"), [], claimless, _CITATIONS
+        )
+    )
+
+    assert [sorted(item["title"] for item in payload["evidence"]) for payload in desk.section_payloads] == [
+        ["e1", "e2"],
+        ["e1", "e2"],
+    ]

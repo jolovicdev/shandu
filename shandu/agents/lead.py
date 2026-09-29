@@ -527,9 +527,11 @@ class LeadAgent:
                 if set(finding.sub_questions) & set(section.sub_questions)
             ]
             supporting = {evidence_id for finding in chosen for evidence_id in finding.evidence_ids}
+            # Evidence stored without claims yields no findings; such a
+            # section draws on the whole budgeted evidence set instead.
             section_evidence = [
                 entry for entry in evidence_payload if entry.get("evidence_id") in supporting
-            ]
+            ] or evidence_payload
             payload = {
                 "query": request.query,
                 "heading": section.heading.strip(),

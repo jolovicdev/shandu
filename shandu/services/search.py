@@ -12,6 +12,7 @@ from typing import Any, Protocol, cast
 from pydantic import BaseModel
 
 from ..config import config
+from .search_apis import API_ENV, ApiSearchClient
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,14 @@ def _resolve_ddgs() -> _DDGSFactory | None:
 class SearchService:
     def __init__(self) -> None:
         self._ddgs = _resolve_ddgs()
+        self._api: ApiSearchClient | None = None
+        backend = str(config.get("search", "backend", "ddgs"))
+        if backend in API_ENV:
+            self._api = ApiSearchClient.from_env(backend)
+            if self._api is None:
+                logger.warning(
+                    "Search backend %s needs %s; searching with ddgs", backend, API_ENV[backend]
+                )
         self._region = str(config.get("search", "region", "wt-wt"))
         self._safesearch = str(config.get("search", "safesearch", "moderate"))
         self._cache: OrderedDict[str, tuple[float, list[SearchHit]]] = OrderedDict()
@@ -100,7 +109,7 @@ class SearchService:
             self._cache.popitem(last=False)
 
     async def search(self, query: str, max_results: int) -> list[SearchHit]:
-        if self._ddgs is None:
+        if self._ddgs is None and self._api is None:
             return []
 
         key = self._cache_key(query, max_results)
@@ -127,7 +136,8 @@ class SearchService:
                 await asyncio.sleep(_SEARCH_RETRY_DELAY_SECONDS)
                 raw, backend_errors = await self._try_backends(query, max_results)
         if not raw:
-            if len(backend_errors) == len(_TEXT_BACKENDS):
+            attempted = 1 if self._api is not None else len(_TEXT_BACKENDS)
+            if len(backend_errors) == attempted:
                 self.last_error = self._errors[key] = "; ".join(backend_errors)[:300]
                 logger.warning("All search backends failed for query %r", query)
             else:
@@ -142,12 +152,14 @@ class SearchService:
             if not url or url in seen:
                 continue
             seen.add(url)
+            published_at = entry.get("published_at")
             hits.append(
                 SearchHit(
                     query=query,
                     url=url,
-                    title=str(entry.get("title", url)).strip(),
-                    snippet=str(entry.get("body", "")).strip(),
+                    title=str(entry.get("title") or url).strip(),
+                    snippet=str(entry.get("body") or "").strip(),
+                    published_at=str(published_at) if published_at else None,
                 )
             )
             if len(hits) >= max_results:
@@ -159,6 +171,14 @@ class SearchService:
     async def _try_backends(
         self, query: str, max_results: int
     ) -> tuple[list[Mapping[str, Any]] | None, list[str]]:
+        if self._api is not None:
+            try:
+                return list(await self._api.search(query, max_results)), []
+            except Exception as exc:
+                logger.warning(
+                    "Search backend %s failed: %s", self._api.provider, str(exc)[:200]
+                )
+                return None, [f"{self._api.provider}: {exc}"]
         raw: list[Mapping[str, Any]] | None = None
         backend_errors: list[str] = []
         for backend in _TEXT_BACKENDS:
@@ -175,6 +195,10 @@ class SearchService:
             if raw:
                 break
         return raw, backend_errors
+
+    async def aclose(self) -> None:
+        if self._api is not None:
+            await self._api.aclose()
 
     def _fetch_backend(
         self,

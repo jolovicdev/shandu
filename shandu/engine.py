@@ -38,6 +38,7 @@ class ShanduEngine:
         run_store: RunStore,
         scrape_service: ScrapeService | None = None,
         scholarly_service: ScholarlySearchService | None = None,
+        search_service: SearchService | None = None,
     ) -> None:
         self._runtime = runtime
         self._orchestrator = orchestrator
@@ -45,6 +46,7 @@ class ShanduEngine:
         self._run_store = run_store
         self._scrape_service = scrape_service
         self._scholarly_service = scholarly_service
+        self._search_service = search_service
 
     @classmethod
     def from_config(cls, writer_model: str | None = None) -> "ShanduEngine":
@@ -81,6 +83,7 @@ class ShanduEngine:
             run_store=run_store,
             scrape_service=scrape_service,
             scholarly_service=scholarly_service,
+            search_service=search_service,
         )
 
     async def run(
@@ -241,8 +244,14 @@ class ShanduEngine:
             await self._scrape_service.aclose()
         if self._scholarly_service is not None:
             await self._scholarly_service.aclose()
+        if self._search_service is not None:
+            await self._search_service.aclose()
 
     def close(self) -> None:
-        if self._scrape_service is None and self._scholarly_service is None:
+        if (
+            self._scrape_service is None
+            and self._scholarly_service is None
+            and self._search_service is None
+        ):
             return
         get_async_runner().run(self.aclose())

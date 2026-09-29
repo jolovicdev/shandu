@@ -79,6 +79,7 @@ def info() -> None:
         ("Temperature", config.get("api", "temperature")),
         ("Max Tokens", config.get("api", "max_tokens")),
         *key_rows,
+        ("Search Backend", config.get("search", "backend")),
         ("Storage Dir", config.get("runtime", "storage_dir")),
         ("Default Iterations", config.get("orchestration", "max_iterations")),
         ("Default Parallelism", config.get("orchestration", "parallelism")),

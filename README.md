@@ -111,6 +111,12 @@ Generation/runtime controls:
 - `SHANDU_MAX_TOKENS` (default `32768`)
 - `SHANDU_STORAGE_DIR` (default `~/.shandu/storage`)
 - `SHANDU_PROXY` (optional proxy for scraping)
+- `SHANDU_SEARCH_BACKEND` (default `ddgs`): web search through `ddgs`, or a
+  search API: `tavily` (`TAVILY_API_KEY`), `brave` (`BRAVE_API_KEY`), `exa`
+  (`EXA_API_KEY`), or `searxng` (`SEARXNG_URL`, an instance with JSON output
+  enabled). A backend without its variable falls back to `ddgs` with a warning.
+- `OPENALEX_API_KEY`, `NCBI_API_KEY` (optional): raise the OpenAlex and PubMed
+  rate limits for paper search.
 
 Precedence:
 

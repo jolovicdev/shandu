@@ -87,6 +87,8 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "depth_policy": "adaptive",
     },
     "search": {
+        # "ddgs", or a search API: tavily, brave, exa, searxng.
+        "backend": "ddgs",
         "region": "wt-wt",
         "safesearch": "moderate",
     },
@@ -173,6 +175,9 @@ class Config:
 
         if os.getenv("SHANDU_STORAGE_DIR"):
             self._config["runtime"]["storage_dir"] = os.getenv("SHANDU_STORAGE_DIR")
+
+        if os.getenv("SHANDU_SEARCH_BACKEND"):
+            self._config["search"]["backend"] = os.getenv("SHANDU_SEARCH_BACKEND")
 
         if os.getenv("SHANDU_PROXY"):
             self._config["scraper"]["proxy"] = os.getenv("SHANDU_PROXY")

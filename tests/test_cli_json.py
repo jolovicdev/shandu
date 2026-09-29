@@ -27,19 +27,31 @@ def _isolated_storage(tmp_path):
         config.set("runtime", "storage_dir", previous)
 
 
+def _fake_engine(run) -> SimpleNamespace:
+    runs_dir = Path(str(config.get("runtime", "storage_dir"))) / "runs"
+    return SimpleNamespace(
+        run=run,
+        close=lambda: None,
+        report_path=lambda run_id: runs_dir / run_id / "report.md",
+    )
+
+
 def _stub_engine(monkeypatch, emit_event: bool = True) -> None:
     async def fake_run(request, progress_callback=None):
         if emit_event and progress_callback is not None:
             progress_callback(
                 RunEvent(stage="search", message="diagnostic event line")
             )
+        report = engine.report_path("run-1")
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("# Report\n\nBody.", encoding="utf-8")
         return ResearchRunResult(
             run_id="run-1",
             request=request if isinstance(request, ResearchRequest) else ResearchRequest(query="q"),
             report_markdown="# Report\n\nBody.",
         )
 
-    engine = SimpleNamespace(run=fake_run, close=lambda: None)
+    engine = _fake_engine(fake_run)
     monkeypatch.setattr(
         ShanduEngine, "from_config", classmethod(lambda cls: engine)
     )
@@ -67,17 +79,14 @@ def test_run_default_output_keeps_diagnostics_on_stdout(monkeypatch) -> None:
     assert "diagnostic event line" in result.stdout
 
 
-def test_run_without_output_persists_report_export(monkeypatch, tmp_path) -> None:
+def test_run_without_output_names_saved_report(monkeypatch) -> None:
     _stub_engine(monkeypatch, emit_event=False)
 
     result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
 
     assert result.exit_code == 0, result.output
-    export = tmp_path / "storage" / "exports" / "run_1.md"
-    assert export.exists()
-    assert export.read_text(encoding="utf-8") == "# Report\n\nBody."
     assert "Report saved to" in result.stdout
-    assert "run_1.md" in result.stdout
+    assert "report.md" in result.stdout
 
 
 def test_run_depth_policy_flag_reaches_request(monkeypatch) -> None:
@@ -90,7 +99,7 @@ def test_run_depth_policy_flag_reaches_request(monkeypatch) -> None:
             run_id="run-1", request=request, report_markdown="# Report"
         )
 
-    engine = SimpleNamespace(run=fake_run, close=lambda: None)
+    engine = _fake_engine(fake_run)
     monkeypatch.setattr(
         ShanduEngine, "from_config", classmethod(lambda cls: engine)
     )
@@ -132,7 +141,7 @@ def test_run_ctrl_c_cancels_and_exits_130(monkeypatch) -> None:
         coro.close()
         return future
 
-    engine = SimpleNamespace(run=fake_run, close=lambda: None)
+    engine = _fake_engine(fake_run)
     monkeypatch.setattr(
         ShanduEngine, "from_config", classmethod(lambda cls: engine)
     )

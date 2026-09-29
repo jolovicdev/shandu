@@ -139,6 +139,19 @@ class OrchestratorLike(Protocol):
         progress_callback: ProgressCallback | None = None,
     ) -> ResearchRunResult: ...
 
+    async def resume(
+        self,
+        run_id: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult: ...
+
+    async def rewrite_report(
+        self,
+        run_id: str,
+        detail_level: DetailLevel | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult: ...
+
 
 class AISearchServiceLike(Protocol):
     async def search(

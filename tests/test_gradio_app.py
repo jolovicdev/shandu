@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from pathlib import Path
 
 import gradio as gr
 
@@ -10,7 +9,7 @@ import shandu.ui.gradio.app as app_module
 from shandu.config import config
 from shandu.contracts import RunEvent
 from shandu.ui.gradio import layout as layout_module
-from shandu.ui.gradio_app import GuiRunState, _persist_report_markdown
+from shandu.ui.gradio_app import GuiRunState
 from shandu.ui.gradio.layout import _outputs, build_gui
 
 
@@ -70,14 +69,6 @@ def test_gradio_model_calls_update_from_live_events() -> None:
     strip = state.strip_html(running=True)
     assert "model calls" in strip
     assert "<b>1</b>" in strip
-
-
-def test_persist_report_markdown_writes_export_file() -> None:
-    path = _persist_report_markdown("run-xyz", "# Title\n\nBody")
-    assert path is not None
-    file_path = Path(path)
-    assert file_path.exists()
-    assert file_path.read_text(encoding="utf-8").startswith("# Title")
 
 
 def test_gradio_run_output_contract_stays_aligned() -> None:
@@ -158,7 +149,7 @@ def test_save_and_run_share_runtime_concurrency_group() -> None:
     assert groups["_run_action"] == ("shandu_runtime", 1)
 
 
-def test_launch_gui_allows_export_dir(monkeypatch, tmp_path) -> None:
+def test_launch_gui_allows_runs_dir(monkeypatch, tmp_path) -> None:
     launched: dict = {}
 
     class FakeDemo:
@@ -171,4 +162,4 @@ def test_launch_gui_allows_export_dir(monkeypatch, tmp_path) -> None:
     )
     app_module.launch_gui()
 
-    assert launched.get("allowed_paths") == [str(tmp_path / "storage" / "exports")]
+    assert launched.get("allowed_paths") == [str(tmp_path / "storage" / "runs")]

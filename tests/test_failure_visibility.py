@@ -5,7 +5,6 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
 from shandu.agents.lead import LeadAgent
 from shandu.agents.search_subagent import SearchSubagent
@@ -16,7 +15,7 @@ from shandu.contracts import (
     SubagentTask,
 )
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
-from shandu.services.memory import MemoryService
+from shandu.services.run_store import RunStore
 from shandu.services.report import ReportService
 from shandu.services.scrape import ScrapedPage
 from shandu.services.search import SearchHit, SearchService
@@ -204,14 +203,14 @@ class _EmptyCitationAgent:
         return []
 
 
-def test_orchestrator_carries_fallback_reason_in_event_and_stats() -> None:
+def test_orchestrator_carries_fallback_reason_in_event_and_stats(tmp_path) -> None:
     _FailingLead.fallback_count = 0
     _FailingLead.last_fallback_reason = None
     orchestrator = LeadOrchestrator(
         lead_agent=_FailingLead(),
         search_subagent=_EmptySearchSubagent(),
         citation_agent=_EmptyCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=ReportService(),
     )
     events: list = []

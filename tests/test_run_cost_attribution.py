@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 from blackgeorge.core.event import Event
-from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
 from shandu.agents.lead import LeadAgent, _PlanPayload, _SynthesisPayload
 from shandu.agents.search_subagent import SearchSubagent, _ExtractionPayload
@@ -14,7 +13,7 @@ from shandu.contracts import ResearchRequest, SubagentTask
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
 from shandu.runtime.bootstrap import RuntimeBootstrap, RuntimeSettings
 from shandu.services.ai_search import AISearchService
-from shandu.services.memory import MemoryService
+from shandu.services.run_store import RunStore
 from shandu.services.report import ReportService
 from shandu.services.scrape import ScrapedPage
 from shandu.services.search import SearchHit
@@ -90,12 +89,12 @@ class _EmptyCitationAgent:
         return []
 
 
-def test_lead_usage_reaches_completion_events_and_run_stats() -> None:
+def test_lead_usage_reaches_completion_events_and_run_stats(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=LeadAgent(runtime=_MeteredRuntime(_LeadDesk())),
         search_subagent=_EmptySearchSubagent(),
         citation_agent=_EmptyCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=ReportService(),
     )
     events: list = []
@@ -260,7 +259,7 @@ class _UsageLead:
         return FinalReportDraft(title="t", executive_summary="s")
 
 
-def test_overlapping_runs_report_independent_costs() -> None:
+def test_overlapping_runs_report_independent_costs(tmp_path) -> None:
     def make_orchestrator(total_tokens: int, cost_usd: float) -> LeadOrchestrator:
         lead = _UsageLead()
         lead.usage = {
@@ -273,7 +272,7 @@ def test_overlapping_runs_report_independent_costs() -> None:
             lead_agent=lead,
             search_subagent=_EmptySearchSubagent(),
             citation_agent=_EmptyCitationAgent(),
-            memory_service=MemoryService(InMemoryMemoryStore()),
+            run_store=RunStore(tmp_path),
             report_service=ReportService(),
         )
 

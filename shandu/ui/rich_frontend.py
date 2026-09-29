@@ -17,6 +17,7 @@ from rich.theme import Theme
 
 from .. import __version__
 from ..contracts import AISearchResult, ResearchRequest, ResearchRunResult, RunEvent
+from ..services.run_store import RunSummary
 
 # Long-form markdown is unreadable at full terminal width; cap the measure.
 _READING_WIDTH = 88
@@ -138,6 +139,25 @@ class ShanduUI:
             Text(title, style="title"),
             Padding(table, (0, 0, 1, 2)),
         )
+
+    def run_list(self, runs: list[RunSummary]) -> RenderableType:
+        # Only the trailing question column shrinks: the run id must stay
+        # whole so it can be copied into show, report, or resume.
+        table = Table.grid(padding=(0, 2), expand=True)
+        table.add_column(style="muted", no_wrap=True, min_width=32)
+        table.add_column(style="label", no_wrap=True, min_width=10)
+        table.add_column(style="label", no_wrap=True, min_width=9)
+        table.add_column(style="muted", no_wrap=True, justify="right", min_width=7)
+        table.add_column(style="accent", overflow="ellipsis", no_wrap=True, ratio=1)
+        for run in runs:
+            table.add_row(
+                escape(run.run_id),
+                escape(run.created_at[:10]),
+                escape(run.status),
+                f"${run.usd_spent:.3f}" if run.usd_spent else "",
+                escape(run.query),
+            )
+        return Group(Text("Runs", style="title"), Padding(table, (0, 0, 1, 2)))
 
     def query_line(self, query: str) -> Text:
         return Text.assemble(("researching  ", "label"), (query, "accent"))

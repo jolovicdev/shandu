@@ -10,7 +10,7 @@ from blackgeorge import Desk
 from blackgeorge.memory.sqlite import SQLiteMemoryStore
 import litellm
 
-from ..config import DEFAULT_MODEL, config
+from ..config import DEFAULT_MODEL, DEFAULT_STORAGE_DIR, config
 from .cost_tracker import CostTracker
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ class RuntimeBootstrap:
                 model=str(lookup("api", "model", DEFAULT_MODEL)),
                 temperature=float(lookup("api", "temperature", 0.2)),
                 max_tokens=int(lookup("api", "max_tokens", 32768)),
-                storage_dir=str(lookup("runtime", "storage_dir", ".blackgeorge")),
+                storage_dir=str(lookup("runtime", "storage_dir", DEFAULT_STORAGE_DIR)),
                 structured_output_retries=int(
                     lookup("runtime", "structured_output_retries", 3)
                 ),
@@ -122,27 +122,7 @@ class RuntimeBootstrap:
                 ],
             }
 
-        scope = f"run:{run_id}"
-        status = self.memory_store.read("status", scope)
-        if status is None:
-            return {"exists": False, "run_id": run_id}
-
-        created_at = self.memory_store.read("created_at", scope)
-        updated_at = self.memory_store.read("updated_at", scope)
-        request_payload = self.memory_store.read("request", scope)
-        result_payload = self.memory_store.read("result", scope)
-        events_payload = self.memory_store.read("events", scope) or []
-        return {
-            "exists": True,
-            "run_id": run_id,
-            "status": status,
-            "created_at": created_at or "",
-            "updated_at": updated_at or created_at or "",
-            "input": request_payload,
-            "output": None,
-            "output_json": result_payload,
-            "events": events_payload if isinstance(events_payload, list) else [],
-        }
+        return {"exists": False, "run_id": run_id}
 
 
 _bootstrap: RuntimeBootstrap | None = None

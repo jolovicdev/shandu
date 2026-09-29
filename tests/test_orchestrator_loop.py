@@ -4,7 +4,6 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
 from shandu.contracts import (
     CitationEntry,
@@ -16,7 +15,7 @@ from shandu.contracts import (
     SubagentTask,
 )
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
-from shandu.services.memory import MemoryService
+from shandu.services.run_store import RunStore
 from shandu.services.report import ReportService
 
 
@@ -148,13 +147,12 @@ class FilteringReportService(ReportService):
         )
 
 
-def test_orchestrator_returns_report_normalized_citation_ledger() -> None:
-    memory_service = MemoryService(InMemoryMemoryStore())
+def test_orchestrator_returns_report_normalized_citation_ledger(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=ExtraCitationAgent(),
-        memory_service=memory_service,
+        run_store=RunStore(tmp_path),
         report_service=FilteringReportService(),
     )
 
@@ -266,13 +264,13 @@ class TrackingSearchSubagent(FakeSearchSubagent):
         )
 
 
-def _peak_concurrency(parallelism: int) -> int:
+def _peak_concurrency(parallelism: int, store: RunStore) -> int:
     subagent = TrackingSearchSubagent()
     orchestrator = LeadOrchestrator(
         lead_agent=ParallelLeadAgent(),
         search_subagent=subagent,
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=store,
         report_service=FakeReportService(),
     )
     asyncio.run(
@@ -285,17 +283,17 @@ def _peak_concurrency(parallelism: int) -> int:
     return subagent.peak
 
 
-def test_orchestrator_parallelism_controls_task_concurrency() -> None:
-    assert _peak_concurrency(1) == 1
-    assert _peak_concurrency(2) == 2
+def test_orchestrator_parallelism_controls_task_concurrency(tmp_path) -> None:
+    assert _peak_concurrency(1, RunStore(tmp_path)) == 1
+    assert _peak_concurrency(2, RunStore(tmp_path)) == 2
 
 
-def test_orchestrator_emits_task_level_search_progress_events() -> None:
+def test_orchestrator_emits_task_level_search_progress_events(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=ParallelLeadAgent(),
         search_subagent=SlowSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="parallel-test", max_iterations=1, parallelism=2)
@@ -311,12 +309,12 @@ def test_orchestrator_emits_task_level_search_progress_events() -> None:
     assert any(message == "Task task-4 completed" for message in search_messages)
 
 
-def test_orchestrator_emits_live_model_call_count() -> None:
+def test_orchestrator_emits_live_model_call_count(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="model-call-test", max_iterations=1, parallelism=1)
@@ -356,12 +354,12 @@ class TraceSearchSubagent(FakeSearchSubagent):
         return await super().execute_task("x", task, request, progress_callback=None)
 
 
-def test_orchestrator_forwards_subagent_trace_events() -> None:
+def test_orchestrator_forwards_subagent_trace_events(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=ParallelLeadAgent(),
         search_subagent=TraceSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="parallel-test", max_iterations=1, parallelism=2)
@@ -388,13 +386,13 @@ def test_orchestrator_forwards_subagent_trace_events() -> None:
     )
 
 
-def test_run_persists_effective_settings_to_scope() -> None:
-    memory_service = MemoryService(InMemoryMemoryStore())
+def test_run_persists_effective_settings(tmp_path) -> None:
+    store = RunStore(tmp_path)
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=memory_service,
+        run_store=store,
         report_service=FakeReportService(),
         runtime_settings={"model": "m", "max_tokens": 4096},
     )
@@ -404,11 +402,10 @@ def test_run_persists_effective_settings_to_scope() -> None:
         )
     )
 
-    stored = memory_service.read(f"run:{result.run_id}", "settings")
-    assert stored == {"model": "m", "max_tokens": 4096}
+    assert store.settings(result.run_id) == {"model": "m", "max_tokens": 4096}
 
 
-def test_orchestrator_adds_cost_stats_when_available() -> None:
+def test_orchestrator_adds_cost_stats_when_available(tmp_path) -> None:
     lead = FakeLeadAgent()
     lead.last_llm_usage = {
         "prompt_tokens": 2000,
@@ -422,7 +419,7 @@ def test_orchestrator_adds_cost_stats_when_available() -> None:
         lead_agent=lead,
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="cost-test", max_iterations=1, parallelism=1)
@@ -435,12 +432,12 @@ def test_orchestrator_adds_cost_stats_when_available() -> None:
     assert result.run_stats["usd_spent"] == 0.06
 
 
-def test_run_stats_include_source_class_and_dated_summary() -> None:
+def test_run_stats_include_source_class_and_dated_summary(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="quality-test", max_iterations=1, parallelism=1)
@@ -612,13 +609,13 @@ class CapturingSearchSubagent(FakeSearchSubagent):
         )
 
 
-def test_orchestrator_passes_already_extracted_urls_per_iteration() -> None:
+def test_orchestrator_passes_already_extracted_urls_per_iteration(tmp_path) -> None:
     subagent = CapturingSearchSubagent()
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=subagent,
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="q", max_iterations=2, parallelism=1)
@@ -668,12 +665,12 @@ class _RichSearchSubagent(FakeSearchSubagent):
         ]
 
 
-def _run_with(lead, subagent, max_iterations: int):
+def _run_with(lead, subagent, max_iterations: int, store: RunStore):
     orchestrator = LeadOrchestrator(
         lead_agent=lead,
         search_subagent=subagent,
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=store,
         report_service=FakeReportService(),
     )
     return asyncio.run(
@@ -683,7 +680,7 @@ def _run_with(lead, subagent, max_iterations: int):
     )
 
 
-def test_adaptive_ignores_model_stop_on_weak_coverage() -> None:
+def test_adaptive_ignores_model_stop_on_weak_coverage(tmp_path) -> None:
     lead = _StoppingLead(
         CoverageAssessment(
             coverage_score=0.1,
@@ -694,12 +691,12 @@ def test_adaptive_ignores_model_stop_on_weak_coverage() -> None:
         )
     )
 
-    result = _run_with(lead, FakeSearchSubagent(), 3)
+    result = _run_with(lead, FakeSearchSubagent(), 3, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 3
 
 
-def test_adaptive_stops_on_strong_corpus() -> None:
+def test_adaptive_stops_on_strong_corpus(tmp_path) -> None:
     lead = _StoppingLead(
         CoverageAssessment(
             coverage_score=0.9,
@@ -710,13 +707,13 @@ def test_adaptive_stops_on_strong_corpus() -> None:
         )
     )
 
-    result = _run_with(lead, _RichSearchSubagent(), 5)
+    result = _run_with(lead, _RichSearchSubagent(), 5, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 1
 
 
-def test_adaptive_without_coverage_uses_evidence_signals() -> None:
-    result = _run_with(_StoppingLead(None), FakeSearchSubagent(), 3)
+def test_adaptive_without_coverage_uses_evidence_signals(tmp_path) -> None:
+    result = _run_with(_StoppingLead(None), FakeSearchSubagent(), 3, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 3
 
@@ -774,9 +771,9 @@ class _CountingSearchSubagent(FakeSearchSubagent):
         )
 
 
-def test_orchestrator_runs_final_plan_tasks_then_stops() -> None:
+def test_orchestrator_runs_final_plan_tasks_then_stops(tmp_path) -> None:
     subagent = _CountingSearchSubagent()
-    result = _run_with(_PlanStoppingLead(), subagent, 3)
+    result = _run_with(_PlanStoppingLead(), subagent, 3, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 2
     assert subagent.calls == 2
@@ -795,11 +792,11 @@ class _ContextCapturingLead(FakeLeadAgent):
         )
 
 
-def test_planner_context_lists_prior_focuses_and_queries_only() -> None:
+def test_planner_context_lists_prior_focuses_and_queries_only(tmp_path) -> None:
     import json
 
     lead = _ContextCapturingLead()
-    _run_with(lead, FakeSearchSubagent(), 2)
+    _run_with(lead, FakeSearchSubagent(), 2, RunStore(tmp_path))
 
     assert lead.contexts[0] == [("prior_task_focuses", []), ("queries_run", [])]
     assert lead.contexts[1] == [
@@ -816,13 +813,13 @@ class _RaisingLead(FakeLeadAgent):
         raise RuntimeError("plan boom")
 
 
-def test_failed_run_persists_failed_status_and_events() -> None:
-    memory_service = MemoryService(InMemoryMemoryStore())
+def test_failed_run_persists_failed_status_and_events(tmp_path) -> None:
+    store = RunStore(tmp_path)
     orchestrator = LeadOrchestrator(
         lead_agent=_RaisingLead(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=memory_service,
+        run_store=store,
         report_service=FakeReportService(),
     )
     seen: dict[str, str] = {}
@@ -841,11 +838,11 @@ def test_failed_run_persists_failed_status_and_events() -> None:
             )
         )
 
-    scope = f"run:{seen['run_id']}"
-    assert memory_service.read(scope, "status") == "failed"
-    events = memory_service.read(scope, "events")
+    status = store.load(seen["run_id"]).status
+    assert status["status"] == "failed"
+    assert "plan boom" in status["error"]
+    events = store.events(seen["run_id"])
     assert events and events[0]["stage"] == "bootstrap"
-    assert "plan boom" in memory_service.read(scope, "error")
 
 
 class _BlockingLead(FakeLeadAgent):
@@ -855,13 +852,13 @@ class _BlockingLead(FakeLeadAgent):
         await asyncio.sleep(3600)
 
 
-def test_cancelled_run_persists_cancelled_status() -> None:
-    memory_service = MemoryService(InMemoryMemoryStore())
+def test_cancelled_run_persists_cancelled_status(tmp_path) -> None:
+    store = RunStore(tmp_path)
     orchestrator = LeadOrchestrator(
         lead_agent=_BlockingLead(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=memory_service,
+        run_store=store,
         report_service=FakeReportService(),
     )
     seen: dict[str, str] = {}
@@ -888,6 +885,5 @@ def test_cancelled_run_persists_cancelled_status() -> None:
 
     asyncio.run(main())
 
-    scope = f"run:{seen['run_id']}"
-    assert memory_service.read(scope, "status") == "cancelled"
-    assert memory_service.read(scope, "events")
+    assert store.load(seen["run_id"]).status["status"] == "cancelled"
+    assert store.events(seen["run_id"])

@@ -12,11 +12,8 @@ import gradio as gr
 from ...contracts import ResearchRequest, ResearchRunResult, RunEvent
 from ...engine import ShanduEngine
 from ...runtime import get_async_runner
-from ...services.report import (
-    RecentReport,
-    list_recent_reports,
-    persist_report_markdown,
-)
+from ...services.report import RecentReport, list_recent_reports
+from ...services.run_store import default_run_store
 from .constants import DEPTH_POLICIES, DETAIL_LEVELS
 from .settings import (
     load_defaults,
@@ -433,9 +430,7 @@ def _run_action(
         yield _outputs(
             state=state,
             running=False,
-            download_path=persist_report_markdown(
-                result.run_id, result.report_markdown
-            ),
+            download_path=str(default_run_store().report_path(result.run_id)),
         )
         return
 

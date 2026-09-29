@@ -6,7 +6,6 @@ from typing import cast
 from ...config import DEFAULT_MODEL, config, infer_api_key_env_name
 from ...interfaces import DepthPolicy, DetailLevel
 from ...runtime import reset_bootstrap
-from ...services.report import persist_report_markdown as persist_report_markdown
 from .constants import DEPTH_POLICIES, DETAIL_LEVELS
 
 
@@ -134,4 +133,3 @@ def save_configuration(
 _resolved_detail_level = resolved_detail_level
 _resolved_depth_policy = resolved_depth_policy
 _save_configuration = save_configuration
-_persist_report_markdown = persist_report_markdown

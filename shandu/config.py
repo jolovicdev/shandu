@@ -56,6 +56,7 @@ def infer_api_key_env_name(model: str) -> str:
 
 
 DEFAULT_MODEL = "deepseek/deepseek-flash"
+DEFAULT_STORAGE_DIR = "~/.shandu/storage"
 _LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 
 
@@ -70,7 +71,7 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "api_key": "",
     },
     "runtime": {
-        "storage_dir": ".blackgeorge",
+        "storage_dir": DEFAULT_STORAGE_DIR,
         "structured_output_retries": 3,
         "max_iterations": 12,
         "max_tool_calls": 24,
@@ -111,7 +112,7 @@ class Config:
         self.apply_provider_api_key()
 
     def _normalize_storage_dir(self) -> None:
-        raw = str(self._config["runtime"].get("storage_dir", ".blackgeorge") or ".blackgeorge")
+        raw = str(self._config["runtime"].get("storage_dir") or DEFAULT_STORAGE_DIR)
         self._config["runtime"]["storage_dir"] = str(
             Path(raw).expanduser().resolve()
         )

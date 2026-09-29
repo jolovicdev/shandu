@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from blackgeorge.utils import new_id
@@ -24,10 +24,81 @@ from ..interfaces import (
     ReportServiceLike,
     SearchSubagentLike,
 )
-from ..services.memory import MemoryService
+from ..services.run_store import CompletedIteration, RunStore, StoredRun
 
 
 logger = logging.getLogger(__name__)
+
+
+def _empty_llm_totals() -> dict[str, Any]:
+    return {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "llm_calls": 0,
+        "cost_events": 0,
+    }
+
+
+@dataclass
+class _RunState:
+    evidence: list[EvidenceRecord] = field(default_factory=list)
+    summaries: list[IterationSynthesis] = field(default_factory=list)
+    task_focuses: list[str] = field(default_factory=list)
+    queries_run: list[str] = field(default_factory=list)
+    next_iteration: int = 0
+    research_done: bool = False
+    agent_model_calls: int = 0
+    lead_fallbacks: int = 0
+    extraction_fallbacks: int = 0
+    fallback_reasons: list[str] = field(default_factory=list)
+    llm_totals: dict[str, Any] = field(default_factory=_empty_llm_totals)
+    saw_llm_usage: bool = False
+
+    def counters(self) -> dict[str, Any]:
+        return {
+            "agent_model_calls": self.agent_model_calls,
+            "lead_fallbacks": self.lead_fallbacks,
+            "extraction_fallbacks": self.extraction_fallbacks,
+            "fallback_reasons": list(self.fallback_reasons),
+            "llm_totals": dict(self.llm_totals),
+            "saw_llm_usage": self.saw_llm_usage,
+        }
+
+    @classmethod
+    def from_stored(cls, stored: StoredRun, include_partial: bool) -> "_RunState":
+        """Rebuild loop state from a stored run.
+
+        Evidence from an iteration that never reached synthesis is kept only
+        when ``include_partial`` is set: a resumed run re-plans that
+        iteration, while a report rewrite uses everything that was read.
+        """
+        state = cls()
+        completed = {item.index for item in stored.iterations}
+        state.evidence = [
+            record
+            for iteration, record in stored.evidence
+            if include_partial or iteration in completed
+        ]
+        for item in stored.iterations:
+            state.summaries.append(item.synthesis)
+            for task in item.plan.subagent_tasks:
+                state.task_focuses.append(task.focus)
+                for query in task.search_queries:
+                    if query not in state.queries_run:
+                        state.queries_run.append(query)
+        state.research_done = bool(stored.status.get("research_done"))
+        if stored.iterations:
+            state.next_iteration = stored.iterations[-1].index + 1
+            counters = stored.iterations[-1].counters
+            state.agent_model_calls = int(counters.get("agent_model_calls", 0))
+            state.lead_fallbacks = int(counters.get("lead_fallbacks", 0))
+            state.extraction_fallbacks = int(counters.get("extraction_fallbacks", 0))
+            state.fallback_reasons = list(counters.get("fallback_reasons") or [])
+            state.llm_totals.update(counters.get("llm_totals") or {})
+            state.saw_llm_usage = bool(counters.get("saw_llm_usage"))
+        return state
 
 
 class LeadOrchestrator:
@@ -36,14 +107,14 @@ class LeadOrchestrator:
         lead_agent: LeadAgentLike,
         search_subagent: SearchSubagentLike,
         citation_agent: CitationAgentLike,
-        memory_service: MemoryService,
+        run_store: RunStore,
         report_service: ReportServiceLike,
         runtime_settings: dict[str, Any] | None = None,
     ) -> None:
         self._lead = lead_agent
         self._search_subagent = search_subagent
         self._citation = citation_agent
-        self._memory = memory_service
+        self._store = run_store
         self._report = report_service
         self._runtime_settings = (
             dict(runtime_settings) if runtime_settings is not None else None
@@ -55,56 +126,81 @@ class LeadOrchestrator:
         progress_callback: ProgressCallback | None = None,
     ) -> ResearchRunResult:
         run_id = new_id()
-        scope = f"run:{run_id}"
+        self._store.create(run_id, request, self._runtime_settings)
+        return await self._execute(
+            run_id, request, _RunState(), progress_callback, "Initializing run"
+        )
+
+    async def resume(
+        self,
+        run_id: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult:
+        stored = self._store.load(run_id)
+        state = _RunState.from_stored(stored, include_partial=False)
+        return await self._execute(
+            run_id,
+            stored.request,
+            state,
+            progress_callback,
+            f"Resuming run at iteration {state.next_iteration + 1}",
+        )
+
+    async def rewrite_report(
+        self,
+        run_id: str,
+        detail_level: Literal["concise", "standard", "high"] | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult:
+        stored = self._store.load(run_id)
+        request = stored.request
+        if detail_level is not None:
+            request = request.model_copy(update={"detail_level": detail_level})
+        state = _RunState.from_stored(stored, include_partial=True)
+        state.research_done = True
+        return await self._execute(
+            run_id, request, state, progress_callback, "Rewriting report from stored evidence"
+        )
+
+    async def _execute(
+        self,
+        run_id: str,
+        request: ResearchRequest,
+        state: _RunState,
+        progress_callback: ProgressCallback | None,
+        start_message: str,
+    ) -> ResearchRunResult:
         started = time.perf_counter()
-        started_at = datetime.now(timezone.utc).isoformat()
-        event_log: list[dict[str, Any]] = []
 
         async def emit(event: RunEvent) -> None:
-            event_log.append(event.model_dump(mode="json"))
+            self._store.append_event(run_id, event)
             await self._emit(progress_callback, event)
 
         try:
-            self._memory.write(scope, "created_at", started_at, author="orchestrator")
-            self._memory.write(scope, "status", "running", author="orchestrator")
-            if self._runtime_settings is not None:
-                self._memory.write(
-                    scope, "settings", dict(self._runtime_settings), author="orchestrator"
-                )
+            self._store.set_status(run_id, "running")
             await emit(
                 RunEvent(
                     stage="bootstrap",
-                    message="Initializing run",
+                    message=start_message,
                     metrics={"run_id": run_id},
                 ),
             )
-            self._memory.write(
-                scope, "request", request.model_dump(mode="json"), author="lead"
-            )
 
-            agent_model_calls = 0
-            all_evidence: list[EvidenceRecord] = []
-            iteration_summaries: list[IterationSynthesis] = []
-            prior_task_focuses: list[str] = []
-            queries_run: list[str] = []
-            lead_fallbacks = fallbacks_before = self._lead.fallback_count
-            extraction_fallbacks = 0
-            fallback_reasons: list[str] = []
-            llm_totals: dict[str, Any] = {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "cost_usd": 0.0,
-                "llm_calls": 0,
-                "cost_events": 0,
-            }
-            saw_llm_usage = False
+            lead_seen = self._lead.fallback_count
+
+            def lead_fell_back() -> bool:
+                nonlocal lead_seen
+                if self._lead.fallback_count <= lead_seen:
+                    return False
+                state.lead_fallbacks += self._lead.fallback_count - lead_seen
+                lead_seen = self._lead.fallback_count
+                return True
 
             def absorb_llm_usage(usage: Any) -> dict[str, Any] | None:
-                nonlocal saw_llm_usage
                 if not isinstance(usage, dict) or not usage:
                     return None
-                saw_llm_usage = True
+                state.saw_llm_usage = True
+                llm_totals = state.llm_totals
                 for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
                     value = usage.get(key, 0)
                     if isinstance(value, (int, float)):
@@ -124,27 +220,29 @@ class LeadOrchestrator:
                 metrics: dict[str, Any] | None = None,
             ) -> dict[str, Any]:
                 updated = dict(metrics or {})
-                if agent_model_calls > 0:
-                    updated["agent_model_calls"] = agent_model_calls
+                if state.agent_model_calls > 0:
+                    updated["agent_model_calls"] = state.agent_model_calls
                 return updated
 
-            for iteration in range(request.max_iterations):
+            for iteration in range(
+                state.next_iteration,
+                state.next_iteration if state.research_done else request.max_iterations,
+            ):
                 memory_context = [
-                    ("prior_task_focuses", list(prior_task_focuses)),
-                    ("queries_run", list(queries_run)),
+                    ("prior_task_focuses", list(state.task_focuses)),
+                    ("queries_run", list(state.queries_run)),
                 ]
-                agent_model_calls += 1
+                state.agent_model_calls += 1
                 plan = await self._lead.create_iteration_plan(
                     request=request,
                     iteration=iteration,
-                    prior_summaries=iteration_summaries,
+                    prior_summaries=state.summaries,
                     memory_context=memory_context,
                 )
                 plan_usage = absorb_llm_usage(
                     getattr(self._lead, "last_llm_usage", None)
                 )
-                if self._lead.fallback_count > lead_fallbacks:
-                    lead_fallbacks = self._lead.fallback_count
+                if lead_fell_back():
                     await emit(
                         RunEvent(
                             stage="error",
@@ -154,14 +252,8 @@ class LeadOrchestrator:
                         ),
                     )
                     self._record_fallback_reason(
-                        fallback_reasons, "create_iteration_plan"
+                        state.fallback_reasons, "create_iteration_plan"
                     )
-                self._memory.write(
-                    scope,
-                    f"iteration:{iteration}:plan",
-                    plan.model_dump(mode="json"),
-                    author="lead",
-                )
                 plan_metrics = with_model_call_count(
                     {"tasks": len(plan.subagent_tasks)}
                 )
@@ -183,7 +275,7 @@ class LeadOrchestrator:
 
                 # A failed fetch leaves snippet-only evidence; its URL stays
                 # eligible for another attempt.
-                fetched = [item for item in all_evidence if not item.fetch_error]
+                fetched = [item for item in state.evidence if not item.fetch_error]
                 extracted_urls = {item.requested_url for item in fetched}
                 extracted_urls.update(item.final_url for item in fetched if item.final_url)
                 semaphore = asyncio.Semaphore(request.parallelism)
@@ -215,14 +307,13 @@ class LeadOrchestrator:
                         trace_type: str,
                         payload: dict[str, Any],
                     ) -> None:
-                        nonlocal agent_model_calls, extraction_fallbacks
                         if trace_type in ("extract_started", "urls_ranked"):
-                            agent_model_calls += 1
+                            state.agent_model_calls += 1
                         elif trace_type == "extraction_fallback":
-                            extraction_fallbacks += 1
+                            state.extraction_fallbacks += 1
                             trace_reason = payload.get("reason")
                             if trace_reason:
-                                fallback_reasons.append(str(trace_reason)[:300])
+                                state.fallback_reasons.append(str(trace_reason)[:300])
                         trace_usage = absorb_llm_usage(payload.get("llm_usage"))
                         trace_event = self._build_search_trace_event(
                             iteration=iteration,
@@ -237,18 +328,13 @@ class LeadOrchestrator:
                     try:
                         async with semaphore:
                             evidence = await self._search_subagent.execute_task(
-                                scope,
+                                f"run:{run_id}",
                                 task,
                                 request,
                                 progress_callback=on_search_trace,
                                 extracted_urls=extracted_urls,
                             )
-                        self._memory.write(
-                            scope,
-                            f"iteration:{iteration}:task:{task.task_id}:evidence_count",
-                            len(evidence),
-                            author=task.task_id,
-                        )
+                        self._store.append_evidence(run_id, iteration, evidence)
                         async with completed_lock:
                             completed_tasks += 1
                             finished = completed_tasks
@@ -294,12 +380,12 @@ class LeadOrchestrator:
                     else:
                         task_errors += 1
 
-                all_evidence.extend(iteration_evidence)
-                prior_task_focuses.extend(task.focus for task in plan.subagent_tasks)
+                state.evidence.extend(iteration_evidence)
+                state.task_focuses.extend(task.focus for task in plan.subagent_tasks)
                 for task in plan.subagent_tasks:
                     for query in task.search_queries:
-                        if query not in queries_run:
-                            queries_run.append(query)
+                        if query not in state.queries_run:
+                            state.queries_run.append(query)
                 await emit(
                     RunEvent(
                         stage="search",
@@ -314,20 +400,19 @@ class LeadOrchestrator:
                     ),
                 )
 
-                agent_model_calls += 1
+                state.agent_model_calls += 1
                 synthesis = await self._lead.synthesize_iteration(
                     request=request,
                     iteration=iteration,
                     iteration_evidence=[
                         item.model_dump(mode="json") for item in iteration_evidence
                     ],
-                    prior_summaries=iteration_summaries,
+                    prior_summaries=state.summaries,
                 )
                 synthesis_usage = absorb_llm_usage(
                     getattr(self._lead, "last_llm_usage", None)
                 )
-                if self._lead.fallback_count > lead_fallbacks:
-                    lead_fallbacks = self._lead.fallback_count
+                if lead_fell_back():
                     await emit(
                         RunEvent(
                             stage="error",
@@ -337,14 +422,17 @@ class LeadOrchestrator:
                         ),
                     )
                     self._record_fallback_reason(
-                        fallback_reasons, "synthesize_iteration"
+                        state.fallback_reasons, "synthesize_iteration"
                     )
-                iteration_summaries.append(synthesis)
-                self._memory.write(
-                    scope,
-                    f"iteration:{iteration}:synthesis",
-                    synthesis.model_dump(mode="json"),
-                    author="lead",
+                state.summaries.append(synthesis)
+                self._store.save_iteration(
+                    run_id,
+                    CompletedIteration(
+                        index=iteration,
+                        plan=plan,
+                        synthesis=synthesis,
+                        counters=state.counters(),
+                    ),
                 )
                 synthesis_metrics = with_model_call_count(
                     {
@@ -376,13 +464,14 @@ class LeadOrchestrator:
                     if iteration + 1 >= request.max_iterations:
                         break
                     if not self._adaptive_should_continue(
-                        synthesis.coverage, all_evidence, request.max_iterations, iteration
+                        synthesis.coverage, state.evidence, request.max_iterations, iteration
                     ):
                         break
                 elif not synthesis.continue_loop:
                     break
+            self._store.mark_research_done(run_id)
 
-            citations = await self._citation.build_citations(request.query, all_evidence)
+            citations = await self._citation.build_citations(request.query, state.evidence)
             citation_metrics = with_model_call_count({"citations": len(citations)})
             await emit(
                 RunEvent(
@@ -392,15 +481,14 @@ class LeadOrchestrator:
                 ),
             )
 
-            agent_model_calls += 1
+            state.agent_model_calls += 1
             draft = await self._lead.build_final_report(
                 request=request,
-                iteration_summaries=iteration_summaries,
-                evidence_payload=[item.model_dump(mode="json") for item in all_evidence],
+                iteration_summaries=state.summaries,
+                evidence_payload=[item.model_dump(mode="json") for item in state.evidence],
                 citations_payload=[entry.model_dump(mode="json") for entry in citations],
             )
-            if self._lead.fallback_count > lead_fallbacks:
-                lead_fallbacks = self._lead.fallback_count
+            if lead_fell_back():
                 await emit(
                     RunEvent(
                         stage="error",
@@ -408,7 +496,7 @@ class LeadOrchestrator:
                         payload=self._fallback_payload("build_final_report"),
                     ),
                 )
-                self._record_fallback_reason(fallback_reasons, "build_final_report")
+                self._record_fallback_reason(state.fallback_reasons, "build_final_report")
             rendered_report = self._report.render_result(request, draft, citations)
             report_markdown = rendered_report.markdown
             report_citations = rendered_report.citations
@@ -428,19 +516,20 @@ class LeadOrchestrator:
                 ),
             )
 
+            llm_totals = state.llm_totals
             elapsed = time.perf_counter() - started
             run_stats: dict[str, Any] = {
                 "elapsed_seconds": round(elapsed, 2),
-                "iterations": len(iteration_summaries),
-                "evidence_count": len(all_evidence),
+                "iterations": len(state.summaries),
+                "evidence_count": len(state.evidence),
                 "candidate_citation_count": len(citations),
                 "citation_count": len(report_citations),
-                "agent_model_calls": agent_model_calls,
-                "agent_fallbacks": lead_fallbacks - fallbacks_before + extraction_fallbacks,
+                "agent_model_calls": state.agent_model_calls,
+                "agent_fallbacks": state.lead_fallbacks + state.extraction_fallbacks,
             }
-            if fallback_reasons:
-                run_stats["fallback_reasons"] = list(fallback_reasons)
-            if saw_llm_usage:
+            if state.fallback_reasons:
+                run_stats["fallback_reasons"] = list(state.fallback_reasons)
+            if state.saw_llm_usage:
                 run_stats["llm_usage"] = dict(llm_totals)
             if llm_totals["llm_calls"] > 0:
                 run_stats["metered_calls"] = llm_totals["llm_calls"]
@@ -458,68 +547,36 @@ class LeadOrchestrator:
                     run_stats["cost_coverage"] = "partial"
                 else:
                     run_stats["cost_coverage"] = "full"
-            run_stats.update(self._quality_summary(all_evidence))
+            run_stats.update(self._quality_summary(state.evidence))
 
             result = ResearchRunResult(
                 run_id=run_id,
                 request=request,
                 report_markdown=report_markdown,
                 citations=report_citations,
-                evidence=all_evidence,
-                iteration_summaries=iteration_summaries,
+                evidence=state.evidence,
+                iteration_summaries=state.summaries,
                 run_stats=run_stats,
             )
 
-            complete_event = RunEvent(
-                stage="complete",
-                message="Run completed",
-                metrics=result.run_stats,
-                payload={"run_id": run_id},
+            self._store.save_report(run_id, report_markdown, report_citations, run_stats)
+            self._store.set_status(run_id, "completed")
+            await emit(
+                RunEvent(
+                    stage="complete",
+                    message="Run completed",
+                    metrics=result.run_stats,
+                    payload={"run_id": run_id},
+                )
             )
-            event_log.append(complete_event.model_dump(mode="json"))
-            self._memory.write(scope, "status", "completed", author="orchestrator")
-            self._memory.write(
-                scope,
-                "updated_at",
-                datetime.now(timezone.utc).isoformat(),
-                author="orchestrator",
-            )
-            self._memory.write(scope, "events", event_log, author="orchestrator")
-            self._memory.write(
-                scope,
-                "result",
-                {
-                    "run_id": result.run_id,
-                    "run_stats": result.run_stats,
-                    "report_preview": result.report_markdown[:1800],
-                    "citation_count": len(result.citations),
-                    "evidence_count": len(result.evidence),
-                },
-                author="orchestrator",
-            )
-            await self._emit(progress_callback, complete_event)
-
             return result
         except BaseException as exc:
             terminal_status = (
                 "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
             )
             try:
-                self._memory.write(
-                    scope, "status", terminal_status, author="orchestrator"
-                )
-                self._memory.write(
-                    scope,
-                    "updated_at",
-                    datetime.now(timezone.utc).isoformat(),
-                    author="orchestrator",
-                )
-                self._memory.write(scope, "events", event_log, author="orchestrator")
-                self._memory.write(
-                    scope,
-                    "error",
-                    f"{type(exc).__name__}: {exc}"[:300],
-                    author="orchestrator",
+                self._store.set_status(
+                    run_id, terminal_status, f"{type(exc).__name__}: {exc}"[:300]
                 )
             except Exception:
                 logger.warning(

@@ -109,7 +109,7 @@ Generation/runtime controls:
 
 - `SHANDU_TEMPERATURE` (default `0.2`)
 - `SHANDU_MAX_TOKENS` (default `32768`)
-- `SHANDU_STORAGE_DIR` (default `.blackgeorge`)
+- `SHANDU_STORAGE_DIR` (default `~/.shandu/storage`)
 - `SHANDU_PROXY` (optional proxy for scraping)
 
 Precedence:
@@ -161,8 +161,16 @@ Other commands:
 - `shandu configure`
 - `shandu gui`
 - `shandu aisearch <query>`
+- `shandu list`: stored runs, newest first
+- `shandu show <run_id>`: a stored run's summary and report
+- `shandu report <run_id> [--detail-level] [--model] [--output]`: rewrite the report from stored evidence, with no new searches
+- `shandu resume <run_id>`: continue a stopped run after its last completed iteration
 - `shandu inspect <run_id>`
 - `shandu clean`
+
+Each run lives in `<storage_dir>/runs/<run_id>/`: the request, live events,
+evidence checkpointed after every task, per-iteration plans and syntheses, the
+citation ledger, `report.md`, and run stats.
 
 ### GUI
 

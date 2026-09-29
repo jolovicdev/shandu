@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 from collections.abc import AsyncIterator, Callable
 
@@ -20,7 +21,8 @@ from .runtime.bootstrap import (
     get_bootstrap,
     release_bootstrap_run,
 )
-from .services import AISearchService, MemoryService, ReportService, ScrapeService, SearchService
+from .services import AISearchService, ReportService, ScrapeService, SearchService
+from .services.run_store import RunNotFoundError, RunStore, RunSummary
 
 ProgressCallback = Callable[[RunEvent], Any]
 
@@ -31,29 +33,31 @@ class ShanduEngine:
         runtime: RuntimeInspectLike,
         orchestrator: OrchestratorLike,
         ai_search_service: AISearchServiceLike,
+        run_store: RunStore,
         scrape_service: ScrapeService | None = None,
     ) -> None:
         self._runtime = runtime
         self._orchestrator = orchestrator
         self._ai_search = ai_search_service
+        self._run_store = run_store
         self._scrape_service = scrape_service
 
     @classmethod
-    def from_config(cls) -> "ShanduEngine":
+    def from_config(cls, writer_model: str | None = None) -> "ShanduEngine":
         runtime = get_bootstrap()
         search_service = SearchService()
         scrape_service = ScrapeService()
-        memory_service = MemoryService(runtime.memory_store)
+        run_store = RunStore(Path(runtime.settings.storage_dir) / "runs")
         report_service = ReportService()
 
-        lead = LeadAgent(runtime)
+        lead = LeadAgent(runtime, writer_model=writer_model)
         subagent = SearchSubagent(runtime, search_service, scrape_service)
         citation = CitationAgent()
         orchestrator = LeadOrchestrator(
             lead_agent=lead,
             search_subagent=subagent,
             citation_agent=citation,
-            memory_service=memory_service,
+            run_store=run_store,
             report_service=report_service,
             runtime_settings=asdict(runtime.settings),
         )
@@ -62,6 +66,7 @@ class ShanduEngine:
             runtime=runtime,
             orchestrator=orchestrator,
             ai_search_service=ai_search_service,
+            run_store=run_store,
             scrape_service=scrape_service,
         )
 
@@ -83,6 +88,40 @@ class ShanduEngine:
     ) -> ResearchRunResult:
         runner = get_async_runner()
         return runner.run(self.run(request, progress_callback))
+
+    async def resume(
+        self,
+        run_id: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult:
+        acquire_bootstrap_run()
+        try:
+            return await self._orchestrator.resume(run_id, progress_callback)
+        finally:
+            release_bootstrap_run()
+
+    async def rewrite_report(
+        self,
+        run_id: str,
+        detail_level: DetailLevel | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult:
+        acquire_bootstrap_run()
+        try:
+            return await self._orchestrator.rewrite_report(
+                run_id, detail_level, progress_callback
+            )
+        finally:
+            release_bootstrap_run()
+
+    def list_runs(self) -> list[RunSummary]:
+        return self._run_store.list_runs()
+
+    def load_run(self, run_id: str) -> ResearchRunResult:
+        return self._run_store.load_result(run_id)
+
+    def report_path(self, run_id: str) -> Path:
+        return self._run_store.report_path(run_id)
 
     async def stream(self, request: ResearchRequest) -> AsyncIterator[RunEvent]:
         queue: asyncio.Queue[RunEvent | None] = asyncio.Queue()
@@ -122,7 +161,25 @@ class ShanduEngine:
             raise error
 
     def inspect_run(self, run_id: str) -> dict[str, object]:
-        return self._runtime.inspect_run(run_id)
+        """Describe a research run, or a single model call by its desk run id."""
+        try:
+            stored = self._run_store.load(run_id)
+        except RunNotFoundError:
+            return self._runtime.inspect_run(run_id)
+        result = self._run_store.load_result(run_id)
+        return {
+            "exists": True,
+            "run_id": run_id,
+            "status": stored.status.get("status", "unknown"),
+            "created_at": stored.status.get("created_at", ""),
+            "updated_at": stored.status.get("updated_at", ""),
+            "error": stored.status.get("error"),
+            "input": stored.request.model_dump(mode="json"),
+            "settings": self._run_store.settings(run_id),
+            "output": None,
+            "output_json": {"run_stats": result.run_stats},
+            "events": self._run_store.events(run_id),
+        }
 
     async def ai_search(
         self,

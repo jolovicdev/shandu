@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import click
 from pydantic import ValidationError
@@ -11,11 +12,11 @@ from rich.console import Console
 from rich.markup import escape
 
 from .config import config, infer_api_key_env_name
-from .contracts import ResearchRequest, RunEvent
+from .contracts import ResearchRequest, ResearchRunResult, RunEvent
 from .engine import ShanduEngine
 from .interfaces import DepthPolicy, DetailLevel
 from .runtime import get_async_runner, reset_bootstrap
-from .services import persist_report_markdown
+from .services.run_store import RunNotFoundError
 from .ui import ShanduUI
 
 ui = ShanduUI()
@@ -44,7 +45,15 @@ def _resolve_depth_policy(value: str | None, fallback: DepthPolicy) -> DepthPoli
 
 @click.group()
 def cli() -> None:
-    pass
+    legacy = Path.cwd() / ".blackgeorge"
+    storage = Path(str(config.get("runtime", "storage_dir")))
+    if legacy.is_dir() and legacy.resolve() != storage:
+        err_console.print(
+            ui.warning(
+                f"Found legacy storage in {legacy}; runs now live in {storage}."
+            ),
+            soft_wrap=True,
+        )
 
 
 @cli.command()
@@ -227,16 +236,31 @@ def run_command(
         raise click.ClickException(f"Invalid research options: {problems}") from exc
 
     engine = ShanduEngine.from_config()
+    diag.print(ui.query_line(request.query))
+    result = _run_to_completion(
+        engine,
+        request,
+        lambda on_event: engine.run(request, progress_callback=on_event),
+        diag,
+        verbose,
+    )
+    _deliver(engine, result, output, json_output, diag)
+
+
+def _run_to_completion(
+    engine: ShanduEngine,
+    request: ResearchRequest,
+    start: Callable[[Callable[[RunEvent], None]], Coroutine[Any, Any, ResearchRunResult]],
+    diag: Console,
+    verbose: bool = False,
+) -> ResearchRunResult:
     snapshot = ui.new_snapshot(request, str(config.get("api", "model")))
 
     def on_event(event: RunEvent) -> None:
         snapshot.apply(event)
         ui.print_event(event, diag)
 
-    diag.print(ui.query_line(request.query))
-    future = get_async_runner().submit(
-        engine.run(request, progress_callback=on_event)
-    )
+    future = get_async_runner().submit(start(on_event))
     try:
         result = future.result()
     except KeyboardInterrupt:
@@ -247,12 +271,23 @@ def run_command(
             pass
         diag.print("Run cancelled.")
         raise SystemExit(130) from None
+    except RunNotFoundError as exc:
+        raise click.ClickException(f"Run {exc} not found.") from None
     finally:
         engine.close()
 
     if verbose:
         diag.print(ui.recap(snapshot))
+    return result
 
+
+def _deliver(
+    engine: ShanduEngine,
+    result: ResearchRunResult,
+    output: str | None,
+    json_output: bool,
+    diag: Console,
+) -> None:
     diag.print(ui.result_summary(result))
 
     if output:
@@ -269,9 +304,107 @@ def run_command(
         diag.print(ui.document("Final Report", result.report_markdown))
 
     if not output:
-        export_path = persist_report_markdown(result.run_id, result.report_markdown)
-        if export_path:
-            diag.print(ui.success(f"Report saved to {export_path}"), soft_wrap=True)
+        report_path = engine.report_path(result.run_id)
+        if report_path.is_file():
+            diag.print(ui.success(f"Report saved to {report_path}"), soft_wrap=True)
+
+
+def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
+    try:
+        return engine.load_run(run_id).request
+    except RunNotFoundError:
+        engine.close()
+        raise click.ClickException(f"Run {run_id} not found.") from None
+
+
+@cli.command("resume")
+@click.argument("run_id")
+@click.option("--output", default=None)
+@click.option("--json-output", is_flag=True)
+@click.option("--verbose", is_flag=True)
+def resume_command(
+    run_id: str, output: str | None, json_output: bool, verbose: bool
+) -> None:
+    """Continue a stopped run after its last completed iteration."""
+    diag = err_console if (json_output and not output) else console
+    ui.print_banner(diag)
+    engine = ShanduEngine.from_config()
+    request = _load_request(engine, run_id)
+    diag.print(ui.query_line(request.query))
+    result = _run_to_completion(
+        engine,
+        request,
+        lambda on_event: engine.resume(run_id, progress_callback=on_event),
+        diag,
+        verbose,
+    )
+    _deliver(engine, result, output, json_output, diag)
+
+
+@cli.command("report")
+@click.argument("run_id")
+@click.option("--detail-level", default=None, type=click.Choice(["concise", "standard", "high"]))
+@click.option("--model", default=None, help="Model for the report writer.")
+@click.option("--output", default=None)
+@click.option("--json-output", is_flag=True)
+def report_command(
+    run_id: str,
+    detail_level: str | None,
+    model: str | None,
+    output: str | None,
+    json_output: bool,
+) -> None:
+    """Rewrite a run's report from its stored evidence, without new searches."""
+    diag = err_console if (json_output and not output) else console
+    ui.print_banner(diag)
+    engine = ShanduEngine.from_config(writer_model=model)
+    request = _load_request(engine, run_id)
+    diag.print(ui.query_line(request.query))
+    level = cast(DetailLevel | None, detail_level)
+    result = _run_to_completion(
+        engine,
+        request,
+        lambda on_event: engine.rewrite_report(
+            run_id, level, progress_callback=on_event
+        ),
+        diag,
+    )
+    _deliver(engine, result, output, json_output, diag)
+
+
+@cli.command("list")
+@click.option("--limit", default=20, type=int, show_default=True)
+def list_command(limit: int) -> None:
+    """List stored research runs, newest first."""
+    ui.print_banner()
+    engine = ShanduEngine.from_config()
+    try:
+        runs = engine.list_runs()[:limit]
+    finally:
+        engine.close()
+    if not runs:
+        console.print(ui.warning("No runs stored yet."))
+        return
+    console.print(ui.run_list(runs))
+
+
+@cli.command("show")
+@click.argument("run_id")
+def show_command(run_id: str) -> None:
+    """Print a stored run's summary and report."""
+    ui.print_banner()
+    engine = ShanduEngine.from_config()
+    try:
+        result = engine.load_run(run_id)
+    except RunNotFoundError:
+        raise click.ClickException(f"Run {run_id} not found.") from None
+    finally:
+        engine.close()
+    console.print(ui.result_summary(result))
+    if result.report_markdown:
+        console.print(ui.document("Final Report", result.report_markdown))
+    else:
+        console.print(ui.warning("This run has no report yet."))
 
 
 @cli.command("aisearch")
@@ -337,7 +470,7 @@ def inspect(run_id: str) -> None:
 def clean(force: bool) -> None:
     ui.print_banner()
     runtime_dir = Path(
-        str(config.get("runtime", "storage_dir", ".blackgeorge"))
+        str(config.get("runtime", "storage_dir"))
     ).expanduser().resolve()
     if not runtime_dir.exists():
         console.print(ui.warning("No runtime artifacts found."))

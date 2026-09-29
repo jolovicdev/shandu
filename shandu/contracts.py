@@ -96,14 +96,6 @@ class CitationEntry(BaseModel):
     accessed_at: str
 
 
-class MemoryNote(BaseModel):
-    key: str
-    scope: str
-    value: Any
-    author: str
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
 class CoverageAssessment(BaseModel):
     coverage_score: float = Field(default=0.5, ge=0.0, le=1.0)
     open_question_severity: float = Field(default=0.5, ge=0.0, le=1.0)

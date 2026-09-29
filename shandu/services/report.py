@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import json
 import re
-import sqlite3
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any
 
-from ..config import config
 from ..contracts import CitationEntry, FinalReportDraft, ResearchRequest
+from .run_store import default_run_store
 
 # Placeholder for a protected segment (fenced code, inline code, link) while
 # the marker passes run. Null bytes cannot appear in model output, and the
@@ -50,83 +46,24 @@ class RecentReport:
     path: str
 
 
-def _export_dir() -> Path:
-    storage = Path(str(config.get("runtime", "storage_dir", ".blackgeorge")))
-    return storage / "exports"
-
-
-def _exported_title(path: Path) -> str:
-    with path.open(encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            if line.startswith("# "):
-                return line[2:].strip()
-    return path.stem
-
-
-def _run_metadata() -> dict[str, dict[str, Any]]:
-    """Question and run totals the orchestrator wrote under each run:<id> scope."""
-    store = Path(str(config.get("runtime", "storage_dir", ".blackgeorge"))) / "memory.db"
-    if not store.is_file():
-        return {}
-    metadata: dict[str, dict[str, Any]] = {}
-    try:
-        connection = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
-        try:
-            rows = connection.execute(
-                "SELECT scope, key, value FROM memories WHERE key IN ('request', 'result')"
-            ).fetchall()
-        finally:
-            connection.close()
-    except sqlite3.Error:
-        return {}
-    for scope, key, value in rows:
-        if not str(scope).startswith("run:"):
-            continue
-        try:
-            payload = json.loads(value)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        metadata.setdefault(str(scope)[4:], {})[key] = payload
-    return metadata
-
-
-def _run_totals(payload: dict[str, Any]) -> tuple[str, int | None, float | None]:
-    request = payload.get("request") or {}
-    stats = (payload.get("result") or {}).get("run_stats") or {}
-    question = str(request.get("query", "")).strip()
-    citations = stats.get("citation_count")
-    cost = stats.get("usd_spent")
-    return (
-        question,
-        citations if isinstance(citations, int) else None,
-        float(cost) if isinstance(cost, (int, float)) and float(cost) > 0 else None,
-    )
-
-
 def list_recent_reports(limit: int = 6) -> list[RecentReport]:
-    export_dir = _export_dir()
-    if not export_dir.is_dir():
-        return []
-    files = sorted(
-        export_dir.glob("*.md"), key=lambda item: item.stat().st_mtime, reverse=True
-    )
-    metadata = _run_metadata()
     reports: list[RecentReport] = []
-    for path in files[:limit]:
-        question, citations, cost = _run_totals(metadata.get(path.stem, {}))
-        saved = datetime.fromtimestamp(path.stat().st_mtime)
+    for run in default_run_store().list_runs():
+        if run.report_path is None:
+            continue
+        saved = datetime.fromtimestamp(run.report_path.stat().st_mtime)
         reports.append(
             RecentReport(
-                run_id=path.stem,
-                title=question or _exported_title(path),
+                run_id=run.run_id,
+                title=run.query or run.run_id,
                 saved_at=saved.strftime("%d %b %Y"),
-                citations=citations,
-                usd_spent=cost,
-                path=str(path),
+                citations=run.citation_count,
+                usd_spent=run.usd_spent,
+                path=str(run.report_path),
             )
         )
+        if len(reports) >= limit:
+            break
     return reports
 
 
@@ -134,25 +71,6 @@ def list_recent_reports(limit: int = 6) -> list[RecentReport]:
 class RenderedReport:
     markdown: str
     citations: list[CitationEntry]
-
-
-def persist_report_markdown(run_id: str, markdown: str) -> str | None:
-    text = markdown.strip()
-    if not text:
-        return None
-    try:
-        storage = Path(str(config.get("runtime", "storage_dir", ".blackgeorge")))
-        export_dir = storage / "exports"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        safe_run = (
-            "".join(char if char.isalnum() else "_" for char in run_id).strip("_")
-            or "report"
-        )
-        file_path = export_dir / f"{safe_run}.md"
-        file_path.write_text(text, encoding="utf-8")
-        return str(file_path)
-    except Exception:
-        return None
 
 
 class ReportService:

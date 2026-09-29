@@ -84,8 +84,11 @@ class _SynthesisPayload(BaseModel):
 
 
 class LeadAgent:
-    def __init__(self, runtime: RuntimeExecutionLike) -> None:
+    def __init__(
+        self, runtime: RuntimeExecutionLike, writer_model: str | None = None
+    ) -> None:
         self._runtime = runtime
+        self._writer_model = writer_model
         self.fallback_count = 0
         self.last_fallback_reason: str | None = None
         self.last_llm_usage: dict[str, Any] | None = None
@@ -234,7 +237,7 @@ class LeadAgent:
         target_words = self._word_target(request.detail_level)
         worker = Worker(
             name="LeadReporter",
-            model=self._runtime.settings.model,
+            model=self._writer_model or self._runtime.settings.model,
             instructions=reporter_instructions(),
         )
         job_input = reporter_job(payload, target_words)

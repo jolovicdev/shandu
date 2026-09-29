@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from ...config import config
+from ...services.run_store import default_run_store
 from .layout import build_gui
 from .theme import CSS, HEAD, build_theme
 
@@ -15,9 +13,7 @@ def launch_gui(
     auth: tuple[str, str] | None = None,
 ) -> None:
     demo = build_gui()
-    export_dir = str(
-        Path(str(config.get("runtime", "storage_dir", ".blackgeorge"))) / "exports"
-    )
+    runs_dir = str(default_run_store().root)
     demo.launch(
         server_name=host,
         server_port=port,
@@ -29,5 +25,5 @@ def launch_gui(
         head=HEAD,
         footer_links=["gradio", "settings"],
         auth=auth,
-        allowed_paths=[export_dir],
+        allowed_paths=[runs_dir],
     )

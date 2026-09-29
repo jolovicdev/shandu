@@ -82,6 +82,8 @@ class SubagentTask(BaseModel):
     expected_output: str = ""
     # 1-based indices into ResearchBrief.sub_questions that this task serves.
     sub_questions: list[int] = Field(default_factory=list)
+    # Also search arXiv, OpenAlex, and PubMed for this task's queries.
+    scholarly: bool = False
 
 
 class IterationPlan(BaseModel):

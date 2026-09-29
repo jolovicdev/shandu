@@ -22,6 +22,7 @@ from .runtime.bootstrap import (
     release_bootstrap_run,
 )
 from .services import AISearchService, ReportService, ScrapeService, SearchService
+from .services.scholarly import ScholarlySearchService
 from .services.run_store import RunNotFoundError, RunStore, RunSummary
 
 ProgressCallback = Callable[[RunEvent], Any]
@@ -35,23 +36,28 @@ class ShanduEngine:
         ai_search_service: AISearchServiceLike,
         run_store: RunStore,
         scrape_service: ScrapeService | None = None,
+        scholarly_service: ScholarlySearchService | None = None,
     ) -> None:
         self._runtime = runtime
         self._orchestrator = orchestrator
         self._ai_search = ai_search_service
         self._run_store = run_store
         self._scrape_service = scrape_service
+        self._scholarly_service = scholarly_service
 
     @classmethod
     def from_config(cls, writer_model: str | None = None) -> "ShanduEngine":
         runtime = get_bootstrap()
         search_service = SearchService()
         scrape_service = ScrapeService()
+        scholarly_service = ScholarlySearchService()
         run_store = RunStore(Path(runtime.settings.storage_dir) / "runs")
         report_service = ReportService()
 
         lead = LeadAgent(runtime, writer_model=writer_model)
-        subagent = SearchSubagent(runtime, search_service, scrape_service)
+        subagent = SearchSubagent(
+            runtime, search_service, scrape_service, scholarly_service
+        )
         citation = CitationAgent()
         orchestrator = LeadOrchestrator(
             lead_agent=lead,
@@ -68,6 +74,7 @@ class ShanduEngine:
             ai_search_service=ai_search_service,
             run_store=run_store,
             scrape_service=scrape_service,
+            scholarly_service=scholarly_service,
         )
 
     async def run(
@@ -226,8 +233,10 @@ class ShanduEngine:
     async def aclose(self) -> None:
         if self._scrape_service is not None:
             await self._scrape_service.aclose()
+        if self._scholarly_service is not None:
+            await self._scholarly_service.aclose()
 
     def close(self) -> None:
-        if self._scrape_service is None:
+        if self._scrape_service is None and self._scholarly_service is None:
             return
         get_async_runner().run(self.aclose())

@@ -523,6 +523,7 @@ class LeadAgent:
                             if 1 <= index <= sub_question_count
                         }
                     ),
+                    scholarly=task.scholarly,
                 )
             )
 

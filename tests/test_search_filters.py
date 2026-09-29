@@ -105,3 +105,28 @@ def test_since_skips_pages_dated_before_and_keeps_undated_and_coarse() -> None:
     assert sorted(item.requested_url for item in evidence) == [coarse, undated]
     completed = next(payload for kind, payload in traces if kind == "scrape_completed")
     assert completed["dated_before_since"] == 1
+
+
+def test_scholarly_task_also_searches_papers_and_drops_old_ones_before_scraping() -> None:
+    web = _RecordingSearch(["https://example.org/web"])
+    papers = _RecordingSearch(["https://arxiv.org/abs/new", "https://arxiv.org/abs/old"])
+
+    async def dated_search(query, max_results):
+        hits = await _RecordingSearch.search(papers, query, max_results)
+        dates = {"https://arxiv.org/abs/new": "2025-02-01", "https://arxiv.org/abs/old": "2019-01-01"}
+        return [hit.model_copy(update={"published_at": dates[hit.url]}) for hit in hits]
+
+    papers.search = dated_search
+    scrape = _EchoScrape()
+    runtime = SimpleNamespace(settings=SimpleNamespace(model="m"), desk=_ExtractDesk())
+    subagent = SearchSubagent(runtime, web, scrape, papers)
+    request = ResearchRequest(query="q", since="2024-01-01")
+
+    asyncio.run(subagent.execute_task("run:r", _task(), request))
+    assert papers.queries == []
+
+    scholarly_task = _task().model_copy(update={"scholarly": True})
+    asyncio.run(subagent.execute_task("run:r", scholarly_task, request))
+    assert papers.queries == ["kv cache"]
+    assert "https://arxiv.org/abs/new" in scrape.requested
+    assert "https://arxiv.org/abs/old" not in scrape.requested

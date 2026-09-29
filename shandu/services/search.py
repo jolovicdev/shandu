@@ -32,6 +32,7 @@ class SearchHit(BaseModel):
     url: str
     title: str
     snippet: str
+    published_at: str | None = None
 
 
 class _DDGSClient(Protocol):

@@ -146,10 +146,12 @@ class SearchSubagent:
         runtime: RuntimeExecutionLike,
         search_service: SearchServiceLike,
         scrape_service: ScrapeServiceLike,
+        scholarly_service: SearchServiceLike | None = None,
     ) -> None:
         self._runtime = runtime
         self._search = search_service
         self._scrape = scrape_service
+        self._scholarly = scholarly_service
         self._extract_semaphore = asyncio.Semaphore(_EXTRACTION_CONCURRENCY)
 
     async def execute_task(
@@ -169,7 +171,15 @@ class SearchSubagent:
                 for domain in request.include_domains
             ][:_MAX_QUERIES_PER_TASK]
 
-        async def run_query(query: str) -> Sequence[Any]:
+        searches: list[tuple[str, SearchServiceLike, str]] = [
+            (query, self._search, "web") for query in queries
+        ]
+        if task.scholarly and self._scholarly is not None:
+            searches += [(query, self._scholarly, "scholarly") for query in queries]
+
+        async def run_query(
+            query: str, service: SearchServiceLike, source: str
+        ) -> Sequence[Any]:
             await self._emit_trace(
                 progress_callback,
                 "query_started",
@@ -177,11 +187,12 @@ class SearchSubagent:
                     "task_id": task.task_id,
                     "focus": task.focus,
                     "query": query,
+                    "source": source,
                     "max_results": request.max_results_per_query,
                 },
             )
-            hits = await self._search.search(query, request.max_results_per_query)
-            error_for = getattr(self._search, "last_error_for", None)
+            hits = await service.search(query, request.max_results_per_query)
+            error_for = getattr(service, "last_error_for", None)
             search_error = (
                 error_for(query, request.max_results_per_query) if error_for else None
             )
@@ -207,14 +218,20 @@ class SearchSubagent:
             )
             return hits
 
-        query_hits = await asyncio.gather(*(run_query(query) for query in queries))
+        query_hits = await asyncio.gather(
+            *(run_query(query, service, source) for query, service, source in searches)
+        )
 
         per_query: list[list[dict[str, str]]] = []
         seen: set[str] = set()
-        for query, hits in zip(queries, query_hits):
+        for (query, _, _), hits in zip(searches, query_hits):
             entries: list[dict[str, str]] = []
             for hit in hits:
                 if hit.url in seen:
+                    continue
+                if request.since is not None and _dated_before(
+                    getattr(hit, "published_at", None), request.since
+                ):
                     continue
                 if request.include_domains and not _host_matches(
                     hit.url, request.include_domains

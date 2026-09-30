@@ -173,3 +173,29 @@ def test_effort_preset_sets_budgets_and_flags_override_it(monkeypatch) -> None:
     assert request.effort == "max"
     assert (request.max_iterations, request.parallelism, request.max_pages_per_task) == (2, 6, 8)
     assert request.max_searches_per_task == 10
+
+
+def test_medium_effort_matches_the_default_budgets(monkeypatch) -> None:
+    seen: list[ResearchRequest] = []
+
+    async def run(request, progress_callback=None):
+        seen.append(request)
+        return ResearchRunResult(run_id="r", request=request, report_markdown="Body")
+
+    engine = SimpleNamespace(run=run, close=lambda: None, report_path=lambda run_id: Path("missing"))
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    for args in (["run", "q"], ["run", "q", "--effort", "medium"]):
+        result = CliRunner(mix_stderr=False).invoke(cli, args)
+        assert result.exit_code == 0, result.output
+
+    fields = {
+        "effort",
+        "max_iterations",
+        "parallelism",
+        "max_pages_per_task",
+        "max_results_per_query",
+        "max_searches_per_task",
+    }
+    default, medium = (request.model_dump(include=fields) for request in seen)
+    assert default == medium

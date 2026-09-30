@@ -184,3 +184,22 @@ def test_gradio_strip_shows_citation_audit_counts() -> None:
     strip = state.strip_html(running=False)
 
     assert "citations checked <b>36 supported · 2 removed · 1 unchecked</b>" in strip
+
+
+def test_recent_report_click_opens_the_report_the_page_shows(monkeypatch, tmp_path) -> None:
+    from shandu.contracts import ResearchRequest
+    from shandu.services.run_store import RunStore
+
+    monkeypatch.setitem(config._config["runtime"], "storage_dir", str(tmp_path))
+    store = RunStore(tmp_path / "runs")
+    for run_id, question in (("a", "first question"), ("b", "second question")):
+        store.create(run_id, ResearchRequest(query=question), None)
+        store.save_report(run_id, f"# {question}", [], {})
+    shown = [report.run_id for report in layout_module.list_recent_reports()]
+    store.create("c", ResearchRequest(query="newer question"), None)
+    store.save_report("c", "# newer question", [], {})
+
+    outputs = layout_module._open_report(0, shown)
+
+    assert shown == ["b", "a"]
+    assert outputs[-1] == "second question"

@@ -37,7 +37,7 @@ _EFFORT_PRESETS: dict[str, dict[str, int]] = {
     "medium": {
         "max_iterations": 2,
         "parallelism": 3,
-        "max_pages_per_task": 5,
+        "max_pages_per_task": 6,
         "max_results_per_query": 8,
         "max_searches_per_task": 6,
     },

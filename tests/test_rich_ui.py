@@ -39,6 +39,17 @@ def test_event_line_renders_stage_and_task() -> None:
     assert "started" in line.plain
 
 
+def test_event_line_keeps_the_message_column_for_long_task_ids() -> None:
+    ui = ShanduUI(console=Console(record=True, width=160))
+    starts = [
+        ui.event_line(
+            RunEvent(stage="search", message=f"Task {task_id} started", payload={"task_id": task_id})
+        ).plain.index("started")
+        for task_id in ["iter_1_task_1", "cold_climate_field_performance"]
+    ]
+    assert starts[0] == starts[1]
+
+
 def test_event_line_renders_trace_query_and_url() -> None:
     ui = ShanduUI(console=Console(record=True, width=160))
     event = RunEvent(

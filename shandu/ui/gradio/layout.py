@@ -63,9 +63,9 @@ FIRST_RUN = """
 """
 
 
-def _library_samples() -> list[list[str]]:
+def _library_samples(reports: list[RecentReport]) -> list[list[str]]:
     samples: list[list[str]] = []
-    for report in list_recent_reports(limit=6):
+    for report in reports:
         facts = []
         if report.citations:
             facts.append(f"{report.citations} citations")
@@ -207,9 +207,11 @@ def build_gui() -> gr.Blocks:
                     initial_state.task_board_html(), elem_classes=["shandu-plain"]
                 )
 
-        first_run = gr.HTML(
-            FIRST_RUN, visible=not _library_samples(), elem_classes=["shandu-plain"]
-        )
+        recent = list_recent_reports(limit=6)
+        first_run = gr.HTML(FIRST_RUN, visible=not recent, elem_classes=["shandu-plain"])
+        # The run ids behind the samples this page shows: a click carries only
+        # an index, and the stored list can change before the click.
+        library_run_ids = gr.State([report.run_id for report in recent])
         library = gr.Dataset(
             label="Recent reports",
             components=[
@@ -217,10 +219,10 @@ def build_gui() -> gr.Blocks:
                 gr.Textbox(visible=False),
                 gr.Textbox(visible=False),
             ],
-            samples=_library_samples(),
+            samples=_library_samples(recent),
             samples_per_page=6,
             type="index",
-            visible=bool(_library_samples()),
+            visible=bool(recent),
             elem_classes=["shandu-library"],
         )
 
@@ -271,11 +273,12 @@ def build_gui() -> gr.Blocks:
             concurrency_id="shandu_runtime",
             concurrency_limit=1,
         )
-        run_event.then(fn=_refresh_library, outputs=[library, first_run])
+        run_event.then(fn=_refresh_library, outputs=[library, first_run, library_run_ids])
+        demo.load(fn=_refresh_library, outputs=[library, first_run, library_run_ids])
         stop_button.click(fn=None, inputs=None, outputs=None, cancels=[run_event])
         library.click(
             fn=_open_report,
-            inputs=[library],
+            inputs=[library, library_run_ids],
             outputs=[
                 strip,
                 doc_title,
@@ -438,19 +441,20 @@ def _run_action(
     yield _outputs(state=state, running=False, download_path=None)
 
 
-def _refresh_library() -> tuple[Any, Any]:
-    samples = _library_samples()
+def _refresh_library() -> tuple[Any, Any, list[str]]:
+    recent = list_recent_reports(limit=6)
     return (
-        gr.update(samples=samples, visible=bool(samples)),
-        gr.update(visible=not samples),
+        gr.update(samples=_library_samples(recent), visible=bool(recent)),
+        gr.update(visible=not recent),
+        [report.run_id for report in recent],
     )
 
 
-def _open_report(index: int) -> tuple[Any, ...]:
-    reports = list_recent_reports(limit=6)
-    if not 0 <= index < len(reports):
+def _open_report(index: int, run_ids: list[str]) -> tuple[Any, ...]:
+    reports = {report.run_id: report for report in list_recent_reports(limit=None)}
+    report = reports.get(run_ids[index]) if 0 <= index < len(run_ids) else None
+    if report is None:
         return (gr.skip(),) * 13
-    report = reports[index]
     archived = GuiRunState(query=report.title)
     try:
         markdown = Path(report.path).read_text(encoding="utf-8")

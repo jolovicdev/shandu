@@ -167,7 +167,7 @@ class ShanduUI:
         line.append(datetime.now().strftime("%H:%M:%S "), style="muted")
         line.append(event.stage.ljust(_STAGE_WIDTH), style="label")
         task_id = str(event.payload.get("task_id", "")).strip()
-        line.append(task_id.ljust(_TASK_WIDTH), style="muted")
+        line.append(task_id[: _TASK_WIDTH - 1].ljust(_TASK_WIDTH), style="muted")
         message = event.message
         prefix = f"Task {task_id} "
         if task_id and message.startswith(prefix):

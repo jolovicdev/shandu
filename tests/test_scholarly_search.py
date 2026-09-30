@@ -118,3 +118,32 @@ def test_query_fails_only_when_every_provider_fails() -> None:
     error = broken.last_error_for("q", 8)
     assert error is not None
     assert "arxiv" in error and "openalex" in error and "pubmed" in error
+
+
+def test_titles_in_other_scripts_are_not_merged_as_duplicates() -> None:
+    from shandu.services.search import SearchHit
+
+    service = ScholarlySearchService()
+    titles = ["量子计算综述", "Обзор квантовых вычислений", "量子计算综述。", "!!!", "???"]
+
+    async def openalex(query, terms, max_results):
+        return [
+            SearchHit(query=query, url=f"https://doi.org/{index}", title=title, snippet="")
+            for index, title in enumerate(titles)
+        ]
+
+    async def nothing(query, terms, max_results):
+        return []
+
+    service._search_openalex = openalex
+    service._search_arxiv = nothing
+    service._search_pubmed = nothing
+
+    hits = asyncio.run(service.search("q", 10))
+
+    assert [hit.title for hit in hits] == [
+        "量子计算综述",
+        "Обзор квантовых вычислений",
+        "!!!",
+        "???",
+    ]

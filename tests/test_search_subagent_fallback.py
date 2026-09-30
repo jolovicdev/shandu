@@ -562,7 +562,7 @@ def test_execute_task_interleaves_one_page_per_query_under_cap() -> None:
     assert all(item.query == "focus" for item in evidence)
 
 
-def test_execute_task_ranks_already_extracted_urls_last() -> None:
+def test_execute_task_skips_already_extracted_urls() -> None:
     subagent = SearchSubagent(
         runtime=FakeRuntime(),
         search_service=_DisjointSearch(),

@@ -174,3 +174,54 @@ def test_pipeline_skips_a_page_a_sibling_claims_while_it_ranks() -> None:
     )
 
     assert scrape.requested == ["https://example.org/b"]
+
+
+def test_domain_scoping_keeps_every_planned_query_under_the_search_cap() -> None:
+    web = _RecordingSearch([])
+    papers = _RecordingSearch([])
+    runtime = SimpleNamespace(settings=SimpleNamespace(model="m"), desk=_ExtractDesk())
+    task = SubagentTask(
+        task_id="t1", focus="f", search_queries=["q1", "q2", "q3", "q4"], scholarly=True
+    )
+    request = ResearchRequest(
+        query="q", include_domains=["a.org", "b.org", "c.org"], max_searches_per_task=6
+    )
+
+    asyncio.run(SearchSubagent(runtime, web, _EchoScrape(), papers).execute_task("run:r", task, request))
+
+    assert web.queries == [
+        "q1 site:a.org",
+        "q2 site:a.org",
+        "q3 site:a.org",
+        "q4 site:a.org",
+        "q1 site:b.org",
+        "q2 site:b.org",
+    ]
+    assert papers.queries == ["q1", "q2", "q3", "q4"]
+
+
+def test_pipeline_never_reads_a_page_already_read_or_claimed() -> None:
+    search = _RecordingSearch(
+        ["https://example.org/a", "https://example.org/b", "https://example.org/c"]
+    )
+    scrape = _EchoScrape()
+    shared = {"https://example.org/a", "https://example.org/b"}
+
+    asyncio.run(
+        _subagent(search, scrape).execute_task(
+            "run:r", _task(), ResearchRequest(query="q", max_pages_per_task=3), extracted_urls=shared
+        )
+    )
+
+    assert scrape.requested == ["https://example.org/c"]
+
+
+def test_domain_filters_ignore_ports_and_schemes() -> None:
+    request = ResearchRequest(
+        query="q",
+        include_domains=["https://Docs.Example.com:443/guide", "b.org:8080"],
+        exclude_domains=["www.Bad.org:80"],
+    )
+
+    assert request.include_domains == ["docs.example.com", "b.org"]
+    assert request.exclude_domains == ["bad.org"]

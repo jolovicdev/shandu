@@ -54,7 +54,9 @@ def _clean(text: Any) -> str:
 
 
 def _title_key(title: str) -> str:
-    return " ".join(re.sub(r"[^0-9a-z]+", " ", title.casefold()).split())
+    """Letters and digits of any script, so punctuation and case never
+    separate two records of one paper."""
+    return " ".join(re.sub(r"[\W_]+", " ", title.casefold()).split())
 
 
 def _openalex_abstract(inverted: Any) -> str:
@@ -136,7 +138,9 @@ class ScholarlySearchService:
                 title_key = _title_key(hit.title)
                 if title_key in seen_titles:
                     continue
-                seen_titles.add(title_key)
+                # A title of punctuation alone says nothing about identity.
+                if title_key:
+                    seen_titles.add(title_key)
                 merged.append(hit)
         return merged[:max_results]
 

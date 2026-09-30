@@ -173,16 +173,14 @@ class SearchSubagent:
         brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
-        queries = [
-            scoped
-            for query in task.search_queries or [task.focus]
-            for scoped in self._scoped_queries(query, request)
-        ][: request.max_searches_per_task]
+        planned = (task.search_queries or [task.focus])[: request.max_searches_per_task]
         searches: list[tuple[str, SearchServiceLike, str]] = [
-            (query, self._search, "web") for query in queries
+            (query, self._search, "web")
+            for query in self._scoped_queries(planned, request)[: request.max_searches_per_task]
         ]
+        # Paper search ignores site: scoping, so each planned query runs once.
         if task.scholarly and self._scholarly is not None:
-            searches += [(query, self._scholarly, "scholarly") for query in queries]
+            searches += [(query, self._scholarly, "scholarly") for query in planned]
         outcomes = await asyncio.gather(
             *(
                 self._traced_search(service, query, source, task, request, progress_callback)
@@ -209,39 +207,25 @@ class SearchSubagent:
             per_query.append(entries)
 
         # Round-robin across queries so later queries survive the page cap.
-        # Already-extracted URLs rank last so a new iteration prefers unseen
-        # sources.
         interleaved: list[dict[str, str]] = []
         for round_hits in zip_longest(*per_query):
             for entry in round_hits:
                 if entry is not None:
                     interleaved.append(entry)
-        known = {self._canonicalize_url(url) or url for url in extracted_urls or ()}
-        unseen = [
-            entry
-            for entry in interleaved
-            if (self._canonicalize_url(entry["url"]) or entry["url"]) not in known
-        ]
-        already_seen = [
-            entry
-            for entry in interleaved
-            if (self._canonicalize_url(entry["url"]) or entry["url"]) in known
-        ]
+
+        def page_key(url: str) -> str:
+            return self._canonicalize_url(url) or url
+
+        # Pages read in earlier iterations, or claimed by a sibling task, are
+        # never read again; siblings claim pages while this task ranks, so
+        # the claims are checked once more after ranking.
+        read = {page_key(url) for url in extracted_urls or ()}
+        unseen = [entry for entry in interleaved if page_key(entry["url"]) not in read]
         unseen = await self._rank_candidates(
             task, unseen, request.max_pages_per_task, progress_callback
         )
-        # Sibling tasks claim pages while this one ranks; a page claimed in
-        # the meantime moves behind the pages nobody is reading yet.
-        claimed = set(extracted_urls or ())
-
-        def is_claimed(entry: dict[str, str]) -> bool:
-            return (self._canonicalize_url(entry["url"]) or entry["url"]) in claimed
-
-        all_hits = (
-            [entry for entry in unseen if not is_claimed(entry)]
-            + [entry for entry in unseen if is_claimed(entry)]
-            + already_seen
-        )
+        read = {page_key(url) for url in extracted_urls or ()}
+        all_hits = [entry for entry in unseen if page_key(entry["url"]) not in read]
 
         urls = [entry["url"] for entry in all_hits[: request.max_pages_per_task]]
         canonical_urls = {url: self._canonicalize_url(url) or url for url in urls}
@@ -341,10 +325,14 @@ class SearchSubagent:
         return evidence
 
     @staticmethod
-    def _scoped_queries(query: str, request: ResearchRequest) -> list[str]:
+    def _scoped_queries(queries: list[str], request: ResearchRequest) -> list[str]:
+        """Each query scoped to each included domain, one domain at a time, so a
+        search cap keeps every query on the first domain before any gets a second."""
         if not request.include_domains:
-            return [query]
-        return [f"{query} site:{domain}" for domain in request.include_domains]
+            return list(queries)
+        return [
+            f"{query} site:{domain}" for domain in request.include_domains for query in queries
+        ]
 
     @staticmethod
     def _in_scope(url: str, published_at: str | None, request: ResearchRequest) -> bool:

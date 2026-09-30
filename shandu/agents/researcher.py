@@ -62,7 +62,8 @@ class ResearcherAgent(SearchSubagent):
             if budget["searches"] <= 0:
                 return _BUDGET_SPENT
             budget["searches"] -= 1
-            scoped = self._scoped_queries(query, request)
+            # Paper search ignores site: scoping, so it runs the query once.
+            scoped = self._scoped_queries([query], request) if source == "web" else [query]
             outcomes = await asyncio.gather(
                 *(
                     self._traced_search(

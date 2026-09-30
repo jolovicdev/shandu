@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -73,7 +74,8 @@ class ResearchRequest(BaseModel):
     def _bare_hosts(cls, domains: list[str]) -> list[str]:
         hosts: list[str] = []
         for domain in domains:
-            host = domain.strip().lower().split("://")[-1].split("/")[0]
+            # Hosts are compared without a port, so one given here is dropped.
+            host = urlsplit("//" + domain.strip().split("://")[-1]).hostname or ""
             host = host.removeprefix("www.")
             if host and host not in hosts:
                 hosts.append(host)

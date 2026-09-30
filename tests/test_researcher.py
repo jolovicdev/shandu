@@ -242,3 +242,39 @@ def test_parallel_researchers_do_not_read_one_page_twice() -> None:
 
     assert scrape.requested == [_PAPER]
     assert second.replies[0].startswith("Already read in this run")
+
+
+def test_researcher_paper_search_ignores_domain_scoping() -> None:
+    papers = _Search()
+
+    async def script(tools, replies):
+        replies.append(await tools["search_papers"](query="kivi quantization"))
+
+    runtime = SimpleNamespace(settings=SimpleNamespace(model="m"), desk=_ModelDesk(script))
+    researcher = ResearcherAgent(runtime, _Search(), _Scrape(), papers)
+    asyncio.run(
+        researcher.execute_task(
+            "run:r",
+            _task(),
+            ResearchRequest(query="q", include_domains=["arxiv.org", "nih.gov"]),
+        )
+    )
+
+    assert papers.queries == ["kivi quantization"]
+
+
+def test_researcher_reads_only_allowed_domains() -> None:
+    async def script(tools, replies):
+        replies.append(await tools["read_page"](url=_BLOG))
+        replies.append(await tools["read_page"](url=_PAPER))
+
+    desk = _ModelDesk(script)
+    scrape = _Scrape()
+    asyncio.run(
+        _researcher(desk, scrape=scrape).execute_task(
+            "run:r", _task(), ResearchRequest(query="q", include_domains=["arxiv.org"])
+        )
+    )
+
+    assert scrape.requested == [_PAPER]
+    assert desk.replies[0].startswith("Outside the allowed domains")

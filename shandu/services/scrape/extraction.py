@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Iterable
 from datetime import datetime
+from html import unescape
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
@@ -15,6 +16,8 @@ from bs4 import BeautifulSoup
 
 from .constants import (
     _CAPTCHA_PATTERNS,
+    _ERROR_PAGE_MAX_WORDS,
+    _ERROR_PAGE_TITLE,
     _MAX_EXTRACTED_CHARS,
     _MAX_PAGE_LINKS,
     _MAX_PDF_PAGES,
@@ -254,31 +257,76 @@ def _extract_html(html: str) -> _ExtractionResult:
     return result
 
 
+_FITZ_BOLD_FLAG = 16
+
+
+def _inked_size(spans: list[dict[str, Any]]) -> float:
+    return max((span["size"] for span in spans if span.get("text", "").strip()), default=0.0)
+
+
+def _horizontal_lines(block: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    # Preprint servers stamp a rotated identifier in the margin in larger type
+    # than the title.
+    return [
+        line.get("spans", [])
+        for line in block.get("lines", [])
+        if tuple(line.get("dir", (1, 0))) == (1, 0) and _inked_size(line.get("spans", []))
+    ]
+
+
+def _title_text(lines: list[list[dict[str, Any]]]) -> str:
+    # Word spaces can be spans of their own, so spans join with nothing between.
+    title = " ".join(
+        " ".join("".join(span.get("text", "") for span in spans) for spans in lines).split()
+    )
+    return title if 10 < len(title) < 300 else ""
+
+
 def _pdf_layout_title(page: Any) -> str:
     """Title from the first-page block set in the largest horizontal type.
 
-    Horizontal only: preprint servers stamp a rotated identifier in the margin
-    in larger type than the title.
+    Within that block, every line set near the largest size is kept whole,
+    since small caps put most letters of a title in smaller spans than its
+    capitals.
     """
     best_size = 0.0
-    best_text = ""
+    best_lines: list[list[dict[str, Any]]] = []
     for block in page.get_text("dict").get("blocks", []):
-        spans = [
-            span
-            for line in block.get("lines", [])
-            if tuple(line.get("dir", (1, 0))) == (1, 0)
-            for span in line.get("spans", [])
-            if span.get("text", "").strip()
-        ]
-        if not spans:
+        lines = _horizontal_lines(block)
+        if not lines:
             continue
-        size = max(round(span["size"], 1) for span in spans)
+        size = max(_inked_size(spans) for spans in lines)
         if size > best_size:
             best_size = size
-            best_text = " ".join(
-                span["text"].strip() for span in spans if round(span["size"], 1) == size
-            )
-    return best_text if 10 < len(best_text) < 300 else ""
+            best_lines = lines
+    return _title_text([spans for spans in best_lines if _inked_size(spans) >= 0.9 * best_size])
+
+
+def _pdf_bold_title(page: Any) -> str:
+    """Title from the first mostly bold block in the top third of the page.
+
+    Some journal styles set the title in bold at body size, so the largest
+    type on the page belongs to the body text.
+    """
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("bbox", (0, 0, 0, 0))[1] > page.rect.height / 3:
+            continue
+        lines = _horizontal_lines(block)
+        inked = [span for spans in lines for span in spans if span.get("text", "").strip()]
+        bold = sum(len(span["text"]) for span in inked if span.get("flags", 0) & _FITZ_BOLD_FLAG)
+        if 2 * bold > sum(len(span["text"]) for span in inked):
+            title = _title_text(lines)
+            if title:
+                return title
+    return ""
+
+
+# Document templates leave their placeholders in the PDF title field: the bare
+# word "Title", a style hint, a font note, or only the document date.
+_PDF_PLACEHOLDER_TITLE = re.compile(
+    r"^title$|style here\W*\)$|\(\s*[\w ]+\d+(?:\.\d+)?\s*pt\s*\)$|^[a-z]+ \d{1,2}, \d{4}$",
+    re.IGNORECASE,
+)
 
 
 def _pdf_creation_date(metadata: dict[str, Any]) -> str | None:
@@ -297,8 +345,10 @@ def _parse_pdf(data: bytes) -> _ExtractionResult:
                 raise _ParseError("non_text_content", f"PDF exceeds {_MAX_PDF_PAGES} pages")
             metadata = doc.metadata or {}
             title = (metadata.get("title") or "").strip()
+            if _PDF_PLACEHOLDER_TITLE.search(title):
+                title = ""
             if not title and len(doc) > 0:
-                title = _pdf_layout_title(doc[0])
+                title = _pdf_layout_title(doc[0]) or _pdf_bold_title(doc[0])
             full_text: list[str] = []
             for page in doc:
                 full_text.append(page.get_text())
@@ -442,7 +492,7 @@ def _extract_links(html: str, base_url: str) -> list[PageLink]:
         return []
     for tag in document.xpath("//nav|//header|//footer|//aside|//script|//style"):
         tag.drop_tree()
-    base_host = urlsplit(base_url).netloc.lower().removeprefix("www.")
+    base_host = (urlsplit(base_url).hostname or "").removeprefix("www.")
     external: list[PageLink] = []
     internal: list[PageLink] = []
     seen = {base_url}
@@ -455,7 +505,7 @@ def _extract_links(html: str, base_url: str) -> list[PageLink]:
         if not url.startswith(("http://", "https://")) or url in seen or len(text) < 3:
             continue
         seen.add(url)
-        host = urlsplit(url).netloc.lower().removeprefix("www.")
+        host = (urlsplit(url).hostname or "").removeprefix("www.")
         target = internal if host == base_host else external
         target.append(PageLink(url=url, text=text[:120]))
     return (external + internal)[:_MAX_PAGE_LINKS]
@@ -522,6 +572,14 @@ def _detect_fetch_error(html: str | None, text: str) -> str | None:
                 return "captcha"
             if any(p.search(html_lower) for p in _PAYWALL_PATTERNS):
                 return "paywall"
+
+        title = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        if (
+            title
+            and len(text.split()) < _ERROR_PAGE_MAX_WORDS
+            and _ERROR_PAGE_TITLE.search(unescape(title.group(1)))
+        ):
+            return "error_page"
 
     return None
 

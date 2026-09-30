@@ -33,7 +33,9 @@ _HEADERS = {
 
 _RETRYABLE_STATUSES: set[int] = {408, 425, 429, 500, 502, 503, 504}
 _MIN_ARTICLE_WORDS = 80
-_MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
+# Research articles that embed their figures run past 16 MB of HTML; text
+# extraction on one takes about a second.
+_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
 # Sized to hold a full conference paper (results tables and appendix included).
 _MAX_EXTRACTED_CHARS = 120_000
 _MAX_PAGE_LINKS = 40
@@ -49,6 +51,16 @@ _PAYWALL_PATTERNS = [
     re.compile(r'premium\s+content', re.IGNORECASE),
     re.compile(r'class=["\']?[^"\'>]*membership', re.IGNORECASE),
 ]
+
+# Sites answer some failures with HTTP 200 and an error page: a server fault,
+# a missing page, or a region block. Only a short page is judged by its title,
+# so a long article about errors is never mistaken for one.
+_ERROR_PAGE_TITLE = re.compile(
+    r"unexpected error|error occurred|something went wrong|page not found|not found"
+    r"|\b404\b|access denied|temporarily unavailable|unavailable|indisponib",
+    re.IGNORECASE,
+)
+_ERROR_PAGE_MAX_WORDS = 300
 
 _CAPTCHA_PATTERNS = [
     re.compile(r'g-recaptcha', re.IGNORECASE),

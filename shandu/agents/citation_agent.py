@@ -11,6 +11,9 @@ from ..contracts import CitationEntry, EvidenceRecord
 # personal blog (0.36) or worst-case journalism (0.37) stays citable. If
 # nothing clears the bar, the full corpus is used so reports keep citations.
 _MIN_CITABLE_CREDIBILITY = 0.35
+# The extractor rates a page it found off-topic or unusable below this, so a
+# credible site that did not answer the task earns no reference either.
+_MIN_CITABLE_CONFIDENCE = 0.35
 
 # Same-work dedup only trusts titles long enough to be distinctive; short
 # titles ("10-K", "FAQ") collide across unrelated pages on the same site.
@@ -29,8 +32,8 @@ class CitationAgent:
         citable = [
             item
             for item in evidence
-            if item.credibility_score is None
-            or item.credibility_score >= _MIN_CITABLE_CREDIBILITY
+            if (item.credibility_score is None or item.credibility_score >= _MIN_CITABLE_CREDIBILITY)
+            and item.confidence >= _MIN_CITABLE_CONFIDENCE
         ]
         if not citable:
             citable = evidence

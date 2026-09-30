@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from ..services.run_store import CompletedIteration, RunStore, StoredRun
 
 
 logger = logging.getLogger(__name__)
+_CITATION_MARKER = re.compile(r"\[\d+\]")
 
 
 def _empty_llm_totals() -> dict[str, Any]:
@@ -619,11 +621,14 @@ class LeadOrchestrator:
                 )
                 citation_audit = outcome.verdicts
                 # Re-rendering drops references that lost their last marker
-                # and renumbers the rest.
+                # and renumbers the rest. The renderer keeps the whole ledger
+                # for a body without markers, so an audit that removed every
+                # marker leaves no references to render.
+                body = outcome.markdown.partition("\n## References\n")[0]
                 rendered_report = self._report.render_result(
                     request,
                     draft.model_copy(update={"markdown": outcome.markdown}),
-                    rendered_report.citations,
+                    rendered_report.citations if _CITATION_MARKER.search(body) else [],
                 )
                 await emit(
                     RunEvent(

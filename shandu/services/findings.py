@@ -18,6 +18,8 @@ _CREDIBLE = 0.6
 # Two claims whose word sets overlap this much state the same fact.
 _SAME_CLAIM_OVERLAP = 0.8
 _WORD = re.compile(r"[0-9a-z]+(?:\.[0-9]+)?")
+# A shorter quote appears in almost any page, so it proves nothing.
+_MIN_QUOTE_WORDS = 4
 
 
 def _normalize(text: str) -> str:
@@ -29,14 +31,19 @@ def verified_claims(
 ) -> list[Claim]:
     """Keep claims whose quote appears verbatim in the text the model read.
 
-    Matching ignores whitespace and case only, so a paraphrased quote fails.
-    A sub-question index outside the brief is cleared, not trusted.
+    Matching ignores whitespace and case only, so a paraphrased quote fails,
+    and a quote under four words is rejected. A sub-question index outside
+    the brief is cleared, not trusted.
     """
     haystack = _normalize(page_text)
     kept: list[Claim] = []
     for claim in claims:
         quote = " ".join(claim.quote.split())
-        if not claim.statement.strip() or not quote or _normalize(quote) not in haystack:
+        if (
+            not claim.statement.strip()
+            or len(quote.split()) < _MIN_QUOTE_WORDS
+            or _normalize(quote) not in haystack
+        ):
             continue
         index = claim.sub_question
         kept.append(

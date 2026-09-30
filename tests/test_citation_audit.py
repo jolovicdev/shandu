@@ -277,3 +277,32 @@ def test_audit_never_edits_code_that_looks_like_a_marker() -> None:
     outcome = asyncio.run(_auditor(_Unsupported()).audit(report, _CITATIONS, _EVIDENCE))
 
     assert outcome.markdown.startswith("Intro claim.\n\nUse `data[2]` as shown.")
+
+
+class _StripAll(_StripSecond):
+    async def audit(self, markdown, citations, evidence):
+        outcome = await super().audit(markdown, citations, evidence)
+        return AuditOutcome(
+            markdown=outcome.markdown.replace(" [1]", ""),
+            verdicts=outcome.verdicts,
+            llm_usage=None,
+            calls=1,
+        )
+
+
+def test_audit_that_removes_every_marker_leaves_no_references(tmp_path) -> None:
+    orchestrator = LeadOrchestrator(
+        lead_agent=_Lead(),
+        search_subagent=_Subagent(),
+        citation_agent=_Citations(),
+        run_store=RunStore(tmp_path),
+        report_service=ReportService(),
+        auditor=_StripAll(),
+    )
+
+    result = asyncio.run(
+        orchestrator.run(ResearchRequest(query="q", max_iterations=1, parallelism=1))
+    )
+
+    assert result.citations == []
+    assert "## References" not in result.report_markdown

@@ -163,3 +163,14 @@ def test_empty_evidence_yields_empty_ledger() -> None:
     agent = CitationAgent()
 
     assert asyncio.run(agent.build_citations("q", [])) == []
+
+
+def test_ledger_leaves_out_pages_the_extractor_judged_off_topic() -> None:
+    agent = CitationAgent()
+    useful = _record("e1", "https://example.org/study", "Field study of heat pumps", 0.8)
+    off_topic = _record("e2", "https://utility.example/rates", "Electric Supply Rates", 0.6)
+    off_topic.confidence = 0.2
+
+    citations = asyncio.run(agent.build_citations("query", [useful, off_topic]))
+
+    assert [entry.url for entry in citations] == ["https://example.org/study"]

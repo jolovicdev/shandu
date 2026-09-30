@@ -42,7 +42,7 @@ def test_verified_claims_keep_verbatim_quotes_only() -> None:
     claims = [
         Claim(statement="Memory drops 2.6x", quote="it cuts peak memory by 2.6x", sub_question=2),
         Claim(statement="Paraphrased", quote="It reduces memory 2.6 times", sub_question=1),
-        Claim(statement="Out of range", quote="per channel", sub_question=7),
+        Claim(statement="Out of range", quote="quantizes the key cache per channel", sub_question=7),
     ]
 
     kept = verified_claims(claims, _PAGE, sub_question_count=3)
@@ -51,6 +51,17 @@ def test_verified_claims_keep_verbatim_quotes_only() -> None:
         ("Memory drops 2.6x", 2),
         ("Out of range", None),
     ]
+
+
+def test_verified_claims_reject_quotes_too_short_to_prove_anything() -> None:
+    claims = [
+        Claim(statement="Drug X cut events by 20%", quote="the"),
+        Claim(statement="Memory drops", quote="peak memory by 2.6x"),
+    ]
+
+    kept = verified_claims(claims, "the drug cut peak memory by 2.6x on the model", 1)
+
+    assert [claim.statement for claim in kept] == ["Memory drops"]
 
 
 def test_build_findings_merges_restated_claims_across_pages() -> None:

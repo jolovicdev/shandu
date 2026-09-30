@@ -429,7 +429,7 @@ def test_orchestrator_adds_cost_stats_when_available(tmp_path) -> None:
     request = ResearchRequest(query="cost-test", max_iterations=1, parallelism=1)
     result = asyncio.run(orchestrator.run(request))
 
-    assert result.run_stats["agent_model_calls"] == 5
+    assert result.run_stats["agent_model_calls"] == 4
     assert result.run_stats["metered_calls"] == 8
     assert result.run_stats["cost_coverage"] == "full"
     assert result.run_stats["llm_tokens"] == 12000
@@ -864,3 +864,25 @@ def test_cancelled_run_persists_cancelled_status(tmp_path) -> None:
 
     assert store.load(seen["run_id"]).status["status"] == "cancelled"
     assert store.events(seen["run_id"])
+
+
+class _PartlyMeteredWriter(FakeLeadAgent):
+    last_llm_usage = {"cost_usd": 0.01, "total_tokens": 10}
+    last_call_count = 3
+
+
+def test_unmetered_writer_calls_make_cost_coverage_partial(tmp_path) -> None:
+    orchestrator = LeadOrchestrator(
+        lead_agent=_PartlyMeteredWriter(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        run_store=RunStore(tmp_path),
+        report_service=FakeReportService(),
+    )
+
+    result = asyncio.run(
+        orchestrator.run(ResearchRequest(query="q", max_iterations=1, parallelism=1))
+    )
+
+    assert result.run_stats["agent_model_calls"] == 6
+    assert result.run_stats["cost_coverage"] == "partial"

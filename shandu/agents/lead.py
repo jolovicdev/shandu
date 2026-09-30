@@ -127,6 +127,9 @@ class LeadAgent:
         self.fallback_count = 0
         self.last_fallback_reason: str | None = None
         self.last_llm_usage: dict[str, Any] | None = None
+        # Writing calls made by the last build_final_report, including calls
+        # that reported no usage, which last_llm_usage cannot count.
+        self.last_call_count = 0
 
     async def create_brief(self, request: ResearchRequest) -> ResearchBrief:
         payload = {
@@ -336,6 +339,7 @@ class LeadAgent:
         brief: ResearchBrief | None = None,
     ) -> FinalReportDraft:
         self.last_llm_usage = None
+        self.last_call_count = 0
         if request.writer == "sectioned":
             sectioned = await self._build_sectioned_report(
                 request, iteration_summaries, evidence_payload, citations_payload, brief
@@ -414,6 +418,7 @@ class LeadAgent:
         try:
             for _ in range(_REPORTER_ATTEMPTS):
                 job = Job(input=job_input, expected_output=reporter_expected_output())
+                self.last_call_count += 1
                 report = await self._runtime.desk.arun(worker, job)
                 self.last_llm_usage = add_usage(
                     self.last_llm_usage, collect_llm_usage(report)
@@ -489,6 +494,7 @@ class LeadAgent:
             ),
             response_schema=_OutlinePayload,
         )
+        self.last_call_count += 1
         try:
             report = await self._runtime.desk.arun(outline_worker, outline_job)
         except Exception:

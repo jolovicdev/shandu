@@ -146,3 +146,17 @@ def test_sections_without_findings_draw_on_all_evidence() -> None:
         ["e1", "e2"],
         ["e1", "e2"],
     ]
+
+
+def test_writer_counts_calls_that_report_no_usage() -> None:
+    desk = _WriterDesk(editor=lambda draft: draft)
+    agent = LeadAgent(SimpleNamespace(settings=SimpleNamespace(model="m"), desk=desk))
+
+    asyncio.run(
+        agent.build_final_report(
+            ResearchRequest(query="q", writer="sectioned"), [], _EVIDENCE, _CITATIONS
+        )
+    )
+
+    assert agent.last_call_count == 4
+    assert agent.last_llm_usage is None

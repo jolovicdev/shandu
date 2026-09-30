@@ -261,3 +261,64 @@ def test_failed_rewrite_keeps_a_completed_run_completed(tmp_path) -> None:
         )
 
     assert store.load(result.run_id).status["status"] == "completed"
+
+
+def test_resume_discards_the_crashed_attempts_evidence_for_good(tmp_path) -> None:
+    store = RunStore(tmp_path)
+    run_id = _crashed_run(store)
+
+    asyncio.run(_orchestrator(store, _Lead(), _Subagent("new")).resume(run_id))
+
+    assert [record.evidence_id for _, record in store.load(run_id).evidence] == [
+        "old-t0",
+        "new-t1",
+    ]
+
+
+class _UnpricedLead(_Lead):
+    last_llm_usage = {"total_tokens": 10}
+
+
+def test_cost_budget_warns_when_the_model_reports_no_prices(tmp_path) -> None:
+    events = []
+    request = ResearchRequest(
+        query="q", max_iterations=2, parallelism=1, depth_policy="fixed", max_cost_usd=0.01
+    )
+
+    asyncio.run(
+        _orchestrator(RunStore(tmp_path), _UnpricedLead(), _Subagent("a")).run(
+            request, progress_callback=events.append
+        )
+    )
+
+    warnings = [event for event in events if "not enforced" in event.message]
+    assert len(warnings) == 1
+
+
+class _PricedCrashingLead(_PricedLead):
+    def __init__(self) -> None:
+        super().__init__(fail_synthesis_at=1)
+
+
+def test_resume_counts_spend_from_the_interrupted_iteration(tmp_path) -> None:
+    store = RunStore(tmp_path)
+    seen: dict[str, str] = {}
+    request = ResearchRequest(query="q", max_iterations=2, parallelism=1, depth_policy="fixed")
+
+    def on_event(event) -> None:
+        if event.stage == "bootstrap":
+            seen["run_id"] = event.metrics["run_id"]
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            _orchestrator(store, _PricedCrashingLead(), _Subagent("old")).run(
+                request, progress_callback=on_event
+            )
+        )
+    result = asyncio.run(
+        _orchestrator(store, _PricedLead(), _Subagent("new")).resume(seen["run_id"])
+    )
+
+    # Brief, plan 0, synthesis 0, and plan 1 before the crash; plan 1,
+    # synthesis 1, and the report after it: seven calls at $0.50.
+    assert result.run_stats["usd_spent"] == 3.5

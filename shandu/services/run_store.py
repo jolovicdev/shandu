@@ -133,6 +133,11 @@ class RunStore:
     def mark_research_done(self, run_id: str) -> None:
         self._patch_status(run_id, research_done=True)
 
+    def record_spend(self, run_id: str, llm_totals: dict[str, Any]) -> None:
+        """Keep the run's metered totals current, so a resume after an
+        interruption still counts what the interrupted iteration spent."""
+        self._patch_status(run_id, llm_totals=dict(llm_totals))
+
     def _patch_status(self, run_id: str, **fields: Any) -> None:
         """Update status.json fields; a None value removes the field."""
         path = self.run_dir(run_id) / "status.json"
@@ -147,6 +152,19 @@ class RunStore:
     def append_event(self, run_id: str, event: RunEvent) -> None:
         with (self.run_dir(run_id) / "events.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(event.model_dump_json() + "\n")
+
+    def drop_evidence_from(self, run_id: str, iteration: int) -> None:
+        """Remove evidence rows from ``iteration`` on, before it runs again."""
+        path = self.run_dir(run_id) / "evidence.jsonl"
+        kept = [
+            row for row in _read_jsonl(path) if int(row.get("iteration", 0)) < iteration
+        ]
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in kept),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
 
     def append_evidence(
         self, run_id: str, iteration: int, records: list[EvidenceRecord]

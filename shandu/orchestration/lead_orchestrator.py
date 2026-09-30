@@ -107,6 +107,10 @@ class _RunState:
             state.fallback_reasons = list(counters.get("fallback_reasons") or [])
             state.llm_totals.update(counters.get("llm_totals") or {})
             state.saw_llm_usage = bool(counters.get("saw_llm_usage"))
+        spend = stored.status.get("llm_totals")
+        if spend:
+            state.llm_totals.update(spend)
+            state.saw_llm_usage = True
         return state
 
 
@@ -152,6 +156,9 @@ class LeadOrchestrator:
     ) -> ResearchRunResult:
         stored = self._store.load(run_id)
         state = _RunState.from_stored(stored, include_partial=False)
+        # The interrupted iteration runs again from its plan, so the pages it
+        # read before the interruption must not survive into later loads.
+        self._store.drop_evidence_from(run_id, state.next_iteration)
         return await self._execute(
             run_id,
             stored.request,
@@ -241,6 +248,8 @@ class LeadOrchestrator:
                 cost_hits = usage.get("cost_events", 1 if "cost_usd" in usage else 0)
                 if isinstance(cost_hits, int):
                     llm_totals["cost_events"] += cost_hits
+                if not rewrite:
+                    self._store.record_spend(run_id, llm_totals)
                 return usage
 
             def with_model_call_count(
@@ -290,11 +299,26 @@ class LeadOrchestrator:
                 )
 
             budget_stopped = False
+            unpriced_warned = False
             for iteration in range(
                 state.next_iteration,
                 state.next_iteration if state.research_done else request.max_iterations,
             ):
                 budget = request.max_cost_usd
+                if (
+                    budget is not None
+                    and not unpriced_warned
+                    and state.llm_totals["llm_calls"] > 0
+                    and state.llm_totals["cost_events"] == 0
+                ):
+                    unpriced_warned = True
+                    await emit(
+                        RunEvent(
+                            stage="error",
+                            message="Cost budget not enforced: the model reports no prices",
+                            iteration=iteration,
+                        ),
+                    )
                 if budget is not None and state.llm_totals["cost_usd"] >= budget:
                     budget_stopped = True
                     await emit(
@@ -567,8 +591,10 @@ class LeadOrchestrator:
             )
             # Writing takes one call, or several with retries or the sectioned
             # writer's outline, sections, and edit.
-            writer_calls = (report_usage or {}).get("llm_calls")
-            state.agent_model_calls += writer_calls if isinstance(writer_calls, int) else 1
+            writer_calls = getattr(self._lead, "last_call_count", None)
+            state.agent_model_calls += (
+                writer_calls if isinstance(writer_calls, int) and writer_calls > 0 else 1
+            )
             rendered_report = self._report.render_result(request, draft, citations)
             await emit(
                 RunEvent(

@@ -168,10 +168,21 @@ body.dark,
 }
 
 .gradio-container main.contain {
-  width: min(calc(100% - 64px), 820px) !important;
+  width: min(100%, 820px) !important;
   max-width: 820px !important;
   margin: 0 auto !important;
   padding-bottom: 96px !important;
+}
+
+/* Gradio scopes rules inside @media to elements within .contain, so the page
+   gutter, which sits outside it, scales with the viewport instead. */
+.gradio-container .main.fillable {
+  padding-left: clamp(16px, 4vw, 32px) !important;
+  padding-right: clamp(16px, 4vw, 32px) !important;
+}
+
+.gradio-container footer .show-api-divider {
+  display: none !important;
 }
 
 .gradio-container .block,
@@ -349,7 +360,8 @@ body.dark,
   cursor: pointer !important;
 }
 
-.shandu-settings label span {
+.shandu-settings label span,
+.shandu-settings [data-testid="block-info"] {
   color: var(--ink-3) !important;
   font-size: 0.78rem !important;
   font-weight: 500 !important;
@@ -428,6 +440,22 @@ body.dark,
   line-height: 1.5;
 }
 
+.shandu-fault-detail {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.shandu-hint {
+  margin: 18px 0 0;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+}
+
 .shandu-steps {
   display: flex;
   flex-wrap: wrap;
@@ -438,6 +466,10 @@ body.dark,
   list-style: none;
   color: var(--ink-3);
   font-size: 0.78rem;
+}
+
+.shandu-steps li {
+  color: var(--ink-3);
 }
 
 .shandu-steps .is-done {
@@ -653,13 +685,39 @@ body.dark,
   font-size: 0.8rem !important;
 }
 
-.shandu-library td:last-child {
+.shandu-library td:nth-child(2) > div,
+.shandu-library td:nth-child(3) > div {
+  white-space: nowrap !important;
+}
+
+.shandu-library td:nth-child(4) {
+  display: none !important;
+}
+
+.shandu-library td:nth-child(3) {
   width: 1%;
   white-space: nowrap;
   color: var(--ink-3) !important;
   font-family: var(--mono);
   font-size: 0.76rem !important;
   text-align: right !important;
+}
+
+.shandu-library .paginate {
+  justify-content: flex-start !important;
+  margin-top: 12px !important;
+  color: var(--ink-3) !important;
+  font-size: 0.78rem !important;
+}
+
+.shandu-library .paginate button {
+  color: var(--ink-3) !important;
+  font-family: var(--mono);
+}
+
+.shandu-library .paginate button.current-page {
+  color: var(--ink) !important;
+  font-weight: 500 !important;
 }
 
 /* Recent reports and first run */
@@ -711,7 +769,7 @@ body.dark,
   justify-content: flex-end;
   align-items: center;
   max-width: var(--measure);
-  margin: 0 auto 30px;
+  margin: 0 0 30px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
@@ -730,7 +788,7 @@ body.dark,
 
 .shandu-prose {
   max-width: var(--measure);
-  margin: 0 auto !important;
+  margin: 0 !important;
 }
 
 .shandu-prose .prose,
@@ -863,7 +921,7 @@ body.dark,
 
 .shandu-doc-title {
   max-width: var(--measure);
-  margin: 0 auto 22px;
+  margin: 0 0 22px;
   color: var(--ink);
   font-family: var(--serif);
   font-size: 2rem;
@@ -874,7 +932,7 @@ body.dark,
 
 .shandu-contents {
   max-width: var(--measure);
-  margin: 0 auto;
+  margin: 0;
   padding: 14px 0 4px;
   border-top: 1px solid var(--line);
 }
@@ -915,7 +973,7 @@ body.dark,
 /* Settings */
 
 .shandu-settings .sidebar-content {
-  padding: 28px 24px 40px !important;
+  padding: 64px 24px 40px !important;
 }
 
 .shandu-settings .toggle-button {
@@ -930,11 +988,18 @@ body.dark,
   font-size: 0.8rem !important;
 }
 
+/* Gradio turns the closed right-hand toggle 180 degrees; the label turns
+   back with it, and the open toggle is not turned. */
 .shandu-settings .toggle-button::after {
   content: 'Settings';
   display: inline-block;
   margin-left: 4px;
   transform: rotate(180deg);
+}
+
+.shandu-settings.open .toggle-button::after {
+  content: 'Close';
+  transform: none;
 }
 
 .shandu-settings h3 {
@@ -953,6 +1018,13 @@ body.dark,
 
 .shandu-settings .block {
   margin-bottom: 14px !important;
+}
+
+.shandu-settings span.md,
+.shandu-settings span.md p {
+  font-size: 0.76rem !important;
+  font-weight: 400 !important;
+  line-height: 1.45 !important;
 }
 
 .shandu-note {
@@ -986,10 +1058,6 @@ select:focus-visible {
 }
 
 @media (max-width: 860px) {
-  .gradio-container main.contain {
-    width: calc(100% - 32px) !important;
-  }
-
   .shandu-masthead {
     flex-direction: column;
     gap: 10px;
@@ -1004,6 +1072,30 @@ select:focus-visible {
   .shandu-prose .prose,
   .shandu-prose .md {
     font-size: 1.06rem !important;
+  }
+
+  .shandu-prose table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .shandu-actions {
+    flex-wrap: wrap !important;
+  }
+
+  #shandu-examples {
+    flex-basis: 100% !important;
+  }
+
+  #shandu-examples button,
+  #shandu-examples .gallery-item {
+    white-space: normal !important;
+  }
+
+  .shandu-library td:nth-child(2) {
+    display: none !important;
   }
 }
 

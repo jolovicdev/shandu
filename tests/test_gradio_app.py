@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from types import SimpleNamespace
 
 import gradio as gr
 
@@ -74,7 +75,7 @@ def test_gradio_model_calls_update_from_live_events() -> None:
 def test_gradio_run_output_contract_stays_aligned() -> None:
     state = GuiRunState(query="q")
     assert len(state.render(running=False).as_tuple()) == 7
-    assert len(_outputs(state=state, running=False, download_path=None)) == 12
+    assert len(_outputs(state=state, running=False, download_path=None)) == 13
 
 
 def test_run_generator_close_stops_worker(monkeypatch) -> None:
@@ -116,25 +117,93 @@ def test_run_generator_close_stops_worker(monkeypatch) -> None:
     assert cancelled.wait(timeout=5)
 
 
-def test_gui_stop_button_cancels_run() -> None:
+class _BlockingEngine:
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    @classmethod
+    def from_config(cls) -> _BlockingEngine:
+        return cls()
+
+    async def run(self, request, progress_callback=None) -> None:
+        del request
+        if progress_callback is not None:
+            progress_callback(RunEvent(stage="bootstrap", message="start"))
+        self.started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+    def close(self) -> None:
+        pass
+
+
+def test_gui_stop_button_calls_the_stop_handler() -> None:
     demo = build_gui()
-    run_ids = {
-        index
-        for index, dep in demo.fns.items()
-        if getattr(dep.fn, "__name__", "") == "_run_action"
-    }
-    assert len(run_ids) == 1
-    run_id = next(iter(run_ids))
-    stoppers = [
-        dep for dep in demo.fns.values() if run_id in (dep.cancels or [])
-    ]
-    assert len(stoppers) == 1
-    buttons = [
-        block
+    stop_ids = {
+        block._id
         for block in demo.blocks.values()
         if isinstance(block, gr.Button) and block.value == "Stop"
+    }
+    stoppers = [
+        dep
+        for dep in demo.fns.values()
+        if getattr(dep.fn, "__name__", "") == "_stop_action"
+        and {target for target, _ in dep.targets} & stop_ids
     ]
-    assert len(buttons) == 1
+    assert len(stop_ids) == 1
+    assert len(stoppers) == 1
+    assert not stoppers[0].queue
+
+
+def test_stop_ends_the_sessions_run_as_stopped(monkeypatch) -> None:
+    monkeypatch.setattr(layout_module, "save_configuration", lambda **kwargs: "saved")
+    monkeypatch.setattr(layout_module, "ShanduEngine", _BlockingEngine)
+    _BlockingEngine.cancelled.clear()
+    page = SimpleNamespace(session_hash="s1")
+
+    gen = layout_module._run_action(
+        "q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3, page
+    )
+    next(gen)
+    next(gen)
+    layout_module._stop_action(page)
+
+    assert _BlockingEngine.cancelled.wait(timeout=5)
+    final = list(gen)[-1]
+    assert "<span class='stage'>Stopped</span>" in final[0]
+    assert "s1" not in layout_module._ACTIVE_RUNS
+
+
+def test_rejected_api_key_reads_as_a_settings_problem(monkeypatch) -> None:
+    class RejectingEngine(_BlockingEngine):
+        async def run(self, request, progress_callback=None) -> None:
+            raise RuntimeError("litellm.AuthenticationError: Your api key: ****3f9a is invalid")
+
+    monkeypatch.setattr(layout_module, "save_configuration", lambda **kwargs: "saved")
+    monkeypatch.setattr(layout_module, "ShanduEngine", RejectingEngine)
+
+    final = list(
+        layout_module._run_action("q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3)
+    )[-1]
+
+    assert "rejected the API key. Check Key env var and Key value in Settings." in final[0]
+    assert "RuntimeError: litellm.AuthenticationError" in final[0]
+
+
+def test_error_hints_leave_other_errors_as_they_are() -> None:
+    assert layout_module._error_message(FileNotFoundError("runs/a/report.md")) == "runs/a/report.md"
+
+
+def test_empty_question_asks_for_one_without_a_failed_run() -> None:
+    outputs = next(
+        layout_module._run_action("  ", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3)
+    )
+
+    assert outputs[0] == layout_module.EMPTY_QUESTION
+    assert len(outputs) == 13
 
 
 def test_save_and_run_share_runtime_concurrency_group() -> None:
@@ -183,7 +252,55 @@ def test_gradio_strip_shows_citation_audit_counts() -> None:
 
     strip = state.strip_html(running=False)
 
-    assert "citations checked <b>36 supported · 2 removed · 1 unchecked</b>" in strip
+    assert "citation checks <b>36 supported · 2 removed · 1 unchecked</b>" in strip
+
+
+def test_gradio_evidence_counts_every_task_while_running() -> None:
+    state = GuiRunState(query="q")
+    for task_id, evidence in (("t1", 3), ("t2", 4)):
+        state.apply_event(
+            RunEvent(
+                stage="search",
+                message=f"Task {task_id} completed",
+                metrics={"evidence": evidence},
+                payload={"task_id": task_id},
+            )
+        )
+
+    assert "evidence <b>7</b>" in state.strip_html(running=True)
+
+
+def test_gradio_stopped_run_marks_open_subagents_stopped() -> None:
+    state = GuiRunState(query="q")
+    for task_id in ("t1", "t2"):
+        state.apply_event(
+            RunEvent(stage="search", message=f"Task {task_id} started", payload={"task_id": task_id})
+        )
+    state.apply_event(
+        RunEvent(stage="search", message="Task t1 completed", payload={"task_id": "t1"})
+    )
+
+    state.apply_stopped()
+
+    assert [row["Status"] for row in state.task_rows.values()] == ["completed", "stopped"]
+    assert "<span class='stage'>Stopped</span>" in state.strip_html(running=False)
+
+
+def test_gradio_feed_lines_use_words_not_raw_fields() -> None:
+    state = GuiRunState(query="q")
+    state.apply_event(
+        RunEvent(
+            stage="search",
+            message="Task iter_1_task_1 query completed",
+            metrics={"trace_type": "query_completed", "hits": 6, "query": "abc"},
+            payload={"task_id": "iter_1_task_1", "query": "abc"},
+        )
+    )
+
+    feed = state.event_feed_html()
+
+    assert "<span class='meta'>results 6 · “abc”</span>" in feed
+    assert "iter_1_task_1" not in feed
 
 
 def test_recent_report_click_opens_the_report_the_page_shows(monkeypatch, tmp_path) -> None:
@@ -195,11 +312,15 @@ def test_recent_report_click_opens_the_report_the_page_shows(monkeypatch, tmp_pa
     for run_id, question in (("a", "first question"), ("b", "second question")):
         store.create(run_id, ResearchRequest(query=question), None)
         store.save_report(run_id, f"# {question}", [], {})
-    shown = [report.run_id for report in layout_module.list_recent_reports()]
+    shown = layout_module._library_samples(layout_module.list_recent_reports())
     store.create("c", ResearchRequest(query="newer question"), None)
     store.save_report("c", "# newer question", [], {})
 
-    outputs = layout_module._open_report(0, shown)
+    outputs = layout_module._open_report(shown[0])
 
-    assert shown == ["b", "a"]
+    assert [sample[-1] for sample in shown] == ["b", "a"]
     assert outputs[-1] == "second question"
+
+
+def test_gui_needs_no_heartbeat_connection() -> None:
+    assert build_gui().config["connect_heartbeat"] is False

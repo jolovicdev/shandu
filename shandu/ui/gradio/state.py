@@ -19,6 +19,7 @@ _STAGE_WORDS = {
     "cite": "Collecting citations",
     "report": "Writing",
     "complete": "Complete",
+    "stopped": "Stopped",
     "error": "Failed",
 }
 
@@ -30,6 +31,21 @@ _TASK_STATE_CLASS = {
     "running": "is-running",
     "completed": "is-complete",
     "failed": "is-error",
+    "stopped": "is-stopped",
+}
+
+# Feed lines use the same words as the task board; queries and URLs have
+# their own place in the line, and ids stay in the run data.
+_METRIC_LABELS = {
+    "sub_questions": "sub-questions",
+    "tasks": "subagents",
+    "hits": "results",
+    "candidates": "candidates",
+    "url_count": "pages to read",
+    "scraped": "pages read",
+    "evidence": "evidence",
+    "citations": "citations",
+    "report_words": "words",
 }
 
 
@@ -40,11 +56,8 @@ def _display(value: object) -> str:
 
 
 def _metric_text(metrics: dict[str, Any]) -> str:
-    # trace_type drives the task board; the event message already names the step.
-    return " ".join(
-        f"{key}={value}"
-        for key, value in sorted(metrics.items())
-        if key != "trace_type"
+    return " · ".join(
+        f"{label} {metrics[key]}" for key, label in _METRIC_LABELS.items() if key in metrics
     )
 
 
@@ -100,6 +113,7 @@ class GuiRunState:
     citations: list[CitationEntry] = field(default_factory=list)
     run_stats: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    error_detail: str = ""
 
     def apply_event(self, event: RunEvent) -> None:
         now = datetime.now().strftime("%H:%M:%S")
@@ -160,9 +174,20 @@ class GuiRunState:
         self.run_stats = result.run_stats
         self.metrics.update(result.run_stats)
 
-    def apply_error(self, message: str) -> None:
+    def apply_error(self, message: str, detail: str = "") -> None:
         self.errors.append(message)
+        self.error_detail = detail
         self.stage = "error"
+        self._halt_open_tasks()
+
+    def apply_stopped(self) -> None:
+        self.stage = "stopped"
+        self._halt_open_tasks()
+
+    def _halt_open_tasks(self) -> None:
+        for task in self.task_rows.values():
+            if task["Status"] in ("queued", "running"):
+                task["Status"] = "stopped"
 
     def strip_html(self, running: bool) -> str:
         if self.stage == "idle" and not self.errors:
@@ -171,12 +196,11 @@ class GuiRunState:
         label = _STAGE_WORDS.get(self.stage, self.stage.replace("_", " ").capitalize())
         fields = [
             _field("iteration", self._iteration_label(running)),
-            _field("evidence", self._evidence_count()),
+            _field("evidence", self._evidence_count() or ""),
             _field("pages", self._scraped_pages() or ""),
-            _field("citations", self._citation_count() or ""),
-            _field("citations checked", audit_summary(self.run_stats.get("citation_audit"))),
+            _field("sources", self._citation_count() or ""),
+            _field("citation checks", audit_summary(self.run_stats.get("citation_audit"))),
             _field("model calls", self._model_calls()),
-            _field("events", self.event_count),
             _field("cost", self._cost_summary()),
             _field("run", self.run_id[:8], extra_class="run"),
         ]
@@ -186,7 +210,7 @@ class GuiRunState:
             f"{''.join(fields)}"
             "</section>"
         )
-        if running or self.stage in ("complete", "error"):
+        if running or self.stage == "complete":
             strip += self._steps_html()
         if not self.errors:
             return strip
@@ -194,6 +218,8 @@ class GuiRunState:
             f"<p class='shandu-fault'>{escape(message)}</p>"
             for message in self.errors[-2:]
         )
+        if self.error_detail:
+            faults += f"<p class='shandu-fault-detail'>{escape(self.error_detail)}</p>"
         return strip + faults
 
     def _steps_html(self) -> str:
@@ -251,21 +277,21 @@ class GuiRunState:
             return ""
         items = []
         for entry in reversed(self.entries[-60:]):
-            meta = [entry["stage"]]
-            if entry["task"]:
-                meta.append(entry["task"])
-            if entry["metrics"]:
-                meta.append(entry["metrics"])
-            if entry["query"]:
-                meta.append(f"“{entry['query']}”")
-            if entry["url"]:
-                meta.append(entry["url"])
+            meta = [
+                text
+                for text in (
+                    entry["metrics"],
+                    f"“{entry['query']}”" if entry["query"] else "",
+                    entry["url"],
+                )
+                if text
+            ]
             items.append(
                 "<li>"
                 f"<time>{_display(entry['time'])}</time>"
                 f"<p>{_display(self._readable(entry['message'], entry['task']))}</p>"
-                f"<span class='meta'>{escape(' · '.join(meta))}</span>"
-                "</li>"
+                + (f"<span class='meta'>{escape(' · '.join(meta))}</span>" if meta else "")
+                + "</li>"
             )
         return (
             "<section class='shandu-feed'>"
@@ -285,7 +311,7 @@ class GuiRunState:
             facts = "".join(
                 f"<div><dt>{escape(label)}</dt><dd>{_display(item[key])}</dd></div>"
                 for label, key in (
-                    ("hits", "Hits"),
+                    ("results", "Hits"),
                     ("pages", "Scraped"),
                     ("evidence", "Evidence"),
                 )
@@ -398,8 +424,14 @@ class GuiRunState:
         return str(self.iteration)
 
     def _evidence_count(self) -> object:
-        # Live events carry per-task counts; the finished run carries the total.
-        return self.run_stats.get("evidence_count", self.metrics.get("evidence"))
+        # Events carry per-task counts; the finished run carries the total.
+        if "evidence_count" in self.run_stats:
+            return self.run_stats["evidence_count"]
+        return sum(
+            int(task["Evidence"])
+            for task in self.task_rows.values()
+            if str(task["Evidence"]).isdigit()
+        )
 
     def _citation_count(self) -> int:
         count = self.run_stats.get("citation_count")

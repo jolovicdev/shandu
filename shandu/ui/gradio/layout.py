@@ -10,6 +10,7 @@ from typing import Any
 import gradio as gr
 
 from ...contracts import ResearchRequest, ResearchRunResult, RunEvent
+from ...config import infer_api_key_env_name
 from ...engine import ShanduEngine
 from ...runtime import get_async_runner
 from ...services.report import RecentReport, list_recent_reports
@@ -34,6 +35,23 @@ EXAMPLES = [
     "Compare open-source browser automation frameworks in 2026 on reliability and speed.",
     "How are Southeast European labor markets likely to shift by 2035, and on what assumptions?",
 ]
+
+
+# Stop reaches a run through its session: Gradio's own cancel waits on the
+# worker thread, which is blocked until the engine sends its next event.
+_ACTIVE_RUNS: dict[str, threading.Event] = {}
+
+_ERROR_HINTS = (
+    (
+        "AuthenticationError",
+        "The model provider rejected the API key. Check Key env var and Key value in Settings.",
+    ),
+    ("RateLimitError", "The model provider is rate limiting requests. Wait a minute, then run again."),
+    ("NotFoundError", "The model provider does not know this model. Check Model in Settings."),
+    ("APIConnectionError", "Shandu could not reach the model provider. Check your connection."),
+)
+
+EMPTY_QUESTION = "<p class='shandu-hint'>Type a research question first.</p>"
 
 
 def _masthead(model: str) -> str:
@@ -68,17 +86,17 @@ def _library_samples(reports: list[RecentReport]) -> list[list[str]]:
     for report in reports:
         facts = []
         if report.citations:
-            facts.append(f"{report.citations} citations")
+            facts.append(f"{report.citations} sources")
         if report.usd_spent:
             facts.append(format_cost(report.usd_spent))
-        samples.append([report.title, " · ".join(facts), report.saved_at])
+        samples.append([report.title, " · ".join(facts), report.saved_at, report.run_id])
     return samples
 
 
 def _archive_strip(report: RecentReport) -> str:
     fields = [f"<span class='field'>from <b>{escape(report.saved_at)}</b></span>"]
     if report.citations:
-        fields.append(f"<span class='field'>citations <b>{report.citations}</b></span>")
+        fields.append(f"<span class='field'>sources <b>{report.citations}</b></span>")
     if report.usd_spent:
         fields.append(
             f"<span class='field'>cost <b>{format_cost(report.usd_spent)}</b></span>"
@@ -112,8 +130,17 @@ def build_gui() -> gr.Blocks:
         ):
             gr.HTML("<h3>Settings</h3>", elem_classes=["shandu-plain"])
             model = gr.Textbox(label="Model", value=defaults.model)
-            api_key_env = gr.Textbox(label="Key env var", value=defaults.api_key_env)
-            api_key_value = gr.Textbox(label="Key value", type="password")
+            api_key_env = gr.Textbox(
+                label="Key env var",
+                value=defaults.api_key_env,
+                placeholder=infer_api_key_env_name(defaults.model),
+                info="Environment variable that holds the API key. Blank uses the provider's usual name.",
+            )
+            api_key_value = gr.Textbox(
+                label="Key value",
+                type="password",
+                info="Saved to your local config. Blank keeps the current key.",
+            )
             temperature = gr.Slider(
                 0.0, 1.0, value=defaults.temperature, step=0.05, label="Temperature"
             )
@@ -132,6 +159,7 @@ def build_gui() -> gr.Blocks:
                 if defaults.detail_level in DETAIL_LEVELS
                 else "high",
                 label="Detail",
+                info="Report length: about 1,200, 2,200 or 3,600 words.",
             )
             depth_policy = gr.Dropdown(
                 choices=list(DEPTH_POLICIES),
@@ -139,6 +167,8 @@ def build_gui() -> gr.Blocks:
                 if defaults.depth_policy in DEPTH_POLICIES
                 else "adaptive",
                 label="Depth",
+                info="Adaptive keeps searching while a sub-question lacks two credible "
+                "sources. Fixed lets the lead agent decide when to stop.",
             )
             max_results_per_query = gr.Slider(
                 1, 20, value=defaults.max_results_per_query, step=1, label="Results per query"
@@ -147,15 +177,13 @@ def build_gui() -> gr.Blocks:
                 1, 10, value=defaults.max_pages_per_task, step=1, label="Pages per task"
             )
             save_button = gr.Button("Save", variant="secondary")
-            save_message = gr.Markdown(
-                "Saved to your local Shandu config.",
-                elem_classes=["shandu-note"],
-            )
+            save_message = gr.Markdown("", elem_classes=["shandu-note"])
 
         gr.HTML(_masthead(defaults.model), elem_classes=["shandu-plain"])
 
         with gr.Column(elem_classes=["shandu-composer"]):
             query = gr.Textbox(
+                label="Research question",
                 show_label=False,
                 lines=3,
                 placeholder="Ask a research question. The more specific the question, the better the report.",
@@ -207,29 +235,31 @@ def build_gui() -> gr.Blocks:
                     initial_state.task_board_html(), elem_classes=["shandu-plain"]
                 )
 
-        recent = list_recent_reports(limit=6)
+        with gr.Accordion(
+            "Run data", open=False, visible=False, elem_classes=["shandu-debug"]
+        ) as debug_panel:
+            payload = gr.JSON(value={}, show_label=False)
+
+        recent = list_recent_reports(limit=None)
         first_run = gr.HTML(FIRST_RUN, visible=not recent, elem_classes=["shandu-plain"])
-        # The run ids behind the samples this page shows: a click carries only
-        # an index, and the stored list can change before the click.
-        library_run_ids = gr.State([report.run_id for report in recent])
+        # Each sample carries its run id in a hidden last column. Keeping the
+        # ids in a gr.State instead would turn on Gradio's heartbeat streams,
+        # and this page opens enough of them to fill the browser's six
+        # connections per host, which stalls every request after that.
         library = gr.Dataset(
             label="Recent reports",
             components=[
                 gr.Textbox(visible=False),
                 gr.Textbox(visible=False),
                 gr.Textbox(visible=False),
+                gr.Textbox(visible=False),
             ],
             samples=_library_samples(recent),
-            samples_per_page=6,
-            type="index",
+            samples_per_page=8,
+            type="values",
             visible=bool(recent),
             elem_classes=["shandu-library"],
         )
-
-        with gr.Accordion(
-            "Run data", open=False, visible=False, elem_classes=["shandu-debug"]
-        ) as debug_panel:
-            payload = gr.JSON(value={}, show_label=False)
 
         config_inputs: list[Any] = [
             model,
@@ -253,7 +283,8 @@ def build_gui() -> gr.Blocks:
             concurrency_limit=1,
         )
 
-        run_event = run_button.click(
+        run_event = gr.on(
+            triggers=[run_button.click, query.submit],
             fn=_run_action,
             inputs=[query] + config_inputs,
             outputs=[
@@ -269,16 +300,17 @@ def build_gui() -> gr.Blocks:
                 activity_panel,
                 stop_button,
                 examples.dataset,
+                run_button,
             ],
             concurrency_id="shandu_runtime",
             concurrency_limit=1,
         )
-        run_event.then(fn=_refresh_library, outputs=[library, first_run, library_run_ids])
-        demo.load(fn=_refresh_library, outputs=[library, first_run, library_run_ids])
-        stop_button.click(fn=None, inputs=None, outputs=None, cancels=[run_event])
+        run_event.then(fn=_refresh_library, outputs=[library, first_run])
+        demo.load(fn=_refresh_library, outputs=[library, first_run])
+        stop_button.click(fn=_stop_action, queue=False)
         library.click(
             fn=_open_report,
-            inputs=[library, library_run_ids],
+            inputs=[library],
             outputs=[
                 strip,
                 doc_title,
@@ -292,6 +324,7 @@ def build_gui() -> gr.Blocks:
                 activity_panel,
                 stop_button,
                 examples.dataset,
+                run_button,
                 query,
             ],
             concurrency_id="shandu_runtime",
@@ -343,12 +376,11 @@ def _run_action(
     depth_value: str,
     results_value: float,
     pages_value: float,
+    http_request: gr.Request | None = None,
 ):
     text = query_value.strip()
     if not text:
-        state = GuiRunState(query="")
-        state.apply_error("A research question is required.")
-        yield _outputs(state=state, running=False, download_path=None)
+        yield (EMPTY_QUESTION, *(gr.skip(),) * 12)
         return
 
     save_configuration(
@@ -382,6 +414,9 @@ def _run_action(
     result_box: dict[str, Any] = {}
     error_box: dict[str, str] = {}
     stop_event = threading.Event()
+    session = http_request.session_hash if http_request is not None else None
+    if session:
+        _ACTIVE_RUNS[session] = stop_event
 
     def on_event(event: RunEvent) -> None:
         event_queue.put(event)
@@ -402,9 +437,10 @@ def _run_action(
                     continue
                 break
         except futures.CancelledError:
-            error_box["error"] = "Run cancelled."
+            result_box["stopped"] = True
         except Exception as exc:
-            error_box["error"] = str(exc)
+            error_box["error"] = _error_message(exc)
+            error_box["detail"] = f"{type(exc).__name__}: {exc}"
         finally:
             if engine is not None:
                 engine.close()
@@ -420,9 +456,16 @@ def _run_action(
             yield _outputs(state=state, running=True, download_path=None)
     finally:
         stop_event.set()
+        if session and _ACTIVE_RUNS.get(session) is stop_event:
+            del _ACTIVE_RUNS[session]
+
+    if result_box.get("stopped"):
+        state.apply_stopped()
+        yield _outputs(state=state, running=False, download_path=None)
+        return
 
     if "error" in error_box:
-        state.apply_error(error_box["error"])
+        state.apply_error(error_box["error"], detail=error_box["detail"])
         yield _outputs(state=state, running=False, download_path=None)
         return
 
@@ -441,20 +484,32 @@ def _run_action(
     yield _outputs(state=state, running=False, download_path=None)
 
 
-def _refresh_library() -> tuple[Any, Any, list[str]]:
-    recent = list_recent_reports(limit=6)
+def _stop_action(http_request: gr.Request) -> None:
+    stop_event = _ACTIVE_RUNS.get(http_request.session_hash)
+    if stop_event is not None:
+        stop_event.set()
+
+
+def _error_message(exc: Exception) -> str:
+    for name, message in _ERROR_HINTS:
+        if type(exc).__name__ == name or f"litellm.{name}" in str(exc):
+            return message
+    return str(exc)
+
+
+def _refresh_library() -> tuple[Any, Any]:
+    recent = list_recent_reports(limit=None)
     return (
         gr.update(samples=_library_samples(recent), visible=bool(recent)),
         gr.update(visible=not recent),
-        [report.run_id for report in recent],
     )
 
 
-def _open_report(index: int, run_ids: list[str]) -> tuple[Any, ...]:
+def _open_report(sample: list[str]) -> tuple[Any, ...]:
     reports = {report.run_id: report for report in list_recent_reports(limit=None)}
-    report = reports.get(run_ids[index]) if 0 <= index < len(run_ids) else None
+    report = reports.get(sample[-1]) if sample else None
     if report is None:
-        return (gr.skip(),) * 13
+        return (gr.skip(),) * 14
     archived = GuiRunState(query=report.title)
     try:
         markdown = Path(report.path).read_text(encoding="utf-8")
@@ -473,6 +528,7 @@ def _open_report(index: int, run_ids: list[str]) -> tuple[Any, ...]:
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=True),
+            gr.update(visible=True),
             gr.skip(),
         )
     archived.report_markdown = markdown
@@ -488,6 +544,7 @@ def _open_report(index: int, run_ids: list[str]) -> tuple[Any, ...]:
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=False),
+        gr.update(visible=True),
         gr.update(visible=True),
         report.title,
     )
@@ -522,6 +579,7 @@ def _outputs(
         gr.update(visible=has_run),
         gr.update(visible=has_run),
         gr.update(visible=running),
+        gr.update(visible=not running),
         gr.update(visible=not running),
     )
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shandu"
-version = "3.2.0"
+version = "4.0.0"
 description = "Open-source deep research agent. Ask a question and LLM agents search the web, read pages and PDFs, score source credibility, and write a cited markdown report. CLI and web GUI, runs locally with any LiteLLM model."
 readme = "README.md"
 requires-python = ">=3.12"

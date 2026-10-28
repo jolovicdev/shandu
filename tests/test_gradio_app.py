@@ -496,7 +496,7 @@ def test_citations_and_contents_link_within_the_report() -> None:
         "# Title\n\n## Summary\n\nA fact [1][2], see [Source](https://x.org).\n\n"
         "## Analysis\n\nMore [2].\n\n## Risks\n\nNone.\n\n## References\n\n"
         '- **[1] a.org** - "A". [Source](https://a.org)\n'
-        '- **[2] b.org** - "B". [Source](https://b.org)\n'
+        '- **[2] b.org** - "B". [Source](https://b.org) (accessed 2026-10-28)\n'
     )
 
     body = state.body_markdown()
@@ -506,4 +506,5 @@ def test_citations_and_contents_link_within_the_report() -> None:
     assert "## <a id='section-2'></a>Analysis" in body
     assert "## References" in body
     assert "- <a id='ref-2'></a>**[2] b.org**" in body
+    assert "(accessed <span class='shandu-date'>2026-10-28</span>)" in body
     assert "<a href='#section-3'>Risks</a>" in contents

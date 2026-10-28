@@ -21,6 +21,8 @@ _STAGE_WORDS = {
 
 # A reference line as the report service writes it: "- **[3] host** - ...".
 _REFERENCE_LINE = re.compile(r"^- (?=\*\*\[(\d+)\])")
+# Browsers break lines at a hyphen, which splits a date across two lines.
+_ACCESS_DATE = re.compile(r"\(accessed (\d{4}-\d{2}-\d{2})\)")
 # A citation marker that is not already a link's text.
 _MARKER = re.compile(r"\[(\d+)\](?!\()")
 
@@ -269,6 +271,7 @@ class GuiRunState:
                     section += 1
                     lines[index] = f"## <a id='section-{section}'></a>{line[3:]}"
             elif in_references:
+                line = _ACCESS_DATE.sub(r"(accessed <span class='shandu-date'>\1</span>)", line)
                 lines[index] = _REFERENCE_LINE.sub(
                     lambda match: f"- <a id='ref-{match[1]}'></a>", line
                 )

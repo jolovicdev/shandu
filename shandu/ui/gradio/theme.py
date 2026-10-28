@@ -1066,6 +1066,10 @@ body.dark,
   border-bottom-color: var(--accent) !important;
 }
 
+.shandu-prose .shandu-date {
+  white-space: nowrap !important;
+}
+
 .shandu-contents li::before {
   content: counter(contents);
   margin-right: 9px;

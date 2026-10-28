@@ -467,3 +467,22 @@ def test_each_visit_loads_settings_and_each_run_is_checked_first() -> None:
     handlers = {getattr(dep.fn, "__name__", "") for dep in demo.fns.values()}
 
     assert {"_load_settings", "_check_options", "_run_action"} <= handlers
+
+
+def test_citations_and_contents_link_within_the_report() -> None:
+    state = GuiRunState()
+    state.report_markdown = (
+        "# Title\n\n## Summary\n\nA fact [1][2], see [Source](https://x.org).\n\n"
+        "## Analysis\n\nMore [2].\n\n## Risks\n\nNone.\n\n## References\n\n"
+        '- **[1] a.org** - "A". [Source](https://a.org)\n'
+        '- **[2] b.org** - "B". [Source](https://b.org)\n'
+    )
+
+    body = state.body_markdown()
+    contents = state.contents_html()
+
+    assert "A fact [[1]](#ref-1)[[2]](#ref-2), see [Source](https://x.org)." in body
+    assert "## <a id='section-2'></a>Analysis" in body
+    assert "## References" in body
+    assert "- <a id='ref-2'></a>**[2] b.org**" in body
+    assert "<a href='#section-3'>Risks</a>" in contents

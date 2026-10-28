@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import escape
@@ -17,6 +18,11 @@ _STAGE_WORDS = {
     "report": "Writing",
     "error": "Failed",
 }
+
+# A reference line as the report service writes it: "- **[3] host** - ...".
+_REFERENCE_LINE = re.compile(r"^- (?=\*\*\[(\d+)\])")
+# A citation marker that is not already a link's text.
+_MARKER = re.compile(r"\[(\d+)\](?!\()")
 
 # The loop always passes through these five before it completes.
 _STEPS = ("plan", "search", "synthesize", "cite", "write")
@@ -240,12 +246,28 @@ class GuiRunState:
         return ""
 
     def body_markdown(self) -> str:
-        """The title renders on its own so the contents list can sit under it."""
+        """The report without its title, which renders on its own so the
+        contents list can sit under it. Sections carry anchors the contents
+        link to, and each citation marker links to its reference."""
         lines = self.report_markdown.splitlines()
         for index, line in enumerate(lines):
             if line.startswith("# "):
                 del lines[index]
                 break
+        section = 0
+        in_references = False
+        for index, line in enumerate(lines):
+            if line.startswith("## "):
+                in_references = line[3:].strip().lower() == "references"
+                if not in_references:
+                    section += 1
+                    lines[index] = f"## <a id='section-{section}'></a>{line[3:]}"
+            elif in_references:
+                lines[index] = _REFERENCE_LINE.sub(
+                    lambda match: f"- <a id='ref-{match[1]}'></a>", line
+                )
+            else:
+                lines[index] = _MARKER.sub(r"[[\1]](#ref-\1)", line)
         return "\n".join(lines).lstrip("\n")
 
     def contents_html(self) -> str:
@@ -256,7 +278,10 @@ class GuiRunState:
         ]
         if len(sections) < 3:
             return ""
-        items = "".join(f"<li>{escape(section)}</li>" for section in sections)
+        items = "".join(
+            f"<li><a href='#section-{number}'>{escape(section)}</a></li>"
+            for number, section in enumerate(sections, start=1)
+        )
         return (
             "<nav class='shandu-contents'>"
             "<h3>Contents</h3>"

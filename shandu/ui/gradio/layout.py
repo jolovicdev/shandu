@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import queue
-import re
 import textwrap
 import threading
 from concurrent import futures
@@ -93,7 +92,6 @@ _OPTION_LABELS = {
     "include_domains": "Only these sites",
     "exclude_domains": "Skip these sites",
     "max_cost_usd": "Research budget",
-    "since": "Pages dated since",
 }
 # A run stops when its page goes away, so leaving mid-run asks first.
 _WARN_ON_LEAVE_JS = """
@@ -108,7 +106,7 @@ _WARN_ON_LEAVE_JS = """
 """
 # Runs in the browser before the run starts and hands the inputs on. A
 # Gradio update cannot close an accordion the user opened, so Options fold
-# with a click.
+# with a click, and the scroll waits for the page to settle after the fold.
 _START_RUN_JS = """
 (...values) => {
   document.querySelector(".shandu-options button.label-wrap.open")?.click();
@@ -571,8 +569,8 @@ def _request_from_options(
             researcher="agentic" if researcher_value == "agentic" else "pipeline",
             audit=bool(audit_value),
             max_cost_usd=max_cost_usd,
-            include_domains=_sites(include_value),
-            exclude_domains=_sites(exclude_value),
+            include_domains=[include_value or ""],
+            exclude_domains=[exclude_value or ""],
             since=since_day,
         )
     except ValidationError as exc:
@@ -697,10 +695,6 @@ def _run_action(
     yield _outputs(state=state, running=False, download_path=None)
 
 
-def _sites(value: str | None) -> list[str]:
-    return [part for part in re.split(r"[\s,]+", value or "") if part]
-
-
 def _stop_action(http_request: gr.Request) -> None:
     stop_event = _ACTIVE_RUNS.get(http_request.session_hash)
     if stop_event is not None:
@@ -725,16 +719,16 @@ def _refresh_library() -> tuple[Any, Any]:
 
 
 def _open_report(sample: list[str]) -> tuple[Any, ...]:
+    run_id = sample[-1] if sample else ""
     reports = {report.run_id: report for report in list_recent_reports()}
-    report = reports.get(sample[-1]) if sample else None
+    report = reports.get(run_id)
     archived = GuiRunState()
     try:
         if report is None:
-            raise FileNotFoundError(sample[-1] if sample else "")
+            raise FileNotFoundError(run_id)
         markdown = Path(report.path).read_text(encoding="utf-8")
     except OSError:
-        run_id = report.run_id if report else (sample[-1][:8] if sample else "")
-        archived.apply_error(f"Saved report {run_id} is no longer on disk.")
+        archived.apply_error(f"Saved report {run_id[:8]} is no longer on disk.")
         return (
             archived.strip_html(running=False),
             "",

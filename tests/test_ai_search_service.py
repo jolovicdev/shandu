@@ -122,21 +122,17 @@ def test_ai_search_attaches_scraped_excerpt_for_noncanonical_hit_url() -> None:
     assert result.sources[0].text_excerpt.startswith("Body text")
 
 
-class RejectingRuntime(FakeRuntime):
-    def __init__(self) -> None:
-        super().__init__("")
-
-        class RejectingDesk:
-            async def arun(self, worker, job):
-                del worker, job
-                raise RuntimeError("litellm.BadRequestError: LLM Provider NOT provided")
-
-        self.desk = RejectingDesk()
+class RejectingDesk:
+    async def arun(self, worker, job):
+        del worker, job
+        raise RuntimeError("litellm.BadRequestError: LLM Provider NOT provided")
 
 
 def test_ai_search_stops_on_an_unknown_model() -> None:
+    runtime = FakeRuntime("")
+    runtime.desk = RejectingDesk()
     service = AISearchService(
-        runtime=RejectingRuntime(),
+        runtime=runtime,
         search_service=FakeSearchService(),
         scrape_service=FakeScrapeService(),
     )

@@ -124,9 +124,7 @@ class ResearchRequest(BaseModel):
     def _bare_hosts(cls, domains: list[str]) -> list[str]:
         hosts: list[str] = []
         # A list typed into one field or flag arrives as one entry.
-        for domain in (part for entry in domains for part in re.split(r"[\s,;]+", entry)):
-            if not domain:
-                continue
+        for domain in re.findall(r"[^\s,;]+", " ".join(domains)):
             # Hosts are compared without a port, so one given here is dropped.
             host = urlsplit("//" + domain.split("://")[-1]).hostname or ""
             # A site's subdomains match it anyway, so a wildcard adds nothing.

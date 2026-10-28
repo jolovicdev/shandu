@@ -74,7 +74,7 @@ def _rejection(text: str) -> ProviderRejectedError | None:
     if kind is None:
         return None
     message = _PROVIDER_MESSAGE.search(text)
-    detail = message.group(1) if message else text[provider_error.end() :].splitlines()[0]
+    detail = message.group(1) if message else text[provider_error.end() :].partition("\n")[0]
     detail = re.sub(r"\s*\(request_id: [^)]*\)", "", detail).strip()
     return ProviderRejectedError(kind, detail[:200])
 

@@ -482,6 +482,8 @@ class LeadOrchestrator:
                 iteration_evidence: list[EvidenceRecord] = []
                 task_errors = 0
                 for task_result in results:
+                    # A failed task counts as an error and the iteration goes
+                    # on, except a provider rejection, which no task survives.
                     if isinstance(task_result, ProviderRejectedError):
                         raise task_result
                     if isinstance(task_result, list):

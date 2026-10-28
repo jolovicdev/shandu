@@ -213,6 +213,12 @@ _SAVED = GuiDefaults(
 )
 
 
+@pytest.fixture(autouse=True)
+def _saved_settings(monkeypatch) -> None:
+    # Runs read the saved settings, which must not be the developer's own.
+    monkeypatch.setattr(layout_module, "load_defaults", lambda: _SAVED)
+
+
 def _capture_request(monkeypatch, *args) -> object:
     captured = {}
 
@@ -225,7 +231,6 @@ def _capture_request(monkeypatch, *args) -> object:
         raise AssertionError("a run must not save the settings")
 
     monkeypatch.setattr(layout_module, "save_configuration", refuse_to_save)
-    monkeypatch.setattr(layout_module, "load_defaults", lambda: _SAVED)
     monkeypatch.setattr(layout_module, "ShanduEngine", CapturingEngine)
     list(layout_module._run_action("q", *args))
     return captured["request"]
@@ -449,9 +454,7 @@ def test_a_report_gone_from_disk_says_so() -> None:
     assert "Saved report gone is no longer on disk." in outputs[0]
 
 
-def test_each_visit_reads_the_saved_settings(monkeypatch) -> None:
-    monkeypatch.setattr(layout_module, "load_defaults", lambda: _SAVED)
-
+def test_each_visit_reads_the_saved_settings() -> None:
     loaded = layout_module._load_settings()
 
     assert loaded[4:6] == (2, 3)
@@ -462,11 +465,14 @@ def test_gui_needs_no_heartbeat_connection() -> None:
     assert build_gui().config["connect_heartbeat"] is False
 
 
-def test_each_visit_loads_settings_and_each_run_is_checked_first() -> None:
+def test_each_visit_loads_settings_and_each_run_starts_after_its_check_passes() -> None:
     demo = build_gui()
-    handlers = {getattr(dep.fn, "__name__", "") for dep in demo.fns.values()}
+    handlers = {getattr(dep.fn, "__name__", ""): dep for dep in demo.fns.values()}
+    check, run = handlers["_check_options"], handlers["_run_action"]
 
-    assert {"_load_settings", "_check_options", "_run_action"} <= handlers
+    assert "_load_settings" in handlers
+    assert run.trigger_after == check._id
+    assert run.trigger_only_on_success
 
 
 def test_citations_and_contents_link_within_the_report() -> None:

@@ -139,6 +139,8 @@ def test_placeholder_markers_are_removed() -> None:
             "# Report\n\n## Summary\n\n"
             "Ratings put the median at 1.98 [no marker]. A lead [Citation needed], then a fact [1].\n"
             "Rates rose [no citation], fell [source needed], held [unsourced] and dipped [uncited].\n"
+            "Size fell\u00a0[no marker].\n\n"
+            "- An item\n    [no citation] continues here [1].\n"
         ),
     )
     citations = [
@@ -156,6 +158,8 @@ def test_placeholder_markers_are_removed() -> None:
 
     assert "Ratings put the median at 1.98. A lead, then a fact [1]." in rendered
     assert "Rates rose, fell, held and dipped." in rendered
+    assert "Size fell." in rendered
+    assert "- An item\n     continues here [1]." in rendered
 
 
 def test_report_service_reindexes_citation_numbers_without_gaps() -> None:

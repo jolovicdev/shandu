@@ -38,7 +38,7 @@ _BANNED_PROVENANCE_HEADERS = {
 
 # Writers sometimes print a placeholder where a citation would go.
 _PLACEHOLDER_MARKER = re.compile(
-    r"(?<![ \t])[ \t]*\[(?:no marker|no citation|citation needed|source needed|unsourced|uncited)\]",
+    r"(?:(?<=\S)[ \t\u00a0]+)?\[(?:no marker|no citation|citation needed|source needed|unsourced|uncited)\]",
     re.IGNORECASE,
 )
 

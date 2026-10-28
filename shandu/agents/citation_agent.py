@@ -40,8 +40,8 @@ _SECOND_LEVELS = frozenset({"ac", "co", "com", "edu", "gov", "net", "org"})
 
 
 def _reads_as_a_name(text: str) -> bool:
-    """Whether every word is capitalized or carries a capital ("bioRxiv"), is a
-    domain, or is a connector, as in a site or journal name."""
+    """Whether every word is capitalized or carries a capital ("bioRxiv") or a
+    digit, is a domain, or is a connector, as in a site or journal name."""
     return all(
         any(char.isupper() or char.isdigit() for char in word)
         or "." in word
@@ -50,7 +50,7 @@ def _reads_as_a_name(text: str) -> bool:
     )
 
 
-def _name_other_works(ids: set[tuple[str, str]], seen: set[tuple[str, str]]) -> bool:
+def _names_other_works(ids: set[tuple[str, str]], seen: set[tuple[str, str]]) -> bool:
     """Whether two identifiers of one kind differ, which names two works
     whatever their titles. A DOI and an arXiv id can be one paper's journal
     and preprint versions."""
@@ -180,7 +180,7 @@ class CitationAgent:
                 (
                     merged[key]
                     for key in keys
-                    if key in merged and not _name_other_works(ids, work_ids[merged[key].citation_id])
+                    if key in merged and not _names_other_works(ids, work_ids[merged[key].citation_id])
                 ),
                 None,
             )

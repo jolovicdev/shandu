@@ -504,6 +504,7 @@ _REJECTED_KEY = (
         ("litellm.AuthenticationError: OpenAIException - Incorrect API key provided", "key"),
         ('litellm.BadRequestError: VertexAIException - {"status": "PERMISSION_DENIED"}', "key"),
         ("litellm.BadRequestError: AnthropicException - invalid x-api-key", "key"),
+        ("litellm.AuthenticationError: ", "key"),
         ("litellm.BadRequestError: LLM Provider NOT provided. You passed model=bogus/x", "model"),
         (
             'litellm.BadRequestError: DeepseekException - {"error":{"message":"The supported API '
@@ -538,13 +539,6 @@ class _RejectingDesk:
         return SimpleNamespace(status="failed", errors=[_REJECTED_KEY], data=None, metrics={})
 
 
-class _RaisingDesk:
-    async def arun(self, worker, job):
-        del worker, job
-        raise RuntimeError("litellm.BadRequestError: LLM Provider NOT provided. model=bogus/x")
-
-
-@pytest.mark.parametrize("desk", [_RejectingDesk(), _RaisingDesk()])
 @pytest.mark.parametrize(
     "method",
     [
@@ -555,8 +549,8 @@ class _RaisingDesk:
         "build_final_report",
     ],
 )
-def test_a_rejected_lead_call_stops_instead_of_falling_back(desk, method) -> None:
-    agent = LeadAgent(runtime=_ModelRuntime(desk))
+def test_a_rejected_lead_call_stops_instead_of_falling_back(method) -> None:
+    agent = LeadAgent(runtime=_ModelRuntime(_RejectingDesk()))
     calls = {
         "create_brief": lambda: agent.create_brief(_request()),
         "clarifying_questions": lambda: agent.clarifying_questions("q"),

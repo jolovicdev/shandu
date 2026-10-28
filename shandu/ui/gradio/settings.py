@@ -12,8 +12,7 @@ from .constants import DEPTH_POLICIES, DETAIL_LEVELS
 
 # Only these config values feed RuntimeBootstrap. Orchestration values are
 # read per-request, so saving them must not tear down the shared runtime:
-# reset_bootstrap() closes SQLite stores that any in-flight run still holds,
-# and the GUI saves configuration at the start of every run.
+# reset_bootstrap() closes SQLite stores that any in-flight run still holds.
 _RUNTIME_KEYS: tuple[tuple[str, str], ...] = (
     ("api", "model"),
     ("api", "api_key_env"),

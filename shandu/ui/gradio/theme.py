@@ -695,6 +695,8 @@ body.dark,
 .shandu-library table {
   width: 100% !important;
   border: 0 !important;
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
   background: transparent !important;
 }
 
@@ -760,6 +762,9 @@ body.dark,
 }
 
 .shandu-library .paginate button {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 8px;
   color: var(--ink-3) !important;
   font-family: var(--mono);
 }
@@ -1256,6 +1261,21 @@ select:focus-visible {
 
   .shandu-library td:nth-child(2) {
     display: none !important;
+  }
+
+  /* The saved time takes its own line under the title, which leaves the title the full width. */
+  .shandu-library tr {
+    display: grid;
+  }
+
+  .shandu-library td:first-child {
+    padding-bottom: 2px !important;
+  }
+
+  .shandu-library td:nth-child(3) {
+    width: auto !important;
+    padding: 0 0 11px !important;
+    text-align: left !important;
   }
 }
 

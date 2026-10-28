@@ -23,8 +23,10 @@ _PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fc
 _ATOM = "{http://www.w3.org/2005/Atom}"
 # arXiv asks API clients to leave 3 seconds between calls.
 _ARXIV_INTERVAL_SECONDS = 3.0
-# NCBI allows three E-utilities requests a second without an API key.
-_PUBMED_INTERVAL_SECONDS = 0.34
+# NCBI allows three E-utilities requests a second without an API key. Calls
+# spaced exactly that far apart arrive closer together under parallel tasks
+# and draw 429s, so the spacing keeps a margin.
+_PUBMED_INTERVAL_SECONDS = 0.5
 _SNIPPET_CHARS = 400
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 _SITE_OPERATOR = re.compile(r"\s*\bsite:\S+")

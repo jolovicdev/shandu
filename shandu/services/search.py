@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 import time
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -70,8 +71,10 @@ class SearchService:
         self._api: ApiSearchClient | None = None
         backend = str(config.get("search", "backend", "ddgs"))
         if backend in API_ENV:
-            self._api = ApiSearchClient.from_env(backend)
-            if self._api is None:
+            credential = os.getenv(API_ENV[backend], "").strip()
+            if credential:
+                self._api = ApiSearchClient(backend, credential)
+            else:
                 logger.warning(
                     "Search backend %s needs %s; searching with ddgs", backend, API_ENV[backend]
                 )

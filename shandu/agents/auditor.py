@@ -4,16 +4,19 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from itertools import batched
 from typing import Any, Literal
 
 from blackgeorge import Job, Worker
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ..contracts import CitationEntry, CitationVerdict, EvidenceRecord
 from ..interfaces import RuntimeExecutionLike
 from ..prompts import auditor_instructions, auditor_job
+from ..runtime.calls import structured_call
 from ..runtime.costing import add_usage, collect_llm_usage
 from ..runtime.roles import role_model
+from .search_subagent import _report_reason
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,9 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])((?:\s*\[\d+\])*)\s+(?=[A-Z0-9\"(])")
 _CODE_OR_LINK = re.compile(r"(`+).+?\1|\[[^\[\]\n]*\]\([^)\n]*\)")
 
 
+_Verdict = Literal["supported", "partial", "unsupported", "unchecked"]
+
+
 class _MarkerVerdict(BaseModel):
     citation_id: int
     verdict: Literal["supported", "partial", "unsupported"]
@@ -38,11 +44,11 @@ class _MarkerVerdict(BaseModel):
 
 class _UnitVerdict(BaseModel):
     unit_id: int
-    markers: list[_MarkerVerdict] = Field(default_factory=list)
+    markers: list[_MarkerVerdict]
 
 
 class _AuditPayload(BaseModel):
-    units: list[_UnitVerdict] = Field(default_factory=list)
+    units: list[_UnitVerdict]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +72,8 @@ class AuditOutcome:
     verdicts: list[CitationVerdict]
     llm_usage: dict[str, Any] | None
     calls: int
+    # Why each failed batch left its markers unchecked.
+    failures: tuple[str, ...] = ()
 
 
 def _cited_units(markdown: str) -> list[_Unit]:
@@ -143,8 +151,9 @@ class CitationAuditor:
         semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
         usage: dict[str, Any] | None = None
         calls = 0
+        failures: list[str] = []
 
-        async def judge(batch: list[_Unit]) -> dict[int, dict[int, str]]:
+        async def judge(batch: tuple[_Unit, ...]) -> dict[int, dict[int, _Verdict]]:
             nonlocal usage, calls
             cited = sorted({citation_id for unit in batch for citation_id in unit.citation_ids})
             payload = {
@@ -168,29 +177,29 @@ class CitationAuditor:
             )
             async with semaphore:
                 try:
-                    report = await self._runtime.desk.arun(
-                        worker, Job(input=auditor_job(payload), response_schema=_AuditPayload)
+                    report = await structured_call(
+                        self._runtime,
+                        worker,
+                        Job(input=auditor_job(payload), response_schema=_AuditPayload),
                     )
-                except Exception:
+                except Exception as exc:
                     logger.warning("Citation audit batch failed", exc_info=True)
+                    failures.append(f"{type(exc).__name__}: {exc}"[:300])
                     return {}
             calls += 1
             usage = add_usage(usage, collect_llm_usage(report))
             if report.status != "completed" or not isinstance(report.data, _AuditPayload):
-                logger.warning(
-                    "Citation audit batch did not complete: %s", getattr(report, "errors", None)
-                )
+                reason = _report_reason(report)
+                logger.warning("Citation audit batch did not complete: %s", reason)
+                failures.append(reason)
                 return {}
             return {
                 item.unit_id: {marker.citation_id: marker.verdict for marker in item.markers}
                 for item in report.data.units
             }
 
-        batches = [
-            units[index : index + _UNITS_PER_BATCH]
-            for index in range(0, len(units), _UNITS_PER_BATCH)
-        ]
-        judged: dict[int, dict[int, str]] = {}
+        batches = batched(units, _UNITS_PER_BATCH)
+        judged: dict[int, dict[int, _Verdict]] = {}
         for result in await asyncio.gather(*(judge(batch) for batch in batches)):
             judged.update(result)
 
@@ -203,7 +212,7 @@ class CitationAuditor:
             text = unit.text
             unit_list: list[CitationVerdict] = []
             for citation_id in unit.citation_ids:
-                verdict = unit_verdicts.get(citation_id, "unchecked")
+                verdict: _Verdict = unit_verdicts.get(citation_id, "unchecked")
                 entry = by_id.get(citation_id)
                 unit_list.append(
                     CitationVerdict(
@@ -224,4 +233,5 @@ class CitationAuditor:
             verdicts=verdicts,
             llm_usage=usage,
             calls=calls,
+            failures=tuple(failures),
         )

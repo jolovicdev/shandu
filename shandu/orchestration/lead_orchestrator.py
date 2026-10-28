@@ -224,14 +224,6 @@ class LeadOrchestrator:
 
             lead_seen = self._lead.fallback_count
 
-            def lead_fell_back() -> bool:
-                nonlocal lead_seen
-                if self._lead.fallback_count <= lead_seen:
-                    return False
-                state.lead_fallbacks += self._lead.fallback_count - lead_seen
-                lead_seen = self._lead.fallback_count
-                return True
-
             def absorb_llm_usage(usage: Any) -> dict[str, Any] | None:
                 if not isinstance(usage, dict) or not usage:
                     return None
@@ -269,8 +261,11 @@ class LeadOrchestrator:
                 method: str, fallback_message: str, iteration: int | None = None
             ) -> dict[str, Any] | None:
                 """Meter the lead's last call and report it if it fell back."""
+                nonlocal lead_seen
                 usage = absorb_llm_usage(getattr(self._lead, "last_llm_usage", None))
-                if lead_fell_back():
+                if self._lead.fallback_count > lead_seen:
+                    state.lead_fallbacks += self._lead.fallback_count - lead_seen
+                    lead_seen = self._lead.fallback_count
                     await emit(
                         RunEvent(
                             stage="error",
@@ -413,7 +408,7 @@ class LeadOrchestrator:
                                     "memo": str(payload["memo"]),
                                 }
                             )
-                        elif trace_type == "extraction_fallback":
+                        elif trace_type in ("extraction_fallback", "researcher_failed"):
                             state.extraction_fallbacks += 1
                             trace_reason = payload.get("reason")
                             if trace_reason:
@@ -591,8 +586,7 @@ class LeadOrchestrator:
             report_usage = await after_lead_call(
                 "build_final_report", "Lead reporter fell back to deterministic report"
             )
-            # Writing takes one call, or several with retries or the sectioned
-            # writer's outline, sections, and edit.
+            # Writing takes one call, or several when an attempt is retried.
             writer_calls = getattr(self._lead, "last_call_count", None)
             state.agent_model_calls += (
                 writer_calls if isinstance(writer_calls, int) and writer_calls > 0 else 1
@@ -620,6 +614,15 @@ class LeadOrchestrator:
                     else None
                 )
                 citation_audit = outcome.verdicts
+                for failure in getattr(outcome, "failures", ()):
+                    state.fallback_reasons.append(f"citation_audit: {failure}"[:300])
+                    await emit(
+                        RunEvent(
+                            stage="error",
+                            message="Citation audit left a batch unchecked",
+                            payload={"method": "citation_audit", "reason": failure},
+                        ),
+                    )
                 # Re-rendering drops references that lost their last marker
                 # and renumbers the rest. The renderer keeps the whole ledger
                 # for a body without markers, so an audit that removed every
@@ -682,7 +685,7 @@ class LeadOrchestrator:
                 run_stats["citation_audit"] = self._audit_counts(citation_audit)
             final_matrix = state.summaries[-1].coverage_matrix if state.summaries else []
             if final_matrix:
-                strengths = [item.strength for item in final_matrix]
+                strengths: list[str] = [item.strength for item in final_matrix]
                 run_stats["sub_question_coverage"] = {
                     level: strengths.count(level)
                     for level in ("strong", "moderate", "weak", "none")
@@ -854,6 +857,13 @@ class LeadOrchestrator:
             )
             if "url" in payload:
                 metrics["url"] = payload["url"]
+        elif trace_type == "researcher_failed":
+            stage = "error"
+            message = (
+                f"Task {task_id} researcher stopped without a memo"
+                if task_id
+                else "Researcher stopped without a memo"
+            )
         elif trace_type == "task_memo":
             message = (
                 f"Task {task_id} researcher finished" if task_id else "Researcher finished"

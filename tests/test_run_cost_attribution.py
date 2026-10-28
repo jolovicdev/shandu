@@ -66,6 +66,7 @@ class _LeadDesk:
                 contradiction_count=0,
                 recency_score=1.0,
                 coverage_should_continue=False,
+                open_sub_questions=[],
             )
             content = None
         else:
@@ -126,7 +127,16 @@ class _ExtractionDesk:
         del worker, job
         return SimpleNamespace(
             status="completed",
-            data=_ExtractionPayload(snippet="s", extracted_text="t" * 60),
+            data=_ExtractionPayload(
+                snippet="s",
+                extracted_text="t" * 60,
+                confidence=0.5,
+                source_class="unknown",
+                authorship="anonymous",
+                is_promotional=False,
+                summarizes_inaccessible_source=False,
+                claims=[],
+            ),
             run_id="bg-1",
             errors=[],
             metrics=dict(_METRICS),
@@ -204,6 +214,14 @@ def test_ai_search_usage_reaches_run_stats() -> None:
     result = asyncio.run(service.search("q"))
 
     assert result.run_stats.get("llm_usage") == _USAGE
+
+
+def test_collect_leaves_out_a_zero_cost() -> None:
+    from shandu.runtime.costing import collect_llm_usage
+
+    report = SimpleNamespace(metrics={"usage": {"total_tokens": 5}, "cost_usd": 0.0})
+
+    assert collect_llm_usage(report) == {"total_tokens": 5}
 
 
 def test_collect_reads_usage_from_report_metrics() -> None:

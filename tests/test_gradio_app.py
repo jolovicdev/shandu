@@ -15,7 +15,7 @@ from shandu.ui.gradio.layout import _outputs, build_gui
 
 
 def test_gradio_task_status_not_completed_on_trace_completed_message() -> None:
-    state = GuiRunState(query="q")
+    state = GuiRunState()
     state.apply_event(
         RunEvent(
             stage="search",
@@ -37,7 +37,7 @@ def test_gradio_task_status_not_completed_on_trace_completed_message() -> None:
 
 
 def test_gradio_task_status_completed_only_on_final_task_event() -> None:
-    state = GuiRunState(query="q")
+    state = GuiRunState()
     state.apply_event(
         RunEvent(
             stage="search",
@@ -58,7 +58,7 @@ def test_gradio_task_status_completed_only_on_final_task_event() -> None:
 
 
 def test_gradio_model_calls_update_from_live_events() -> None:
-    state = GuiRunState(query="q")
+    state = GuiRunState()
     state.apply_event(
         RunEvent(
             stage="plan",
@@ -73,7 +73,7 @@ def test_gradio_model_calls_update_from_live_events() -> None:
 
 
 def test_gradio_run_output_contract_stays_aligned() -> None:
-    state = GuiRunState(query="q")
+    state = GuiRunState()
     assert len(state.render(running=False).as_tuple()) == 7
     assert len(_outputs(state=state, running=False, download_path=None)) == 13
 
@@ -237,7 +237,7 @@ def test_launch_gui_allows_runs_dir(monkeypatch, tmp_path) -> None:
 def test_gradio_strip_shows_citation_audit_counts() -> None:
     from shandu.contracts import ResearchRequest, ResearchRunResult
 
-    state = GuiRunState(query="q")
+    state = GuiRunState()
     state.apply_result(
         ResearchRunResult(
             run_id="r1",
@@ -256,7 +256,7 @@ def test_gradio_strip_shows_citation_audit_counts() -> None:
 
 
 def test_gradio_evidence_counts_every_task_while_running() -> None:
-    state = GuiRunState(query="q")
+    state = GuiRunState()
     for task_id, evidence in (("t1", 3), ("t2", 4)):
         state.apply_event(
             RunEvent(
@@ -271,7 +271,7 @@ def test_gradio_evidence_counts_every_task_while_running() -> None:
 
 
 def test_gradio_stopped_run_marks_open_subagents_stopped() -> None:
-    state = GuiRunState(query="q")
+    state = GuiRunState()
     for task_id in ("t1", "t2"):
         state.apply_event(
             RunEvent(stage="search", message=f"Task {task_id} started", payload={"task_id": task_id})
@@ -287,7 +287,7 @@ def test_gradio_stopped_run_marks_open_subagents_stopped() -> None:
 
 
 def test_gradio_feed_lines_use_words_not_raw_fields() -> None:
-    state = GuiRunState(query="q")
+    state = GuiRunState()
     state.apply_event(
         RunEvent(
             stage="search",

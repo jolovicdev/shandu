@@ -21,13 +21,13 @@ Gradio web GUI.
   OpenAlex, and PubMed.
 - Researchers read whole pages and documents, score every source for
   credibility, and extract claims with verbatim quotes that code checks against
-  the page. An agentic researcher (`--researcher agentic`) also follows links to
-  the primary sources a page cites.
+  the page. The checked claims drive the coverage rating and the citation audit.
+  An agentic researcher (`--researcher agentic`) also follows links to the
+  primary sources a page cites.
 - After each loop, code rates every sub-question by how many independent credible
   sources back it, and research continues until each has two or the budget ends.
-- A single call, or an outline-then-sections writer (`--writer sectioned`),
-  writes the report; an auditor then checks every cited sentence against its
-  sources and removes unsupported citations.
+- One call writes the report; an auditor then checks every cited sentence
+  against its sources and removes unsupported citations.
 - Every run is saved as it happens, so you can resume it or rewrite its report
   without searching again.
 - The CLI streams one aligned line per event; the web GUI shows the run live and
@@ -147,7 +147,6 @@ Precedence:
 shandu run "What did the SELECT trial find about semaglutide and cardiovascular events?" \
   --effort medium \
   --researcher agentic \
-  --writer sectioned \
   --output report.md
 ```
 
@@ -160,12 +159,11 @@ Research options for `shandu run`:
   many tasks run at once inside each iteration.
 - `--researcher pipeline|agentic`: a fixed search, rank, and read pass per task,
   or a tool loop that searches, reads, and follows links.
-- `--writer single|sectioned`: one writing call, or outline, per-section drafts,
-  and an edit. Sectioned reports grow with effort.
 - `--include-domain`, `--exclude-domain` (repeatable), `--since YYYY-MM-DD`:
   source filters.
 - `--clarify`: answer up to three clarifying questions before research starts.
 - `--max-cost USD`: stop researching once this much is spent, then write the report.
+  A model with no known price cannot be budgeted; the run says so and continues.
 - `--no-audit`: skip checking citations against their sources.
 
 During `shandu run`, progress events stream live in the terminal:
@@ -201,10 +199,10 @@ Other commands:
 - `shandu aisearch <query>`
 - `shandu list`: stored runs, newest first
 - `shandu show <run_id>`: a stored run's summary and report
-- `shandu report <run_id> [--detail-level] [--model] [--writer] [--no-audit] [--output]`: rewrite the report from stored evidence, with no new searches
+- `shandu report <run_id> [--detail-level] [--model] [--no-audit] [--output]`: rewrite the report from stored evidence, with no new searches
 - `shandu resume <run_id>`: continue a stopped run after its last completed iteration
 - `shandu inspect <run_id>`
-- `shandu clean`
+- `shandu clean`: delete runtime caches and keep stored runs; `--all` also deletes the runs and their reports
 
 Each run lives in `<storage_dir>/runs/<run_id>/`: the request, live events,
 evidence checkpointed after every task, per-iteration plans and syntheses, the

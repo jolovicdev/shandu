@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 from shandu.agents.researcher import (
     _BUDGET_SPENT,
+    _READS_SPENT,
+    _SEARCHES_SPENT,
     ResearcherAgent,
     ResearcherByRequest,
 )
@@ -70,7 +72,16 @@ class _ModelDesk:
         if worker.name == "SubagentExtractor":
             return SimpleNamespace(
                 status="completed",
-                data=_ExtractionPayload(snippet="s", extracted_text="evidence text"),
+                data=_ExtractionPayload(
+                    snippet="s",
+                    extracted_text="evidence text",
+                    confidence=0.5,
+                    source_class="unknown",
+                    authorship="anonymous",
+                    is_promotional=False,
+                    summarizes_inaccessible_source=False,
+                    claims=[],
+                ),
                 metrics={},
             )
         tools = {item.name: item.callable for item in worker.tools()}
@@ -116,6 +127,39 @@ def test_researcher_follows_link_to_primary_source_and_reports_memo() -> None:
     assert memo["llm_usage"]["cost_usd"] == 0.001
 
 
+class _LoopFailsDesk(_ModelDesk):
+    """Plays a tool loop that the desk stops before the model writes a memo."""
+
+    async def arun(self, worker, job):
+        if worker.name == "SubagentExtractor":
+            return await super().arun(worker, job)
+        tools = {item.name: item.callable for item in worker.tools()}
+        await self.script(tools, self.replies)
+        return SimpleNamespace(
+            status="failed", errors=["Max iterations exceeded"], content=None, metrics={}
+        )
+
+
+def test_researcher_stopped_without_a_memo_reports_why_and_keeps_its_evidence() -> None:
+    async def script(tools, replies):
+        replies.append(await tools["read_page"](url=_BLOG))
+
+    traces: list[tuple[str, dict]] = []
+
+    async def on_trace(kind, payload) -> None:
+        traces.append((kind, payload))
+
+    evidence = asyncio.run(
+        _researcher(_LoopFailsDesk(script)).execute_task(
+            "run:r", _task(), ResearchRequest(query="q"), progress_callback=on_trace
+        )
+    )
+
+    assert [record.requested_url for record in evidence] == [_BLOG]
+    failed = next(payload for kind, payload in traces if kind == "researcher_failed")
+    assert failed == {"task_id": "t1", "reason": "Max iterations exceeded"}
+
+
 def test_researcher_reads_within_budget_and_repeats_are_free() -> None:
     async def script(tools, replies):
         replies.append(await tools["read_page"](url=_BLOG))
@@ -137,8 +181,29 @@ def test_researcher_reads_within_budget_and_repeats_are_free() -> None:
     assert scrape.requested == [_BLOG]
     assert len(evidence) == 1
     assert desk.replies[1] == desk.replies[0]
-    assert desk.replies[2] == _BUDGET_SPENT
+    assert desk.replies[2] == _READS_SPENT.format(searches=6)
     assert desk.replies[3].startswith("Already read")
+
+
+def test_researcher_out_of_searches_is_told_to_use_its_reads() -> None:
+    async def script(tools, replies):
+        await tools["web_search"](query="first")
+        replies.append(await tools["web_search"](query="second"))
+        await tools["read_page"](url=_BLOG)
+        replies.append(await tools["web_search"](query="third"))
+
+    desk = _ModelDesk(script)
+    search = _Search()
+    asyncio.run(
+        _researcher(desk, search=search).execute_task(
+            "run:r",
+            _task(),
+            ResearchRequest(query="q", max_searches_per_task=1, max_pages_per_task=1),
+        )
+    )
+
+    assert search.queries == ["first"]
+    assert desk.replies == [_SEARCHES_SPENT.format(reads=1), _BUDGET_SPENT]
 
 
 def test_researcher_by_request_routes_on_request_field() -> None:
@@ -204,6 +269,34 @@ class _MemoSubagent:
 class _NoCitations:
     async def build_citations(self, query, evidence):
         return []
+
+
+class _MemolessSubagent:
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
+        await progress_callback(
+            "researcher_failed", {"task_id": task.task_id, "reason": "Max iterations exceeded"}
+        )
+        return []
+
+
+def test_orchestrator_counts_a_researcher_stopped_without_a_memo(tmp_path) -> None:
+    store = RunStore(tmp_path)
+    orchestrator = LeadOrchestrator(
+        lead_agent=_MemoLead(),
+        search_subagent=_MemolessSubagent(),
+        citation_agent=_NoCitations(),
+        run_store=store,
+        report_service=ReportService(),
+    )
+
+    result = asyncio.run(
+        orchestrator.run(ResearchRequest(query="q", max_iterations=1, parallelism=1))
+    )
+
+    assert result.run_stats["agent_fallbacks"] == 1
+    assert result.run_stats["fallback_reasons"] == ["Max iterations exceeded"]
+    errors = [event for event in store.events(result.run_id) if event["stage"] == "error"]
+    assert [event["message"] for event in errors] == ["Task t1 researcher stopped without a memo"]
 
 
 def test_orchestrator_hands_task_memos_to_synthesizer(tmp_path) -> None:

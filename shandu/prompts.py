@@ -36,7 +36,11 @@ def brief_instructions() -> str:
         "timeline, or an explainer.\n\n"
         "Use the clarifications when present; they override your reading of the "
         "query. A since date bounds time_window, and include_domains or "
-        "exclude_domains bound source_types. Do not answer the query."
+        "exclude_domains bound source_types. Do not answer the query.\n\n"
+        "You write before any research has been done, and the topic may postdate "
+        "what you know. Sub-questions ask for facts; they never supply them. Do not "
+        "put a figure, date, time, document title, or organisation name into the "
+        "brief unless the query or a clarification gives it."
     )
 
 
@@ -254,9 +258,11 @@ _GROUNDING_RULES = (
     "the source is in reader language: a vendor README, an anonymous wiki page, "
     "the authors' own benchmark, a paper with no independent replication.\n"
     "- Write about the subject, not about the research process. Avoid phrases "
-    "such as \"the gathered evidence\", \"the corpus\", \"the evidence base\", or "
-    "\"the material reviewed\". State a gap once, where it matters, as a fact about "
-    "what is publicly documented or what this report did not examine.\n"
+    "such as \"the gathered evidence\", \"the corpus\", \"the evidence base\", "
+    "\"the material reviewed\", \"the sources retrieved\", or \"available here\". "
+    "State a gap once, where it matters, as something this report did not find. "
+    "The search covers part of what exists, so never write that no study, "
+    "dataset, or statement exists on a point.\n"
     "- A lead mentioned without citation gets no marker at all; never write a "
     "placeholder such as [no marker] or [citation needed].\n"
     "- State uncertainty plainly when evidence is thin, indirect, stale, or "
@@ -385,87 +391,6 @@ def reporter_job(payload: dict[str, Any], target_words: int) -> str:
         "Input JSON:\n"
         f"{_payload_json(payload)}"
     )
-
-
-def outliner_instructions() -> str:
-    return (
-        "You are Outliner, the editor who plans a long research report before "
-        "anyone writes it. Your output is parsed as structured data, so return only "
-        "schema-valid data.\n\n"
-        "Plan the report body as sections that together answer the brief's "
-        "sub-questions in the shape its deliverable asks for. Build the argument: "
-        "order sections so each one leans on what came before, and give the "
-        "comparison, tradeoff, or recommendation its own section when the "
-        "deliverable calls for one.\n\n"
-        "Rules:\n"
-        "- title: a specific report title, not the question restated.\n"
-        "- sections: 4-9 body sections. Do not plan an executive summary, "
-        "introduction, references, or sources section; those are handled "
-        "elsewhere.\n"
-        "- Each section has a heading, a one-sentence purpose, the brief "
-        "sub-question indices it answers, the finding ids it should use, and a "
-        "target word count. Every finding that matters belongs to at least one "
-        "section; a finding may serve two.\n"
-        "- Split the word budget by how much evidence each section has; a "
-        "section with little evidence gets few words.\n"
-        "- Use at most one caveats or counterpoints section."
-    )
-
-
-def outliner_job(payload: dict[str, Any], target_words: int) -> str:
-    return (
-        f"Plan the report body. Total body budget: about {target_words} words.\n\n"
-        f"Input JSON:\n{_payload_json(payload)}"
-    )
-
-
-def section_writer_instructions() -> str:
-    return (
-        "You are SectionWriter, one of several writers each drafting one section "
-        "of a research report. Other writers cover the other sections, so stay "
-        "inside your section's purpose and do not introduce the whole topic.\n\n"
-        + _GROUNDING_RULES
-        + _SOURCE_QUALITY_RULES
-        + "Markdown craft:\n"
-        "- Start with the section's ## heading exactly as given. Use ### and #### "
-        "for subsections. No H1, no executive summary, no references list.\n"
-        + _MARKDOWN_CRAFT_A
-        + _MARKDOWN_CRAFT_B
-    )
-
-
-def section_writer_job(payload: dict[str, Any]) -> str:
-    return (
-        "Write this section in markdown. Reach the target length with specifics "
-        "from the findings and evidence: numbers with their conditions, "
-        "comparisons, mechanisms, and caveats. Each finding carries verbatim quotes "
-        "from its sources and the citation ids that support it. Write shorter "
-        "when the evidence is thin; never pad.\n\n"
-        f"Input JSON:\n{_payload_json(payload)}"
-    )
-
-
-def editor_instructions() -> str:
-    return (
-        "You are Editor, finishing a research report that several writers drafted "
-        "section by section. Return the full report in markdown.\n\n"
-        "Edits:\n"
-        "- Start with # and the given title, then ## Executive Summary: the bottom "
-        "line and the few findings that carry it, in one or two tight paragraphs, "
-        "with the citation markers the body uses for them.\n"
-        "- Keep every section, heading, table, number, and citation marker. Do not "
-        "add facts or markers that are not in the draft.\n"
-        "- Remove repetition across sections: keep a point where it is argued best "
-        "and cut or shorten its repeats.\n"
-        "- Make the sections read as one argument: fix transitions and make sure "
-        "later sections do not contradict earlier ones without saying so.\n"
-        "- Do not add a references or sources section.\n"
-        "- Do not shorten the report beyond removing repetition."
-    )
-
-
-def editor_job(payload: dict[str, Any]) -> str:
-    return f"Edit this report.\n\nInput JSON:\n{_payload_json(payload)}"
 
 
 def auditor_instructions() -> str:
@@ -626,7 +551,8 @@ def researcher_instructions() -> str:
         "- Every search and read spends budget; reading a URL again is free and "
         "returns the same reply. When a read fails, choose another source.\n"
         "- Stop calling tools once the expected output is covered by credible "
-        "sources, or when a tool reports the budget is spent.\n\n"
+        "sources, or when both budgets are spent. Searching and reading are "
+        "budgeted separately; when one runs out, use what is left of the other.\n\n"
         "Then write the memo: what the evidence establishes, with numbers and "
         "their conditions, each tied to the URL it came from; where sources "
         "disagree; and what remains unanswered. Use only pages you read."

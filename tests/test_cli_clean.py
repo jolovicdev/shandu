@@ -6,12 +6,12 @@ from shandu.cli import cli
 from shandu.config import config
 
 
-def _run_clean(monkeypatch, storage: str, home: str):
+def _run_clean(monkeypatch, storage: str, home: str, *flags: str):
     # Patches the resolved value only: config.set would leave the override in
     # the overlay that config.save() writes to the real config file.
     monkeypatch.setitem(config._config["runtime"], "storage_dir", storage)
     monkeypatch.setenv("HOME", home)
-    return CliRunner().invoke(cli, ["clean", "--force"])
+    return CliRunner().invoke(cli, ["clean", "--force", *flags])
 
 
 def test_clean_force_refuses_home_directory(tmp_path, monkeypatch) -> None:
@@ -40,15 +40,54 @@ def test_clean_force_refuses_unmarked_directory(tmp_path, monkeypatch) -> None:
     assert "marker" in result.output.lower() or "efus" in result.output
 
 
-def test_clean_force_removes_marked_storage(tmp_path, monkeypatch) -> None:
+def _storage_with_one_run(tmp_path):
     target = tmp_path / "store"
-    target.mkdir()
+    report = target / "runs" / "r1" / "report.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("# Report", encoding="utf-8")
     (target / "memory.db").write_text("x", encoding="utf-8")
+    return target, report
+
+
+def test_clean_force_removes_caches_and_keeps_stored_runs(tmp_path, monkeypatch) -> None:
+    target, report = _storage_with_one_run(tmp_path)
 
     result = _run_clean(monkeypatch, str(target), str(tmp_path / "home"))
 
     assert result.exit_code == 0
+    assert not (target / "memory.db").exists()
+    assert report.read_text(encoding="utf-8") == "# Report"
+
+
+def test_clean_all_removes_stored_runs(tmp_path, monkeypatch) -> None:
+    target, _ = _storage_with_one_run(tmp_path)
+
+    result = _run_clean(monkeypatch, str(target), str(tmp_path / "home"), "--all")
+
+    assert result.exit_code == 0
     assert not target.exists()
+
+
+def test_clean_all_still_runs_once_the_caches_are_gone(tmp_path, monkeypatch) -> None:
+    target, _ = _storage_with_one_run(tmp_path)
+    home = str(tmp_path / "home")
+    _run_clean(monkeypatch, str(target), home)
+
+    result = _run_clean(monkeypatch, str(target), home, "--all")
+
+    assert result.exit_code == 0
+    assert not target.exists()
+
+
+def test_clean_prompt_names_the_stored_run_count(tmp_path, monkeypatch) -> None:
+    target, report = _storage_with_one_run(tmp_path)
+    monkeypatch.setitem(config._config["runtime"], "storage_dir", str(target))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    result = CliRunner().invoke(cli, ["clean", "--all"], input="n\n")
+
+    assert "1 stored runs" in result.output
+    assert report.exists()
 
 
 def test_storage_dir_resolves_absolute_at_load(tmp_path, monkeypatch) -> None:

@@ -34,6 +34,7 @@ from ..prompts import (
     selector_instructions,
     selector_job,
 )
+from ..runtime.calls import structured_call
 from ..runtime.costing import collect_llm_usage
 from ..runtime.roles import role_model
 from ..services.findings import verified_claims
@@ -45,6 +46,9 @@ SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 _SNIPPET_FALLBACK_METHOD = "search_snippet_fallback"
 _SNIPPET_ONLY_CREDIBILITY = 0.20
 _EXTRACTION_CONCURRENCY = 8
+# One scrape of the top candidates, then up to two rounds that replace the
+# pages that could not be read.
+_SCRAPE_ROUNDS = 3
 
 
 def _host_matches(url: str, domains: Collection[str]) -> bool:
@@ -78,19 +82,22 @@ def _report_reason(report: Any) -> str:
     return f"status={getattr(report, 'status', 'unknown')}"
 
 
+# Every field is required: a provider that fills only required fields would
+# otherwise leave confidence at a constant and the source unclassified, and
+# the credibility score built from them would be noise.
 class _ExtractionPayload(BaseModel):
     snippet: str
     extracted_text: str
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    source_class: SourceClass = "unknown"
-    authorship: Literal["named", "organizational", "anonymous"] = "anonymous"
-    is_promotional: bool = False
-    summarizes_inaccessible_source: bool = False
-    claims: list[Claim] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    source_class: SourceClass
+    authorship: Literal["named", "organizational", "anonymous"]
+    is_promotional: bool
+    summarizes_inaccessible_source: bool
+    claims: list[Claim]
 
 
 class _SelectionPayload(BaseModel):
-    ranked_ids: list[int] = Field(default_factory=list)
+    ranked_ids: list[int]
 
 
 def assess_source_quality(
@@ -227,30 +234,52 @@ class SearchSubagent:
         read = {page_key(url) for url in extracted_urls or ()}
         all_hits = [entry for entry in unseen if page_key(entry["url"]) not in read]
 
-        urls = [entry["url"] for entry in all_hits[: request.max_pages_per_task]]
-        canonical_urls = {url: self._canonicalize_url(url) or url for url in urls}
-        if extracted_urls is not None:
-            extracted_urls.update(canonical_urls.values())
-        await self._emit_trace(
-            progress_callback,
-            "scrape_started",
-            {
-                "task_id": task.task_id,
-                "url_count": len(urls),
-                "urls": urls,
-            },
-        )
-        pages, scrape_missed = await self._scrape.scrape_many(urls)
-        successful_pages = [p for p in pages if p.fetch_error is None]
+        since = request.since
+        queue = [entry["url"] for entry in all_hits]
+        urls: list[str] = []
+        pages: list[ScrapedPageLike] = []
+        scrape_missed = 0
+        successful_pages: list[ScrapedPageLike] = []
+        too_old: list[ScrapedPageLike] = []
+        # A blocked, empty, or too-old page gives the task nothing to read, so
+        # the next-ranked candidates take its place until the task has its
+        # pages, the candidates run out, or the rounds are spent.
+        for _ in range(_SCRAPE_ROUNDS):
+            batch: list[str] = []
+            while queue and len(batch) < request.max_pages_per_task - len(successful_pages):
+                url = queue.pop(0)
+                if extracted_urls is None or page_key(url) not in extracted_urls:
+                    batch.append(url)
+            if not batch:
+                break
+            if extracted_urls is not None:
+                extracted_urls.update(page_key(url) for url in batch)
+            await self._emit_trace(
+                progress_callback,
+                "scrape_started",
+                {
+                    "task_id": task.task_id,
+                    "url_count": len(batch),
+                    "urls": batch,
+                },
+            )
+            batch_pages, batch_missed = await self._scrape.scrape_many(batch)
+            urls.extend(batch)
+            pages.extend(batch_pages)
+            scrape_missed += batch_missed
+            too_old = [
+                page
+                for page in pages
+                if page.fetch_error is None
+                and since is not None
+                and _dated_before(page.published_at, since)
+            ]
+            successful_pages = [
+                page for page in pages if page.fetch_error is None and page not in too_old
+            ]
+        canonical_urls = {url: page_key(url) for url in urls}
         missed_pages = [p for p in pages if p.fetch_error is not None]
         missed_count = max(scrape_missed, len(missed_pages), max(0, len(urls) - len(pages)))
-        since = request.since
-        too_old = [
-            page
-            for page in successful_pages
-            if since is not None and _dated_before(page.published_at, since)
-        ]
-        successful_pages = [p for p in successful_pages if p not in too_old]
         await self._emit_trace(
             progress_callback,
             "scrape_completed",
@@ -582,7 +611,7 @@ class SearchSubagent:
         ranked = candidates
         llm_usage: dict[str, Any] | None = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await structured_call(self._runtime, worker, job)
             llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _SelectionPayload):
                 picked = [
@@ -649,7 +678,7 @@ class SearchSubagent:
         llm_usage: dict[str, Any] | None = None
         try:
             async with self._extract_semaphore:
-                report = await self._runtime.desk.arun(worker, job)
+                report = await structured_call(self._runtime, worker, job)
             llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _ExtractionPayload):
                 return report.data, True, llm_usage
@@ -680,6 +709,11 @@ class SearchSubagent:
                 snippet=fallback_snippet or title,
                 extracted_text=fallback_body or title,
                 confidence=0.45,
+                source_class="unknown",
+                authorship="anonymous",
+                is_promotional=False,
+                summarizes_inaccessible_source=False,
+                claims=[],
             ),
             False,
             llm_usage,

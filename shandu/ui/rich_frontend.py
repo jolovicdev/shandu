@@ -71,7 +71,6 @@ class RunSnapshot:
     model: str
     run_id: str = "pending"
     current_stage: str = "bootstrap"
-    current_message: str = "Waiting"
     iteration: int = 0
     metrics: dict[str, Any] = field(default_factory=dict)
     events: list[RunEvent] = field(default_factory=list)
@@ -79,7 +78,6 @@ class RunSnapshot:
     def apply(self, event: RunEvent) -> None:
         self.events.append(event)
         self.current_stage = event.stage
-        self.current_message = event.message
         self.iteration = event.iteration or self.iteration
         if event.metrics:
             self.metrics.update(event.metrics)
@@ -274,9 +272,11 @@ class ShanduUI:
         if isinstance(model_calls, int) and model_calls > 0:
             rows.append(("Model Calls", str(model_calls)))
         metered_calls = stats.get("metered_calls", stats.get("llm_calls"))
-        coverage = self._cost_coverage(stats, metered_calls, model_calls)
+        coverage = str(stats.get("cost_coverage", "")).strip()
         if isinstance(metered_calls, int) and metered_calls > 0:
             if isinstance(model_calls, int) and model_calls > 0:
+                if coverage not in ("partial", "full"):
+                    coverage = "partial" if metered_calls < model_calls else "full"
                 rows.append(
                     ("Cost Coverage", f"{coverage} ({metered_calls}/{model_calls})")
                 )
@@ -349,18 +349,3 @@ class ShanduUI:
 
     def error(self, message: str) -> Text:
         return Text.assemble(("error  ", "danger"), (message, "accent"))
-
-    def _cost_coverage(
-        self, stats: dict[str, Any], metered_calls: object, model_calls: object
-    ) -> str:
-        coverage = str(stats.get("cost_coverage", "")).strip()
-        if coverage in ("partial", "full"):
-            return coverage
-        if (
-            isinstance(metered_calls, int)
-            and metered_calls > 0
-            and isinstance(model_calls, int)
-            and model_calls > 0
-        ):
-            return "partial" if metered_calls < model_calls else "full"
-        return ""

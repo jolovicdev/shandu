@@ -8,18 +8,13 @@ from typing import Any
 from ...contracts import CitationEntry, ResearchRunResult, RunEvent
 from ..formatting import audit_summary
 
-IDLE_REPORT = ""
-
 _STAGE_WORDS = {
-    "idle": "Idle",
     "bootstrap": "Starting",
     "plan": "Planning",
     "search": "Searching",
     "synthesize": "Synthesizing",
     "cite": "Collecting citations",
     "report": "Writing",
-    "complete": "Complete",
-    "stopped": "Stopped",
     "error": "Failed",
 }
 
@@ -97,7 +92,6 @@ class RenderBundle:
 
 @dataclass(slots=True)
 class GuiRunState:
-    query: str
     max_iterations: int = 0
     run_id: str = ""
     stage: str = "idle"
@@ -109,7 +103,7 @@ class GuiRunState:
     metrics: dict[str, Any] = field(default_factory=dict)
     entries: list[dict[str, Any]] = field(default_factory=list)
     task_rows: dict[str, dict[str, Any]] = field(default_factory=dict)
-    report_markdown: str = IDLE_REPORT
+    report_markdown: str = ""
     citations: list[CitationEntry] = field(default_factory=list)
     run_stats: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -162,10 +156,13 @@ class GuiRunState:
                 task["Focus"] = str(event.payload["focus"])
             if "evidence" in event.metrics:
                 task["Evidence"] = str(event.metrics["evidence"])
-
-        trace_type = str(event.metrics.get("trace_type", "")).strip()
-        if trace_type:
-            self._apply_trace_event(event=event, now=now, task_id=task_id, query=query)
+            if str(event.metrics.get("trace_type", "")).strip():
+                if query:
+                    task["Last Query"] = query
+                if "hits" in event.metrics:
+                    task["Hits"] = str(event.metrics["hits"])
+                if "scraped" in event.metrics:
+                    task["Scraped"] = str(event.metrics["scraped"])
 
     def apply_result(self, result: ResearchRunResult) -> None:
         self.run_id = result.run_id
@@ -235,17 +232,12 @@ class GuiRunState:
             items.append(f"<li{state}>{label}</li>")
         return f"<ol class='shandu-steps'>{''.join(items)}</ol>"
 
-    def document_title(self) -> str:
+    def title_html(self) -> str:
         for line in self.report_markdown.splitlines():
             if line.startswith("# "):
-                return line[2:].strip()
+                title = line[2:].strip()
+                return f"<h1 class='shandu-doc-title'>{escape(title)}</h1>" if title else ""
         return ""
-
-    def title_html(self) -> str:
-        title = self.document_title()
-        if not title:
-            return ""
-        return f"<h1 class='shandu-doc-title'>{escape(title)}</h1>"
 
     def body_markdown(self) -> str:
         """The title renders on its own so the contents list can sit under it."""
@@ -381,21 +373,6 @@ class GuiRunState:
                 "Last Update": now,
             },
         )
-
-    def _apply_trace_event(
-        self, event: RunEvent, now: str, task_id: str, query: str
-    ) -> None:
-        if not task_id:
-            return
-        task = self._task(
-            task_id, now, default_status="running", focus=event.payload.get("focus")
-        )
-        if query:
-            task["Last Query"] = query
-        if "hits" in event.metrics:
-            task["Hits"] = str(event.metrics["hits"])
-        if "scraped" in event.metrics:
-            task["Scraped"] = str(event.metrics["scraped"])
 
     def _readable(self, message: str, task_id: str) -> str:
         """Engine messages carry raw task ids; the board labels them by arrival."""

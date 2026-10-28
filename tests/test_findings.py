@@ -116,6 +116,11 @@ class _ClaimDesk:
             data=_ExtractionPayload(
                 snippet="s",
                 extracted_text="t",
+                confidence=0.5,
+                source_class="unknown",
+                authorship="anonymous",
+                is_promotional=False,
+                summarizes_inaccessible_source=False,
                 claims=[
                     Claim(statement="per-channel keys", quote="quantizes the key cache per channel", sub_question=1),
                     Claim(statement="invented", quote="it doubles throughput", sub_question=1),

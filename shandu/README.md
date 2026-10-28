@@ -5,7 +5,7 @@
 - CLI and Python API: user-facing entry points for running, resuming, re-reporting, and inspecting research.
 - Engine: stable facade over the orchestrator, the run store, and one-shot AI search.
 - Orchestrator: research brief, iterative loop, task fan-out, coverage-driven stopping, report assembly, citation audit.
-- Lead agent: brief, clarifying questions, planning, synthesis, and the single and sectioned writers.
+- Lead agent: brief, clarifying questions, planning, synthesis, and the report.
 - Researchers: the pipeline and agentic researchers gather evidence per task; both extract and score every page the same way.
 - Citation agent and auditor: build the citation ledger, then check every cited sentence against its sources.
 - Services layer: web and scholarly search, the scraping pipeline, findings and coverage, report rendering, run store, one-shot AI search.

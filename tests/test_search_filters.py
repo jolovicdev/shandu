@@ -45,7 +45,16 @@ class _ExtractDesk:
         del worker, job
         return SimpleNamespace(
             status="completed",
-            data=_ExtractionPayload(snippet="s", extracted_text="t"),
+            data=_ExtractionPayload(
+                snippet="s",
+                extracted_text="t",
+                confidence=0.5,
+                source_class="unknown",
+                authorship="anonymous",
+                is_promotional=False,
+                summarizes_inaccessible_source=False,
+                claims=[],
+            ),
             metrics={},
         )
 

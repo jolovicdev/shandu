@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from typing import Literal
 
 from ..contracts import (
     Claim,
@@ -60,10 +61,6 @@ def verified_claims(
     return kept
 
 
-def _words(text: str) -> frozenset[str]:
-    return frozenset(_WORD.findall(text.casefold()))
-
-
 def build_findings(evidence: Iterable[EvidenceRecord]) -> list[Finding]:
     """Merge claims across pages into one finding per distinct statement."""
     findings: list[Finding] = []
@@ -71,7 +68,7 @@ def build_findings(evidence: Iterable[EvidenceRecord]) -> list[Finding]:
     for record in evidence:
         confidence = record.credibility_score if record.credibility_score is not None else 0.4
         for claim in record.claims:
-            claim_words = _words(claim.statement)
+            claim_words = frozenset(_WORD.findall(claim.statement.casefold()))
             match = next(
                 (
                     index
@@ -117,6 +114,7 @@ def coverage_matrix(
             for evidence_id in finding.evidence_ids
             if credibility.get(evidence_id, 0.0) >= _CREDIBLE
         }
+        strength: Literal["none", "weak", "moderate", "strong"]
         if not supporting:
             strength = "none"
         elif not credible_sites:

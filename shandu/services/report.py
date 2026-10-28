@@ -46,7 +46,7 @@ class RecentReport:
     path: str
 
 
-def list_recent_reports(limit: int | None = 6) -> list[RecentReport]:
+def list_recent_reports() -> list[RecentReport]:
     reports: list[RecentReport] = []
     for run in default_run_store().list_runs():
         if run.report_path is None:
@@ -62,8 +62,6 @@ def list_recent_reports(limit: int | None = 6) -> list[RecentReport]:
                 path=str(run.report_path),
             )
         )
-        if limit is not None and len(reports) >= limit:
-            break
     return reports
 
 

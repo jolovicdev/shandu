@@ -268,7 +268,16 @@ def test_extraction_preserves_page_order_under_concurrency() -> None:
             await asyncio.sleep(0.03 * (3 - idx))
             return SimpleNamespace(
                 status="completed",
-                data=_ExtractionPayload(snippet="s", extracted_text="body", confidence=0.7),
+                data=_ExtractionPayload(
+                    snippet="s",
+                    extracted_text="body",
+                    confidence=0.7,
+                    source_class="unknown",
+                    authorship="anonymous",
+                    is_promotional=False,
+                    summarizes_inaccessible_source=False,
+                    claims=[],
+                ),
             )
 
     class Runtime:
@@ -380,6 +389,9 @@ def test_execute_task_populates_source_quality_on_success() -> None:
             confidence=0.82,
             source_class="journalism",
             authorship="named",
+            is_promotional=False,
+            summarizes_inaccessible_source=False,
+            claims=[],
         )
     )
     scrape = _SinglePageScrape(
@@ -493,6 +505,9 @@ def test_extract_completed_trace_carries_credibility() -> None:
             confidence=0.8,
             source_class="official",
             authorship="organizational",
+            is_promotional=False,
+            summarizes_inaccessible_source=False,
+            claims=[],
         )
     )
     scrape = _SinglePageScrape(
@@ -553,12 +568,12 @@ def test_execute_task_interleaves_one_page_per_query_under_cap() -> None:
 
     evidence = asyncio.run(subagent.execute_task("run:1", task, request))
 
-    assert [item.requested_url for item in evidence] == [
+    assert [item.requested_url for item in evidence[:3]] == [
         "https://q1.example/p0",
         "https://q2.example/p0",
         "https://q3.example/p0",
     ]
-    assert [item.search_query for item in evidence] == ["q1", "q2", "q3"]
+    assert [item.search_query for item in evidence[:3]] == ["q1", "q2", "q3"]
     assert all(item.query == "focus" for item in evidence)
 
 
@@ -589,7 +604,7 @@ def test_execute_task_skips_already_extracted_urls() -> None:
         )
     )
 
-    assert [item.requested_url for item in evidence] == [
+    assert [item.requested_url for item in evidence[:3]] == [
         "https://q1.example/p1",
         "https://q2.example/p1",
         "https://q3.example/p1",
@@ -614,11 +629,76 @@ def test_execute_task_scrapes_model_ranked_urls_first() -> None:
 
     evidence = asyncio.run(subagent.execute_task("run:1", task, request))
 
-    assert [item.requested_url for item in evidence] == [
+    assert [item.requested_url for item in evidence[:3]] == [
         "https://q3.example/p4",
         "https://q2.example/p1",
         "https://q1.example/p3",
     ]
+
+
+class _BlockedPages:
+    """Refuses the pages named in ``blocked`` and reads the rest."""
+
+    def __init__(self, blocked: set[str] | None = None) -> None:
+        self.blocked = blocked
+        self.rounds: list[list[str]] = []
+
+    async def scrape_many(self, urls: list[str]):
+        self.rounds.append(list(urls))
+        return [
+            ScrapedPage(
+                requested_url=url,
+                url=url,
+                title=url,
+                text="page text",
+                domain="example.com",
+                fetch_error="blocked_403" if self.blocked is None or url in self.blocked else None,
+            )
+            for url in urls
+        ], 0
+
+
+def _three_page_task(scrape: _BlockedPages) -> list:
+    extraction = _ExtractionPayload(
+        snippet="s",
+        extracted_text="body",
+        confidence=0.7,
+        source_class="unknown",
+        authorship="anonymous",
+        is_promotional=False,
+        summarizes_inaccessible_source=False,
+        claims=[],
+    )
+    subagent = SearchSubagent(
+        runtime=_ModelRuntime(_StaticDesk(extraction)),
+        search_service=_DisjointSearch(),
+        scrape_service=scrape,
+    )
+    task = SubagentTask(
+        task_id="t", focus="focus", search_queries=["q1", "q2", "q3"], expected_output="out"
+    )
+    request = ResearchRequest(query="q", max_pages_per_task=3, max_results_per_query=5)
+    return asyncio.run(subagent.execute_task("run:1", task, request))
+
+
+def test_execute_task_replaces_unreadable_pages_with_the_next_candidates() -> None:
+    scrape = _BlockedPages({"https://q1.example/p0", "https://q2.example/p0"})
+
+    evidence = _three_page_task(scrape)
+
+    assert scrape.rounds == [
+        ["https://q1.example/p0", "https://q2.example/p0", "https://q3.example/p0"],
+        ["https://q1.example/p1", "https://q2.example/p1"],
+    ]
+    assert sum(1 for item in evidence if item.fetch_error is None) == 3
+
+
+def test_execute_task_stops_replacing_pages_after_three_rounds() -> None:
+    scrape = _BlockedPages()
+
+    _three_page_task(scrape)
+
+    assert [len(urls) for urls in scrape.rounds] == [3, 3, 3]
 
 
 def test_execute_task_caps_queries_per_task_at_six() -> None:
@@ -666,7 +746,16 @@ def test_extraction_calls_share_one_bounded_semaphore() -> None:
                 self.active -= 1
             return SimpleNamespace(
                 status="completed",
-                data=_ExtractionPayload(snippet="s", extracted_text="t" * 60),
+                data=_ExtractionPayload(
+                    snippet="s",
+                    extracted_text="t" * 60,
+                    confidence=0.5,
+                    source_class="unknown",
+                    authorship="anonymous",
+                    is_promotional=False,
+                    summarizes_inaccessible_source=False,
+                    claims=[],
+                ),
             )
 
     desk = TrackingDesk()
@@ -699,7 +788,16 @@ def test_extraction_uses_constant_worker_name_across_tasks() -> None:
             names.append(worker.name)
             return SimpleNamespace(
                 status="completed",
-                data=_ExtractionPayload(snippet="s", extracted_text="t" * 60),
+                data=_ExtractionPayload(
+                    snippet="s",
+                    extracted_text="t" * 60,
+                    confidence=0.5,
+                    source_class="unknown",
+                    authorship="anonymous",
+                    is_promotional=False,
+                    summarizes_inaccessible_source=False,
+                    claims=[],
+                ),
             )
 
     subagent = SearchSubagent(

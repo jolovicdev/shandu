@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeGuard
 
 _TOKEN_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens")
 
 
-def _is_number(value: Any) -> bool:
+def _is_number(value: Any) -> TypeGuard[int | float]:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
@@ -21,7 +21,9 @@ def collect_llm_usage(report: Any) -> dict[str, Any] | None:
             if _is_number(value):
                 collected[key] = value
     cost = metrics.get("cost_usd")
-    if _is_number(cost):
+    # A price table that lacks the model reports a cost of zero. Counting
+    # that as a price would make a cost budget look enforced when it is not.
+    if _is_number(cost) and cost > 0:
         collected["cost_usd"] = cost
     return collected or None
 

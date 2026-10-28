@@ -22,7 +22,7 @@ from .settings import (
     resolved_detail_level,
     save_configuration,
 )
-from .state import GuiRunState, format_cost
+from .state import GuiRunState, _field, format_cost
 
 EXAMPLE_LABELS = [
     "Microplastics in the brain?",
@@ -94,16 +94,12 @@ def _library_samples(reports: list[RecentReport]) -> list[list[str]]:
 
 
 def _archive_strip(report: RecentReport) -> str:
-    fields = [f"<span class='field'>from <b>{escape(report.saved_at)}</b></span>"]
-    if report.citations:
-        fields.append(f"<span class='field'>sources <b>{report.citations}</b></span>")
-    if report.usd_spent:
-        fields.append(
-            f"<span class='field'>cost <b>{format_cost(report.usd_spent)}</b></span>"
-        )
-    fields.append(
-        f"<span class='field run'>run <b>{escape(report.run_id[:8])}</b></span>"
-    )
+    fields = [
+        _field("from", report.saved_at),
+        _field("sources", report.citations or ""),
+        _field("cost", format_cost(report.usd_spent) if report.usd_spent else ""),
+        _field("run", report.run_id[:8], extra_class="run"),
+    ]
     return (
         "<section class='shandu-strip is-complete'>"
         "<span class='stage'>Saved report</span>"
@@ -114,7 +110,7 @@ def _archive_strip(report: RecentReport) -> str:
 
 def build_gui() -> gr.Blocks:
     defaults = load_defaults()
-    initial_state = GuiRunState(query="")
+    initial_state = GuiRunState()
 
     with gr.Blocks(
         title="Shandu",
@@ -240,7 +236,7 @@ def build_gui() -> gr.Blocks:
         ) as debug_panel:
             payload = gr.JSON(value={}, show_label=False)
 
-        recent = list_recent_reports(limit=None)
+        recent = list_recent_reports()
         first_run = gr.HTML(FIRST_RUN, visible=not recent, elem_classes=["shandu-plain"])
         # Each sample carries its run id in a hidden last column. Keeping the
         # ids in a gr.State instead would turn on Gradio's heartbeat streams,
@@ -406,7 +402,7 @@ def _run_action(
         max_results_per_query=int(results_value),
         max_pages_per_task=int(pages_value),
     )
-    state = GuiRunState(query=text, max_iterations=int(iter_value))
+    state = GuiRunState(max_iterations=int(iter_value))
     state.stage = "bootstrap"
     yield _outputs(state=state, running=True, download_path=None)
 
@@ -498,7 +494,7 @@ def _error_message(exc: Exception) -> str:
 
 
 def _refresh_library() -> tuple[Any, Any]:
-    recent = list_recent_reports(limit=None)
+    recent = list_recent_reports()
     return (
         gr.update(samples=_library_samples(recent), visible=bool(recent)),
         gr.update(visible=not recent),
@@ -506,11 +502,11 @@ def _refresh_library() -> tuple[Any, Any]:
 
 
 def _open_report(sample: list[str]) -> tuple[Any, ...]:
-    reports = {report.run_id: report for report in list_recent_reports(limit=None)}
+    reports = {report.run_id: report for report in list_recent_reports()}
     report = reports.get(sample[-1]) if sample else None
     if report is None:
         return (gr.skip(),) * 14
-    archived = GuiRunState(query=report.title)
+    archived = GuiRunState()
     try:
         markdown = Path(report.path).read_text(encoding="utf-8")
     except OSError:

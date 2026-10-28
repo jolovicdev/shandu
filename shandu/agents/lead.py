@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import re
+from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
@@ -12,9 +11,7 @@ from pydantic import BaseModel, Field
 
 from ..contracts import (
     CoverageAssessment,
-    EvidenceRecord,
     FinalReportDraft,
-    Finding,
     IterationPlan,
     IterationSynthesis,
     ReportSection,
@@ -28,23 +25,17 @@ from ..prompts import (
     brief_job,
     clarifier_instructions,
     clarifier_job,
-    editor_instructions,
-    editor_job,
-    outliner_instructions,
-    outliner_job,
     planner_instructions,
     planner_job,
     reporter_expected_output,
     reporter_instructions,
     reporter_job,
-    section_writer_instructions,
-    section_writer_job,
     synthesizer_instructions,
     synthesizer_job,
 )
+from ..runtime.calls import structured_call
 from ..runtime.costing import add_usage, collect_llm_usage
 from ..runtime.roles import role_model
-from ..services.findings import build_findings
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +50,6 @@ _MIN_EVIDENCE_TEXT_CHARS = 2200
 # is the one call a run cannot do without, so that case is retried.
 _REPORTER_ATTEMPTS = 3
 _MAX_SUB_QUESTIONS = 8
-_MAX_SECTIONS = 9
-_SECTION_CONCURRENCY = 4
-# The sectioned writer's total length scales with the run's research effort.
-_EFFORT_LENGTH = {"low": 0.75, "medium": 1.0, "high": 1.5, "max": 2.0}
-# An edit shorter than this share of the draft lost content, not repetition.
-_EDIT_MIN_RATIO = 0.6
 _MAX_CLARIFYING_QUESTIONS = 3
 
 
@@ -76,42 +61,42 @@ def _failure_reason(report: Any, label: str) -> str:
     return f"{label} status={getattr(report, 'status', 'unknown')}"
 
 
+# The schemas a model fills carry no defaults: some providers fill only the
+# fields a schema marks required, and a default would turn every omission into
+# a plausible value (no search queries, a 0.5 score) that nothing downstream
+# can tell from a real answer.
+class _PlannedTask(BaseModel):
+    task_id: str
+    focus: str
+    search_queries: list[str]
+    expected_output: str
+    sub_questions: list[int]
+    scholarly: bool
+
+
 class _PlanPayload(BaseModel):
-    goals: list[str] = Field(default_factory=list)
-    subagent_tasks: list[SubagentTask] = Field(default_factory=list)
-    continue_loop: bool = True
-    stop_reason: str | None = None
-
-
-class _OutlineSection(BaseModel):
-    heading: str
-    purpose: str = ""
-    sub_questions: list[int] = Field(default_factory=list)
-    finding_ids: list[int] = Field(default_factory=list)
-    target_words: int = 400
-
-
-class _OutlinePayload(BaseModel):
-    title: str
-    sections: list[_OutlineSection] = Field(default_factory=list)
+    goals: list[str]
+    subagent_tasks: list[_PlannedTask]
+    continue_loop: bool
+    stop_reason: str | None
 
 
 class _ClarifierPayload(BaseModel):
-    questions: list[str] = Field(default_factory=list)
+    questions: list[str]
 
 
 class _SynthesisPayload(BaseModel):
     summary: str
-    key_findings: list[str] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
-    continue_loop: bool = True
-    stop_reason: str | None = None
-    coverage_score: float = Field(default=0.5, ge=0.0, le=1.0)
-    open_question_severity: float = Field(default=0.5, ge=0.0, le=1.0)
-    contradiction_count: int = Field(default=0, ge=0)
-    recency_score: float = Field(default=0.5, ge=0.0, le=1.0)
-    coverage_should_continue: bool = True
-    open_sub_questions: list[int] = Field(default_factory=list)
+    key_findings: list[str]
+    open_questions: list[str]
+    continue_loop: bool
+    stop_reason: str | None
+    coverage_score: float = Field(ge=0.0, le=1.0)
+    open_question_severity: float = Field(ge=0.0, le=1.0)
+    contradiction_count: int = Field(ge=0)
+    recency_score: float = Field(ge=0.0, le=1.0)
+    coverage_should_continue: bool
+    open_sub_questions: list[int]
 
 
 def _brief_payload(brief: ResearchBrief | None) -> dict[str, Any] | None:
@@ -148,7 +133,7 @@ class LeadAgent:
         job = Job(input=brief_job(payload), response_schema=ResearchBrief)
         self.last_llm_usage = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await structured_call(self._runtime, worker, job)
             self.last_llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, ResearchBrief):
                 sub_questions = [
@@ -178,7 +163,7 @@ class LeadAgent:
         )
         job = Job(input=clarifier_job(query), response_schema=_ClarifierPayload)
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await structured_call(self._runtime, worker, job)
         except Exception:
             logger.warning("Clarifier call failed", exc_info=True)
             return []
@@ -219,7 +204,7 @@ class LeadAgent:
         )
         self.last_llm_usage = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await structured_call(self._runtime, worker, job)
             self.last_llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _PlanPayload):
                 tasks = self._normalize_tasks(
@@ -287,7 +272,7 @@ class LeadAgent:
         )
         self.last_llm_usage = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await structured_call(self._runtime, worker, job)
             self.last_llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _SynthesisPayload):
                 return IterationSynthesis(
@@ -340,13 +325,6 @@ class LeadAgent:
     ) -> FinalReportDraft:
         self.last_llm_usage = None
         self.last_call_count = 0
-        if request.writer == "sectioned":
-            sectioned = await self._build_sectioned_report(
-                request, iteration_summaries, evidence_payload, citations_payload, brief
-            )
-            if sectioned is not None:
-                return sectioned
-            logger.warning("Sectioned writer produced no report; using the single writer")
         payload = {
             "query": request.query,
             "brief": _brief_payload(brief),
@@ -407,7 +385,8 @@ class LeadAgent:
         """Run a writing call and return its markdown, or None and the reason.
 
         A reasoning model sometimes drafts the whole text inside its reasoning
-        channel and completes with empty content, so that case is retried.
+        channel and completes with empty content, and a provider filter can
+        replace the text with a refusal sentence, so both cases are retried.
         """
         worker = Worker(
             name=name,
@@ -426,176 +405,23 @@ class LeadAgent:
                 if report.status != "completed":
                     return None, _failure_reason(report, label)
                 content = getattr(report, "content", None)
-                if isinstance(content, str) and content.strip():
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                if self._is_report(content):
                     return content.strip(), ""
+                reason = f"{label} returned no report: {' '.join(content.split())[:160]}"
         except Exception:
             logger.warning("%s call failed", name, exc_info=True)
             return None, f"{label} raised before completing"
         return None, reason
 
-    async def _build_sectioned_report(
-        self,
-        request: ResearchRequest,
-        iteration_summaries: list[IterationSynthesis],
-        evidence_payload: list[dict[str, Any]],
-        citations_payload: list[dict[str, Any]],
-        brief: ResearchBrief | None,
-    ) -> FinalReportDraft | None:
-        """Outline, draft each section from its own evidence, then edit.
-
-        Returns None when no outline or no section comes back, so the caller
-        falls back to the single-call writer.
-        """
-        records = [EvidenceRecord.model_validate(entry) for entry in evidence_payload]
-        citation_ids = self._citation_ids(citations_payload)
-        findings = build_findings(records)
-
-        def cited(finding: Finding) -> list[int]:
-            return sorted(
-                {
-                    citation_ids[evidence_id]
-                    for evidence_id in finding.evidence_ids
-                    if evidence_id in citation_ids
-                }
-            )
-
-        finding_rows = [
-            {
-                "id": index,
-                "statement": finding.statement,
-                "sub_questions": finding.sub_questions,
-                "citation_ids": cited(finding),
-                "independent_sources": len(finding.domains),
-                "confidence": round(finding.confidence, 2),
-            }
-            for index, finding in enumerate(findings, start=1)
-        ]
-        total_words = int(
-            self._word_target(request.detail_level) * _EFFORT_LENGTH[request.effort]
-        )
-        outline_worker = Worker(
-            name="LeadOutliner",
-            model=self._writer_model or role_model(self._runtime.settings, "writer"),
-            instructions=outliner_instructions(),
-        )
-        outline_job = Job(
-            input=outliner_job(
-                {
-                    "query": request.query,
-                    "brief": _brief_payload(brief),
-                    "iterations": [
-                        {"summary": summary.summary, "key_findings": summary.key_findings}
-                        for summary in iteration_summaries
-                    ],
-                    "findings": finding_rows,
-                    "today": date.today().isoformat(),
-                },
-                total_words,
-            ),
-            response_schema=_OutlinePayload,
-        )
-        self.last_call_count += 1
-        try:
-            report = await self._runtime.desk.arun(outline_worker, outline_job)
-        except Exception:
-            logger.warning("Outline call failed", exc_info=True)
-            return None
-        self.last_llm_usage = add_usage(self.last_llm_usage, collect_llm_usage(report))
-        if report.status != "completed" or not isinstance(report.data, _OutlinePayload):
-            logger.warning("Outline call did not complete: %s", _failure_reason(report, "outliner"))
-            return None
-        outline = report.data
-        sections = [section for section in outline.sections if section.heading.strip()]
-        if not sections:
-            return None
-        semaphore = asyncio.Semaphore(_SECTION_CONCURRENCY)
-        sub_questions = brief.sub_questions if brief is not None else []
-
-        async def write(section: _OutlineSection) -> str | None:
-            chosen = [
-                findings[index - 1]
-                for index in dict.fromkeys(section.finding_ids)
-                if 1 <= index <= len(findings)
-            ] or [
-                finding
-                for finding in findings
-                if set(finding.sub_questions) & set(section.sub_questions)
-            ]
-            supporting = {evidence_id for finding in chosen for evidence_id in finding.evidence_ids}
-            # Evidence stored without claims yields no findings; such a
-            # section draws on the whole budgeted evidence set instead.
-            section_evidence = [
-                entry for entry in evidence_payload if entry.get("evidence_id") in supporting
-            ] or evidence_payload
-            section_citations = {
-                citation_ids.get(str(entry.get("evidence_id"))) for entry in section_evidence
-            }
-            payload = {
-                "query": request.query,
-                "heading": section.heading.strip(),
-                "purpose": section.purpose,
-                "answers": [
-                    sub_questions[index - 1]
-                    for index in section.sub_questions
-                    if 1 <= index <= len(sub_questions)
-                ],
-                "target_words": section.target_words,
-                "findings": [
-                    {
-                        "statement": finding.statement,
-                        "quotes": finding.quotes[:3],
-                        "citation_ids": cited(finding),
-                    }
-                    for finding in chosen
-                ],
-                "evidence": self._compact_evidence(section_evidence, citations_payload),
-                # Only the ledger entries this section's evidence can cite.
-                "citations": self._compact_citations(
-                    [
-                        entry
-                        for entry in citations_payload
-                        if entry.get("citation_id") in section_citations
-                    ]
-                ),
-                "today": date.today().isoformat(),
-            }
-            async with semaphore:
-                markdown, reason = await self._markdown_call(
-                    "SectionWriter",
-                    "section writer",
-                    section_writer_instructions(),
-                    section_writer_job(payload),
-                )
-            if markdown is None:
-                logger.warning("Section %r was not written: %s", section.heading, reason)
-            return markdown
-
-        drafts = await asyncio.gather(*(write(section) for section in sections[:_MAX_SECTIONS]))
-        written = [draft for draft in drafts if draft]
-        if not written:
-            return None
-        title = outline.title.strip() or request.query.strip()[:180]
-        draft = "\n\n".join(written)
-        edited, reason = await self._markdown_call(
-            "LeadEditor",
-            "editor",
-            editor_instructions(),
-            editor_job({"title": title, "brief": _brief_payload(brief), "draft": draft}),
-        )
-        headings = re.findall(r"^##\s+.+$", draft, flags=re.MULTILINE)
-        if (
-            edited is not None
-            and all(heading in edited for heading in headings)
-            and len(edited.split()) >= _EDIT_MIN_RATIO * len(draft.split())
-        ):
-            markdown = edited
-        else:
-            logger.warning(
-                "Editor output rejected (%s); keeping the section drafts",
-                reason or "it dropped sections or content",
-            )
-            markdown = f"# {title}\n\n{draft}"
-        return self._draft_from_markdown(markdown, request.query)
+    @staticmethod
+    def _is_report(markdown: str) -> bool:
+        # A provider's output filter can swap a finished report for one
+        # refusal sentence and still report the call as completed. A report,
+        # even one saying the sources answered nothing, opens with a heading.
+        lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+        return any(line.startswith("#") for line in lines[:5])
 
     @classmethod
     def _draft_from_markdown(cls, markdown: str, query: str) -> FinalReportDraft:
@@ -707,7 +533,7 @@ class LeadAgent:
 
     @staticmethod
     def _normalize_tasks(
-        tasks: list[SubagentTask],
+        tasks: Sequence[_PlannedTask | SubagentTask],
         request: ResearchRequest,
         iteration: int,
         sub_question_count: int = 0,

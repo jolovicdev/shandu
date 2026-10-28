@@ -144,6 +144,7 @@ def test_failed_audit_batch_leaves_markers_unchecked() -> None:
 
     assert outcome.markdown == _REPORT
     assert {item.verdict for item in outcome.verdicts} == {"unchecked"}
+    assert outcome.failures == ("boom",)
 
 
 class _Lead:
@@ -224,6 +225,39 @@ def test_orchestrator_rerenders_after_audit_and_counts_verdicts(tmp_path) -> Non
     assert [item.verdict for item in result.citation_audit] == ["supported", "unsupported"]
     stored = RunStore(tmp_path / "runs").load_result(result.run_id)
     assert stored.citation_audit == result.citation_audit
+
+
+class _FailedBatch:
+    async def audit(self, markdown, citations, evidence):
+        return AuditOutcome(
+            markdown=markdown,
+            verdicts=[CitationVerdict(sentence="A claim", url=citations[0].url, verdict="unchecked")],
+            llm_usage=None,
+            calls=1,
+            failures=("boom",),
+        )
+
+
+def test_orchestrator_records_why_an_audit_batch_went_unchecked(tmp_path) -> None:
+    store = RunStore(tmp_path / "runs")
+    orchestrator = LeadOrchestrator(
+        lead_agent=_Lead(),
+        search_subagent=_Subagent(),
+        citation_agent=_Citations(),
+        run_store=store,
+        report_service=ReportService(),
+        auditor=_FailedBatch(),
+    )
+
+    result = asyncio.run(
+        orchestrator.run(ResearchRequest(query="q", max_iterations=1, parallelism=1))
+    )
+
+    assert result.run_stats["fallback_reasons"] == ["citation_audit: boom"]
+    errors = [event for event in store.events(result.run_id) if event["stage"] == "error"]
+    assert [event["payload"] for event in errors] == [
+        {"method": "citation_audit", "reason": "boom"}
+    ]
 
 
 def test_audit_off_leaves_report_unchecked(tmp_path) -> None:

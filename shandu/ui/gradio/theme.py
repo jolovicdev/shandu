@@ -547,11 +547,6 @@ body.dark,
   overflow-wrap: anywhere;
 }
 
-.shandu-feed p em {
-  color: var(--ink-3);
-  font-style: normal;
-}
-
 .shandu-feed .meta {
   grid-column: 2;
   overflow-wrap: anywhere;
@@ -679,8 +674,8 @@ body.dark,
 }
 
 .shandu-library td:nth-child(2) {
-  width: 1%;
-  white-space: nowrap;
+  width: 1% !important;
+  padding-left: 24px !important;
   color: var(--ink-3) !important;
   font-size: 0.8rem !important;
 }
@@ -695,8 +690,8 @@ body.dark,
 }
 
 .shandu-library td:nth-child(3) {
-  width: 1%;
-  white-space: nowrap;
+  width: 1% !important;
+  padding-left: 24px !important;
   color: var(--ink-3) !important;
   font-family: var(--mono);
   font-size: 0.76rem !important;

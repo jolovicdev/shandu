@@ -24,6 +24,15 @@ from .search_subagent import (
 logger = logging.getLogger(__name__)
 
 _BUDGET_SPENT = "Budget spent. Stop calling tools and write your memo."
+# Searches and reads are budgeted apart. A reply that only says "stop" when one
+# runs out makes the model abandon the other, so it names what is left.
+_SEARCHES_SPENT = (
+    "Search budget spent. You can still read {reads} pages: read the best "
+    "results you have, then write your memo."
+)
+_READS_SPENT = (
+    "Read budget spent. You can still run {searches} searches, or write your memo."
+)
 # The researcher sees the extractor's evidence, not the raw page, which keeps
 # a dozen reads inside the loop's context.
 _EVIDENCE_CHARS_FOR_MODEL = 4000
@@ -60,7 +69,7 @@ class ResearcherAgent(SearchSubagent):
 
         async def run_search(service: SearchServiceLike, query: str, source: str) -> str:
             if budget["searches"] <= 0:
-                return _BUDGET_SPENT
+                return _SEARCHES_SPENT.format(**budget) if budget["reads"] > 0 else _BUDGET_SPENT
             budget["searches"] -= 1
             # Paper search ignores site: scoping, so it runs the query once.
             scoped = self._scoped_queries([query], request) if source == "web" else [query]
@@ -78,7 +87,6 @@ class ResearcherAgent(SearchSubagent):
                     hits_by_url.setdefault(
                         hit.url,
                         {
-                            "url": hit.url,
                             "title": hit.title,
                             "snippet": hit.snippet,
                             "query": search_query,
@@ -116,7 +124,7 @@ class ResearcherAgent(SearchSubagent):
             if not self._in_scope(url, None, request):
                 return "Outside the allowed domains; choose another source."
             if budget["reads"] <= 0:
-                return _BUDGET_SPENT
+                return _READS_SPENT.format(**budget) if budget["searches"] > 0 else _BUDGET_SPENT
             budget["reads"] -= 1
             claimed.add(canonical)
             await self._emit_trace(
@@ -203,6 +211,7 @@ class ResearcherAgent(SearchSubagent):
             expected_output="A findings memo in markdown.",
         )
         memo = ""
+        failure: str | None = None
         llm_usage: dict[str, Any] | None = None
         try:
             report = await self._runtime.desk.arun(worker, job)
@@ -211,11 +220,19 @@ class ResearcherAgent(SearchSubagent):
             if report.status == "completed" and isinstance(content, str) and content.strip():
                 memo = content.strip()
             else:
-                logger.warning(
-                    "Researcher did not finish %s: %s", task.task_id, _report_reason(report)
-                )
-        except Exception:
+                failure = _report_reason(report)
+                logger.warning("Researcher did not finish %s: %s", task.task_id, failure)
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"[:300]
             logger.warning("Researcher failed on %s", task.task_id, exc_info=True)
+        # The pages read before the loop stopped still count as evidence; the
+        # run records that this task ended without its memo.
+        if failure is not None:
+            await self._emit_trace(
+                progress_callback,
+                "researcher_failed",
+                {"task_id": task.task_id, "reason": failure},
+            )
 
         memo_payload: dict[str, Any] = {
             "task_id": task.task_id,

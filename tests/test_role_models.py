@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from shandu.agents.lead import LeadAgent, _PlanPayload
+from shandu.agents.lead import LeadAgent, _PlannedTask, _PlanPayload
 from shandu.agents.search_subagent import SearchSubagent, _ExtractionPayload
 from shandu.config import Config, config
 from shandu.contracts import ResearchRequest, SubagentTask
@@ -19,9 +19,32 @@ class _RecordingDesk:
     async def arun(self, worker, job):
         self.models[worker.name] = worker.model
         if worker.name == "SubagentExtractor":
-            data = _ExtractionPayload(snippet="s", extracted_text="t")
+            data = _ExtractionPayload(
+                snippet="s",
+                extracted_text="t",
+                confidence=0.5,
+                source_class="unknown",
+                authorship="anonymous",
+                is_promotional=False,
+                summarizes_inaccessible_source=False,
+                claims=[],
+            )
         else:
-            data = _PlanPayload(subagent_tasks=[SubagentTask(task_id="t", focus="f")])
+            data = _PlanPayload(
+                goals=[],
+                subagent_tasks=[
+                    _PlannedTask(
+                        task_id="t",
+                        focus="f",
+                        search_queries=[],
+                        expected_output="",
+                        sub_questions=[],
+                        scholarly=False,
+                    )
+                ],
+                continue_loop=True,
+                stop_reason=None,
+            )
         return SimpleNamespace(status="completed", data=data, metrics={})
 
 

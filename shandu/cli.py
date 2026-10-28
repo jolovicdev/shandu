@@ -249,13 +249,6 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     type=click.Choice(["pipeline", "agentic"]),
     help="How each task gathers evidence.",
 )
-@click.option(
-    "--writer",
-    default="single",
-    show_default=True,
-    type=click.Choice(["single", "sectioned"]),
-    help="Write the report in one call, or outline, draft sections, then edit.",
-)
 @click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
 @click.option(
     "--max-cost",
@@ -280,7 +273,6 @@ def run_command(
     since: datetime | None,
     effort: str | None,
     researcher: str,
-    writer: str,
     no_audit: bool,
     max_cost: float | None,
 ) -> None:
@@ -317,7 +309,6 @@ def run_command(
             exclude_domains=list(exclude_domains),
             since=since.date() if since else None,
             researcher=cast(Literal["pipeline", "agentic"], researcher),
-            writer=cast(Literal["single", "sectioned"], writer),
             audit=not no_audit,
             max_cost_usd=max_cost,
         )
@@ -464,7 +455,6 @@ def resume_command(
 @click.argument("run_id")
 @click.option("--detail-level", default=None, type=click.Choice(["concise", "standard", "high"]))
 @click.option("--model", default=None, help="Model for the report writer.")
-@click.option("--writer", default=None, type=click.Choice(["single", "sectioned"]))
 @click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
 @click.option("--output", default=None)
 @click.option("--json-output", is_flag=True)
@@ -472,7 +462,6 @@ def report_command(
     run_id: str,
     detail_level: str | None,
     model: str | None,
-    writer: str | None,
     no_audit: bool,
     output: str | None,
     json_output: bool,
@@ -481,8 +470,9 @@ def report_command(
     diag = err_console if (json_output and not output) else console
     engine = ShanduEngine.from_config(writer_model=model)
     request = _load_request(engine, run_id)
-    overrides: dict[str, Any] = {"detail_level": detail_level, "writer": writer}
-    overrides = {key: value for key, value in overrides.items() if value is not None}
+    overrides: dict[str, Any] = {}
+    if detail_level is not None:
+        overrides["detail_level"] = detail_level
     if no_audit:
         overrides["audit"] = False
     diag.print(
@@ -601,7 +591,11 @@ def inspect(run_id: str) -> None:
 
 @cli.command()
 @click.option("--force", is_flag=True)
-def clean(force: bool) -> None:
+@click.option(
+    "--all", "include_runs", is_flag=True, help="Also delete stored runs and their reports."
+)
+def clean(force: bool, include_runs: bool) -> None:
+    """Delete runtime caches. Stored runs are kept unless --all is given."""
     runtime_dir = Path(
         str(config.get("runtime", "storage_dir"))
     ).expanduser().resolve()
@@ -613,15 +607,30 @@ def clean(force: bool) -> None:
     if refusal is not None:
         raise click.ClickException(refusal)
 
-    if not force and not click.confirm(f"Delete {runtime_dir}?"):
+    runs_dir = runtime_dir / "runs"
+    run_count = sum(1 for entry in runs_dir.iterdir() if entry.is_dir()) if runs_dir.is_dir() else 0
+    if include_runs:
+        prompt = f"Delete {runtime_dir} and its {run_count} stored runs?"
+    else:
+        prompt = f"Delete caches in {runtime_dir}? Its {run_count} stored runs are kept."
+    if not force and not click.confirm(prompt):
         console.print(ui.warning("Cleanup cancelled."))
         return
 
-    shutil.rmtree(runtime_dir)
+    if include_runs:
+        shutil.rmtree(runtime_dir)
+    else:
+        for entry in runtime_dir.iterdir():
+            if entry == runs_dir:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
     console.print(ui.success("Runtime artifacts removed."))
 
 
-_CLEAN_MARKERS = ("blackgeorge.db", "memory.db")
+_CLEAN_MARKERS = ("blackgeorge.db", "memory.db", "runs")
 
 
 def _refuse_clean_target(target: Path) -> str | None:

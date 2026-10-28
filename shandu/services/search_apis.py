@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from typing import Any
 
@@ -29,11 +28,6 @@ class ApiSearchClient:
         self.provider = provider
         self._credential = credential
         self._session: aiohttp.ClientSession | None = None
-
-    @classmethod
-    def from_env(cls, provider: str) -> ApiSearchClient | None:
-        credential = os.getenv(API_ENV[provider], "").strip()
-        return cls(provider, credential) if credential else None
 
     async def search(self, query: str, max_results: int) -> list[Mapping[str, Any]]:
         count = min(max_results, _MAX_RESULTS_PER_CALL)

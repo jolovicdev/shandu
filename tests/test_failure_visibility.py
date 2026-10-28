@@ -66,14 +66,15 @@ def test_lead_failure_logs_and_exposes_reason(caplog, method) -> None:
 
 
 class _EmptyThenReportDesk:
-    def __init__(self, empty_calls: int) -> None:
+    def __init__(self, empty_calls: int, filler: str = "") -> None:
         self.calls = 0
         self._empty_calls = empty_calls
+        self._filler = filler
 
     async def arun(self, worker, job):
         del worker, job
         self.calls += 1
-        content = "" if self.calls <= self._empty_calls else "# Title\n\nBody [1]."
+        content = self._filler if self.calls <= self._empty_calls else "# Title\n\nBody [1]."
         return SimpleNamespace(
             status="completed",
             content=content,
@@ -100,6 +101,45 @@ def test_reporter_falls_back_after_repeated_empty_content() -> None:
 
     assert desk.calls == 3
     assert agent.last_fallback_reason == "reporter returned empty content"
+
+
+class _HangingDesk:
+    async def arun(self, worker, job):
+        del worker, job
+        await asyncio.sleep(3600)
+
+
+def test_planner_falls_back_when_the_model_call_never_returns(monkeypatch) -> None:
+    monkeypatch.setattr("shandu.runtime.calls.STRUCTURED_CALL_SECONDS", 0.01)
+    agent = LeadAgent(runtime=_ModelRuntime(_HangingDesk()))
+
+    plan = asyncio.run(agent.create_iteration_plan(_request(), 0, [], []))
+
+    assert agent.fallback_count == 1
+    assert plan.subagent_tasks
+
+
+_REFUSAL = "The request was rejected because it was considered high risk"
+
+
+def test_reporter_retries_a_refusal_returned_in_place_of_the_report() -> None:
+    desk = _EmptyThenReportDesk(empty_calls=1, filler=_REFUSAL)
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert draft.markdown == "# Title\n\nBody [1]."
+    assert desk.calls == 2
+
+
+def test_reporter_falls_back_when_every_attempt_is_a_refusal() -> None:
+    desk = _EmptyThenReportDesk(empty_calls=99, filler=_REFUSAL)
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert draft.markdown is None
+    assert agent.last_fallback_reason == f"reporter returned no report: {_REFUSAL}"
 
 
 class _AlphaSearch:
@@ -279,20 +319,23 @@ class _PlanDesk:
 
 
 def test_planner_success_keeps_short_task_list_unpadded() -> None:
-    from shandu.agents.lead import _PlanPayload
+    from shandu.agents.lead import _PlannedTask, _PlanPayload
 
     desk = _PlanDesk(
         _PlanPayload(
             goals=["g"],
             subagent_tasks=[
-                SubagentTask(
+                _PlannedTask(
                     task_id="t1",
                     focus="physics question",
                     search_queries=["physics q"],
                     expected_output="out",
+                    sub_questions=[],
+                    scholarly=False,
                 )
             ],
             continue_loop=True,
+            stop_reason=None,
         )
     )
     agent = LeadAgent(runtime=_ModelRuntime(desk))
@@ -304,21 +347,24 @@ def test_planner_success_keeps_short_task_list_unpadded() -> None:
 
 
 def test_planner_success_caps_overlong_task_list() -> None:
-    from shandu.agents.lead import _PlanPayload
+    from shandu.agents.lead import _PlannedTask, _PlanPayload
 
     desk = _PlanDesk(
         _PlanPayload(
             goals=["g"],
             subagent_tasks=[
-                SubagentTask(
+                _PlannedTask(
                     task_id=f"t{index}",
                     focus=f"focus {index}",
                     search_queries=[f"q{index}"],
                     expected_output="out",
+                    sub_questions=[],
+                    scholarly=False,
                 )
                 for index in range(5)
             ],
             continue_loop=True,
+            stop_reason=None,
         )
     )
     agent = LeadAgent(runtime=_ModelRuntime(desk))

@@ -56,8 +56,6 @@ def test_report_rewrites_with_writer_model_and_detail_level(monkeypatch, tmp_pat
             "openai/gpt-x",
             "--detail-level",
             "concise",
-            "--writer",
-            "sectioned",
             "--no-audit",
         ],
     )
@@ -65,7 +63,7 @@ def test_report_rewrites_with_writer_model_and_detail_level(monkeypatch, tmp_pat
     assert result.exit_code == 0, result.output
     assert seen == {
         "writer_model": "openai/gpt-x",
-        "rewrite": ("r1", {"detail_level": "concise", "writer": "sectioned", "audit": False}),
+        "rewrite": ("r1", {"detail_level": "concise", "audit": False}),
     }
     assert "Rewritten body" in result.stdout
 

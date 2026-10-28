@@ -41,7 +41,7 @@ flowchart TD
     synth --> decision{Open sub-questions, budget left?}
     decision -->|Yes| plan
     decision -->|No| ledger[Citation agent builds the ledger]
-    ledger --> write[Single or sectioned writer]
+    ledger --> write[Lead writes the report]
     write --> render[Report service renders]
     render --> check[Auditor checks every cited sentence]
     check --> rerender[Re-render without unsupported markers]
@@ -69,12 +69,16 @@ Each task runs through one of two researchers, chosen per run with
 `--researcher`:
 
 - **Pipeline** (default): search every planned query, rank the hits with a model
-  call, scrape the top pages, extract each one.
+  call, scrape the top pages, extract each one. A page that is blocked, empty,
+  or older than `--since` is replaced by the next-ranked candidate, for up to
+  two extra rounds.
 - **Agentic**: a tool loop with `web_search`, `search_papers`, and `read_page`.
   The model writes sharper queries from what it reads, follows a page's outbound
   links to the primary source it cites, and stops when the task is covered.
-  Tools enforce the search and read budget so the loop always ends with a memo,
-  which reaches the synthesizer next to the evidence.
+  Tools enforce separate search and read budgets and say what is left when one
+  runs out, so the loop ends with a memo, which reaches the synthesizer next to
+  the evidence. A loop that stops without a memo keeps its evidence and is
+  recorded as an error event.
 
 Tasks the planner marks `scholarly` also search arXiv, OpenAlex, and PubMed.
 Pages an iteration's tasks start reading go into a shared set, so parallel tasks
@@ -107,23 +111,21 @@ flowchart TD
 
 ## 6) Stopping Rules
 
-- With a brief, the adaptive loop continues while any sub-question is short of
-  strong or sources conflict, until `max_iterations`. Without one, the model's
-  coverage assessment and evidence signals decide.
+- The adaptive loop continues while any sub-question is short of strong or
+  sources conflict, until `max_iterations`. When the brief call fails, the
+  query itself becomes the one sub-question.
 - `--max-cost` stops research before the next iteration once metered spend
-  reaches the budget; the report is still written.
+  reaches the budget; the report is still written. A model that reports no
+  price cannot be budgeted, and the run emits an event saying so.
 - `--effort low|medium|high|max` sets iterations, parallel tasks, pages and
   searches per task, and results per query together.
 
-## 7) Writers
+## 7) Writer
 
-- **Single** (default): one call writes the report from compacted evidence.
-- **Sectioned**: an outline assigns each body section its sub-questions,
-  findings, and a word target; sections draft in parallel from only their own
-  findings, quotes, and evidence; an editor adds the executive summary and joins
-  the sections into one argument. The edit is kept only when every section
-  heading survives and it keeps at least 60% of the draft. Length scales with
-  effort.
+One call writes the report from compacted evidence: cited records first, then
+the rest by credibility, inside a fixed character budget. A reply that is empty
+or carries no heading (a provider refusal in place of the report) is retried,
+and after three attempts a deterministic report is built from the syntheses.
 
 ## 8) Citation Guarantees
 
@@ -158,7 +160,7 @@ Each run lives in `<storage_dir>/runs/<run_id>/`:
   `inspect_run`, `list_runs`, `ai_search`).
 - Orchestrator: brief, loop control, task fan-out, coverage, stopping, report
   assembly, audit, persistence.
-- Lead agent: brief, clarifying questions, planning, synthesis, both writers.
+- Lead agent: brief, clarifying questions, planning, synthesis, the report.
 - Researchers: evidence gathering per task; extraction and source scoring.
 - Citation agent: deterministic ledger.
 - Citation auditor: per-marker support verdicts.
@@ -169,4 +171,5 @@ Each run lives in `<storage_dir>/runs/<run_id>/`:
   publication dates, SSRF-safe fetching with per-domain backoff.
 - Report service: marker normalization and rendering.
 - Run store: one directory per run.
-- Runtime: model wiring, per-role models, async bridge.
+- Runtime: model wiring, per-role models, a deadline for structured calls so a
+  stalled provider falls back instead of holding the run, async bridge.

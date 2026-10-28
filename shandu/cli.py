@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import shutil
 from collections.abc import Callable, Coroutine
@@ -43,6 +44,33 @@ def _resolve_depth_policy(value: str | None, fallback: DepthPolicy) -> DepthPoli
     if value in _DEPTH_POLICIES:
         return cast(DepthPolicy, value)
     return fallback
+
+
+def _bound(field: str, name: str) -> Any:
+    for constraint in ResearchRequest.model_fields[field].metadata:
+        if hasattr(constraint, name):
+            return getattr(constraint, name)
+    return None
+
+
+def _count_range(field: str) -> click.IntRange:
+    return click.IntRange(_bound(field, "ge"), _bound(field, "le"))
+
+
+def _finite(ctx: click.Context, param: click.Parameter, value: float | None) -> float | None:
+    if value is not None and not math.isfinite(value):
+        raise click.BadParameter("give an amount in USD, like 0.50.")
+    return value
+
+
+class _Day(click.ParamType):
+    name = "YYYY-MM-DD"
+
+    def convert(self, value: Any, param: click.Parameter | None, ctx: click.Context | None) -> datetime:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            self.fail("Use YYYY-MM-DD, like 2025-01-31.", param, ctx)
 
 
 @click.group()
@@ -186,9 +214,19 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 
 
 @cli.command("run")
-@click.argument("query")
-@click.option("--max-iterations", default=None, type=int, help="Research loops before writing (1-8).")
-@click.option("--parallelism", default=None, type=int, help="Tasks that run at once in each loop (1-8).")
+@click.argument("query", nargs=-1)
+@click.option(
+    "--max-iterations",
+    default=None,
+    type=_count_range("max_iterations"),
+    help="Iterations before writing the report.",
+)
+@click.option(
+    "--parallelism",
+    default=None,
+    type=_count_range("parallelism"),
+    help="Subagents that run at once in each iteration.",
+)
 @click.option(
     "--detail-level",
     default=None,
@@ -203,9 +241,17 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     "fixed lets the lead agent decide.",
 )
 @click.option(
-    "--max-results-per-query", default=None, type=int, help="Search results ranked per query (1-20)."
+    "--max-results-per-query",
+    default=None,
+    type=_count_range("max_results_per_query"),
+    help="Search results ranked per query.",
 )
-@click.option("--max-pages-per-task", default=None, type=int, help="Pages each task reads (1-10).")
+@click.option(
+    "--max-pages-per-task",
+    default=None,
+    type=_count_range("max_pages_per_task"),
+    help="Pages each subagent reads.",
+)
 @click.option("--output", default=None, help="Save the report, or with --json-output the full result, to this file.")
 @click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
 @click.option("--verbose", is_flag=True, help="Print a recap of every stage when the run ends.")
@@ -220,9 +266,9 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 )
 @click.option(
     "--since",
-    type=click.DateTime(formats=["%Y-%m-%d"]),
+    type=_Day(),
     default=None,
-    help="Skip pages dated before this day (YYYY-MM-DD).",
+    help="Skip pages dated before this day.",
 )
 @click.option(
     "--effort",
@@ -240,12 +286,13 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 @click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
 @click.option(
     "--max-cost",
-    type=float,
+    type=click.FloatRange(min=_bound("max_cost_usd", "gt"), min_open=True),
+    callback=_finite,
     default=None,
     help="Stop researching once this many USD are spent, then write the report.",
 )
 def run_command(
-    query: str,
+    query: tuple[str, ...],
     max_iterations: int | None,
     parallelism: int | None,
     detail_level: str | None,
@@ -265,6 +312,11 @@ def run_command(
     max_cost: float | None,
 ) -> None:
     """Research a question and write a report with citations."""
+    question = " ".join(query).strip()
+    if not question:
+        raise click.UsageError(
+            'Give a question to research, like: shandu run "What caused the 2024 CrowdStrike outage?"'
+        )
     diag = err_console if (json_output and not output) else console
     default_detail = _resolve_detail_level(
         str(config.get("orchestration", "detail_level", "high")),
@@ -285,7 +337,7 @@ def run_command(
 
     try:
         request = ResearchRequest(
-            query=query,
+            query=question,
             max_iterations=budget(max_iterations, "max_iterations", 2),
             parallelism=budget(parallelism, "parallelism", 3),
             detail_level=_resolve_detail_level(detail_level, default_detail),
@@ -311,7 +363,7 @@ def run_command(
     engine = ShanduEngine.from_config()
     if clarify:
         request = request.model_copy(
-            update={"clarifications": _ask_clarifications(engine, query)}
+            update={"clarifications": _ask_clarifications(engine, question)}
         )
     diag.print(
         ui.header(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -167,3 +168,77 @@ def test_run_clarify_sends_answered_questions_with_request(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert seen["clarifications"] == ["Which region? EU"]
+
+
+def _stub_run_engine(monkeypatch) -> dict[str, object]:
+    seen: dict[str, object] = {"engines": 0}
+
+    async def run(request, progress_callback=None):
+        seen["request"] = request
+        return ResearchRunResult(run_id="r1", request=request, report_markdown="Body")
+
+    engine = SimpleNamespace(
+        run=run, report_path=lambda run_id: Path("missing.md"), close=lambda: None
+    )
+
+    def from_config(cls):
+        seen["engines"] += 1
+        return engine
+
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(from_config))
+    return seen
+
+
+def test_run_joins_unquoted_words_into_one_question(monkeypatch) -> None:
+    seen = _stub_run_engine(monkeypatch)
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "What", "caused", "the", "outage?"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["request"].query == "What caused the outage?"
+
+
+@pytest.mark.parametrize("args", [["run"], ["run", ""], ["run", "  ", " "]])
+def test_run_without_a_question_is_a_usage_error_that_starts_nothing(monkeypatch, args) -> None:
+    seen = _stub_run_engine(monkeypatch)
+
+    result = CliRunner(mix_stderr=False).invoke(cli, args)
+
+    assert result.exit_code == 2
+    assert 'Give a question to research, like: shandu run "' in result.stderr
+    assert seen["engines"] == 0
+
+
+@pytest.mark.parametrize(
+    "flag,value,message",
+    [
+        ("--max-iterations", "9", "Invalid value for '--max-iterations': 9 is not in the range 1<=x<=8."),
+        ("--parallelism", "0", "Invalid value for '--parallelism': 0 is not in the range 1<=x<=8."),
+        ("--max-pages-per-task", "11", "Invalid value for '--max-pages-per-task'"),
+        ("--max-results-per-query", "21", "Invalid value for '--max-results-per-query'"),
+        ("--max-cost", "0", "Invalid value for '--max-cost'"),
+        ("--max-cost", "inf", "Invalid value for '--max-cost': give an amount in USD, like 0.50."),
+        ("--max-cost", "nan", "Invalid value for '--max-cost': give an amount in USD, like 0.50."),
+        ("--since", "31/01/2025", "Invalid value for '--since': Use YYYY-MM-DD, like 2025-01-31."),
+    ],
+)
+def test_run_names_the_flag_when_a_value_is_out_of_range(monkeypatch, flag, value, message) -> None:
+    seen = _stub_run_engine(monkeypatch)
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q", flag, value])
+
+    assert result.exit_code == 2
+    assert message in result.stderr
+    assert seen["engines"] == 0
+
+
+def test_run_passes_a_valid_cost_cap_and_start_day_to_the_request(monkeypatch) -> None:
+    seen = _stub_run_engine(monkeypatch)
+
+    result = CliRunner(mix_stderr=False).invoke(
+        cli, ["run", "q", "--max-cost", "0.5", "--since", "2025-01-31", "--max-iterations", "8"]
+    )
+
+    assert result.exit_code == 0, result.output
+    request = seen["request"]
+    assert (request.max_cost_usd, request.since, request.max_iterations) == (0.5, date(2025, 1, 31), 8)

@@ -324,11 +324,10 @@ class GuiRunState:
         )
 
     def task_board_html(self) -> str:
-        ordered = sorted(self.task_rows.values(), key=lambda row: str(row["Task"]))
-        if not ordered:
+        if not self.task_rows:
             return ""
         rows: list[str] = []
-        for item in ordered:
+        for item in self.task_rows.values():
             status = str(item["Status"]).strip().lower()
             state_class = _TASK_STATE_CLASS.get(status, "")
             facts = "".join(

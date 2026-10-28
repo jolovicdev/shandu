@@ -386,6 +386,18 @@ def test_gradio_stopped_run_marks_open_subagents_stopped() -> None:
     assert "Continue it with <code>shandu resume e319d654</code>." in strip
 
 
+def test_gradio_subagent_cards_keep_arrival_order() -> None:
+    state = GuiRunState()
+    for task_id in ("iter_1_root_cause", "iter_1_deployment", "iter_1_post_incident"):
+        state.apply_event(
+            RunEvent(stage="search", message=f"Task {task_id} started", payload={"task_id": task_id})
+        )
+
+    labels = re.findall(r"<span class='id'>([^<]+)</span>", state.task_board_html())
+
+    assert labels == ["Subagent 1", "Subagent 2", "Subagent 3"]
+
+
 def test_gradio_feed_lines_use_words_not_raw_fields() -> None:
     state = GuiRunState()
     state.apply_event(

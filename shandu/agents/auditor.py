@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from ..contracts import CitationEntry, CitationVerdict, EvidenceRecord
 from ..interfaces import RuntimeExecutionLike
 from ..prompts import auditor_instructions, auditor_job
-from ..runtime.calls import structured_call
+from ..runtime.calls import ProviderRejectedError, structured_call
 from ..runtime.costing import add_usage, collect_llm_usage
 from ..runtime.roles import role_model
 from .search_subagent import _report_reason
@@ -182,6 +182,8 @@ class CitationAuditor:
                         worker,
                         Job(input=auditor_job(payload), response_schema=_AuditPayload),
                     )
+                except ProviderRejectedError:
+                    raise
                 except Exception as exc:
                     logger.warning("Citation audit batch failed", exc_info=True)
                     failures.append(f"{type(exc).__name__}: {exc}"[:300])

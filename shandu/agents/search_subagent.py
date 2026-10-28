@@ -34,7 +34,7 @@ from ..prompts import (
     selector_instructions,
     selector_job,
 )
-from ..runtime.calls import structured_call
+from ..runtime.calls import ProviderRejectedError, structured_call
 from ..runtime.costing import collect_llm_usage
 from ..runtime.roles import role_model
 from ..services.findings import verified_claims
@@ -631,6 +631,8 @@ class SearchSubagent:
                     task.task_id,
                     _report_reason(report),
                 )
+        except ProviderRejectedError:
+            raise
         except Exception:
             logger.warning("URL selection failed for %s", task.task_id, exc_info=True)
 
@@ -684,6 +686,8 @@ class SearchSubagent:
                 return report.data, True, llm_usage
             reason = _report_reason(report)
             logger.warning("Extraction call did not complete for %s: %s", url, reason)
+        except ProviderRejectedError:
+            raise
         except Exception:
             reason = "extractor raised before completing"
             logger.warning("Extraction call failed for %s", url, exc_info=True)

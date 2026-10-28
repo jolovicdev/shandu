@@ -12,7 +12,7 @@ from blackgeorge.tools import Tool, tool
 from ..contracts import EvidenceRecord, ResearchBrief, ResearchRequest, SubagentTask
 from ..interfaces import SearchServiceLike, SearchSubagentLike
 from ..prompts import researcher_instructions, researcher_job
-from ..runtime.calls import researcher_call
+from ..runtime.calls import ProviderRejectedError, researcher_call
 from ..runtime.costing import collect_llm_usage
 from ..runtime.roles import role_model
 from .search_subagent import (
@@ -223,6 +223,8 @@ class ResearcherAgent(SearchSubagent):
             else:
                 failure = _report_reason(report)
                 logger.warning("Researcher did not finish %s: %s", task.task_id, failure)
+        except ProviderRejectedError:
+            raise
         except TimeoutError:
             failure = "researcher loop timed out"
             logger.warning("Researcher loop timed out on %s", task.task_id)

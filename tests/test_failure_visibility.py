@@ -16,6 +16,7 @@ from shandu.contracts import (
     SubagentTask,
 )
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
+from shandu.runtime.calls import ProviderRejectedError, _rejection
 from shandu.services.run_store import RunStore
 from shandu.services.report import ReportService
 from shandu.services.scrape import ScrapedPage
@@ -488,3 +489,163 @@ def test_extract_summary_reads_executive_section_then_prose() -> None:
     assert LeadAgent._extract_summary("# Only Headings\n\n## Sub") == (
         "Summary unavailable."
     )
+
+
+_REJECTED_KEY = (
+    'litellm.BadRequestError: DeepseekException - {"error":{"message":"Authentication Fails, '
+    'Your api key: ****0000 is invalid (request_id: 35ac)","type":"authentication_error"}}'
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "kind"),
+    [
+        (_REJECTED_KEY, "key"),
+        ("litellm.AuthenticationError: OpenAIException - Incorrect API key provided", "key"),
+        ("litellm.BadRequestError: LLM Provider NOT provided. You passed model=bogus/x", "model"),
+        (
+            'litellm.BadRequestError: DeepseekException - {"error":{"message":"The supported API '
+            'model names are deepseek-flash, but you passed deepseek-x."}}',
+            "model",
+        ),
+        ("litellm.NotFoundError: OpenAIException - The model `gpt-9` does not exist", "model"),
+        ("litellm.RateLimitError: OpenAIException - insufficient_quota", "credit"),
+        ('litellm.APIError: DeepseekException - {"error":{"message":"Insufficient Balance"}}', "credit"),
+        ("litellm.RateLimitError: DeepseekException - Rate limit reached for api key", None),
+        ("litellm.InternalServerError: DeepseekException - Service unavailable", None),
+        ("1 validation error for Payload\n  input_value='Rotate your API key'", None),
+        ("401 Unauthorized", None),
+    ],
+)
+def test_provider_replies_that_no_retry_fixes_are_told_apart(text, kind) -> None:
+    rejected = _rejection(text)
+    assert (rejected.kind if rejected else None) == kind
+
+
+def test_a_rejection_names_the_provider_message_without_request_ids() -> None:
+    rejected = _rejection(_REJECTED_KEY)
+    assert str(rejected) == (
+        "The model provider rejected the API key: "
+        "Authentication Fails, Your api key: ****0000 is invalid"
+    )
+
+
+class _RejectingDesk:
+    async def arun(self, worker, job):
+        del worker, job
+        return SimpleNamespace(status="failed", errors=[_REJECTED_KEY], data=None, metrics={})
+
+
+class _RaisingDesk:
+    async def arun(self, worker, job):
+        del worker, job
+        raise RuntimeError("litellm.BadRequestError: LLM Provider NOT provided. model=bogus/x")
+
+
+@pytest.mark.parametrize("desk", [_RejectingDesk(), _RaisingDesk()])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "create_brief",
+        "clarifying_questions",
+        "create_iteration_plan",
+        "synthesize_iteration",
+        "build_final_report",
+    ],
+)
+def test_a_rejected_lead_call_stops_instead_of_falling_back(desk, method) -> None:
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+    calls = {
+        "create_brief": lambda: agent.create_brief(_request()),
+        "clarifying_questions": lambda: agent.clarifying_questions("q"),
+        "create_iteration_plan": lambda: agent.create_iteration_plan(_request(), 0, [], []),
+        "synthesize_iteration": lambda: agent.synthesize_iteration(_request(), 0, [], []),
+        "build_final_report": lambda: agent.build_final_report(_request(), [], [], []),
+    }
+    with pytest.raises(ProviderRejectedError):
+        asyncio.run(calls[method]())
+
+
+class _TwoHitSearch:
+    async def search(self, query: str, max_results: int) -> list[SearchHit]:
+        del query, max_results
+        return [
+            SearchHit(query="q", url=f"https://example.com/{name}", title=name, snippet="s")
+            for name in ("a", "b")
+        ]
+
+
+class _RejectsOneWorkerDesk:
+    """Rejects the named worker's calls; any other call fails as an ordinary error."""
+
+    def __init__(self, worker_name: str) -> None:
+        self.worker_name = worker_name
+
+    async def arun(self, worker, job):
+        del job
+        errors = [_REJECTED_KEY if worker.name == self.worker_name else "boom"]
+        return SimpleNamespace(status="failed", errors=errors, data=None, metrics={})
+
+
+@pytest.mark.parametrize(
+    ("search", "worker_name"),
+    [(_AlphaSearch(), "SubagentExtractor"), (_TwoHitSearch(), "SubagentSelector")],
+    ids=["extract", "select"],
+)
+def test_a_rejected_subagent_call_stops_the_task(search, worker_name) -> None:
+    page = ScrapedPage(
+        requested_url="https://example.com/a",
+        url="https://example.com/a",
+        title="Alpha",
+        text="page text body",
+        domain="example.com",
+    )
+    subagent = SearchSubagent(
+        runtime=_ModelRuntime(_RejectsOneWorkerDesk(worker_name)),
+        search_service=search,
+        scrape_service=_SinglePageScrape(page),
+    )
+    task = SubagentTask(task_id="t", focus="focus", search_queries=["q"], expected_output="out")
+    request = ResearchRequest(query="q", max_pages_per_task=1, max_results_per_query=2)
+
+    with pytest.raises(ProviderRejectedError):
+        asyncio.run(subagent.execute_task("run:1", task, request))
+
+
+class _OneTaskLead(_FailingLead):
+    async def create_iteration_plan(
+        self, request, iteration, prior_summaries, memory_context, brief=None
+    ):
+        del request, prior_summaries, memory_context
+        return IterationPlan(
+            iteration_index=iteration,
+            goals=["q"],
+            subagent_tasks=[SubagentTask(task_id="t", focus="f", search_queries=["q"])],
+            continue_loop=False,
+        )
+
+
+class _RejectedSubagent:
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
+    ):
+        raise ProviderRejectedError("key", "invalid")
+
+
+def test_a_rejected_task_stops_the_run_and_marks_it_failed(tmp_path) -> None:
+    store = RunStore(tmp_path)
+    orchestrator = LeadOrchestrator(
+        lead_agent=_OneTaskLead(),
+        search_subagent=_RejectedSubagent(),
+        citation_agent=_EmptyCitationAgent(),
+        run_store=store,
+        report_service=ReportService(),
+    )
+
+    with pytest.raises(ProviderRejectedError):
+        asyncio.run(orchestrator.run(_request()))
+
+    (run,) = store.list_runs()
+    status = store.load(run.run_id).status
+    assert status["status"] == "failed"
+    assert "rejected the API key" in status["error"]

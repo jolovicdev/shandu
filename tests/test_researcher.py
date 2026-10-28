@@ -4,6 +4,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from shandu.agents.researcher import (
     _BUDGET_SPENT,
     _READS_SPENT,
@@ -22,6 +24,7 @@ from shandu.contracts import (
     SubagentTask,
 )
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
+from shandu.runtime.calls import ProviderRejectedError
 from shandu.services.report import ReportService
 from shandu.services.run_store import RunStore
 from shandu.services.scrape import ScrapedPage
@@ -404,3 +407,26 @@ def test_researcher_reads_only_allowed_domains() -> None:
 
     assert scrape.requested == [_PAPER]
     assert desk.replies[0].startswith("Outside the allowed domains")
+
+
+class _RejectedLoopDesk(_ModelDesk):
+    """Plays a provider that rejects the API key on the loop's first call."""
+
+    async def arun(self, worker, job):
+        if worker.name == "SubagentExtractor":
+            return await super().arun(worker, job)
+        raise RuntimeError(
+            "litellm.AuthenticationError: OpenAIException - Incorrect API key provided"
+        )
+
+
+def test_researcher_stops_on_a_rejected_key() -> None:
+    async def script(tools, replies):
+        del tools, replies
+
+    with pytest.raises(ProviderRejectedError):
+        asyncio.run(
+            _researcher(_RejectedLoopDesk(script)).execute_task(
+                "run:r", _task(), ResearchRequest(query="q")
+            )
+        )

@@ -7,6 +7,7 @@ from blackgeorge import Job, Worker
 from ..contracts import AISearchResult, AISearchSource
 from ..interfaces import DetailLevel, RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
 from ..prompts import aisearch_expected_output, aisearch_instructions, aisearch_job
+from ..runtime.calls import ProviderRejectedError, writer_call
 from ..runtime.costing import collect_llm_usage
 from .scrape.service import _canonicalize_url
 
@@ -85,7 +86,7 @@ class AISearchService:
         )
         llm_usage = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await writer_call(self._runtime, worker, job)
             llm_usage = collect_llm_usage(report)
             content = getattr(report, "content", None)
             if report.status == "completed" and isinstance(content, str) and content.strip():
@@ -106,6 +107,8 @@ class AISearchService:
             detail = "; ".join(str(item) for item in errors if str(item).strip())
             reason = detail[:300] if detail else f"status={getattr(report, 'status', 'unknown')}"
             logger.warning("AI search call did not complete: %s", reason)
+        except ProviderRejectedError:
+            raise
         except Exception:
             reason = "aisearch raised before completing"
             logger.warning("AI search call failed", exc_info=True)

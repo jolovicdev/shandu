@@ -16,6 +16,7 @@ from ...contracts import EFFORT_PRESETS, ResearchRequest, ResearchRunResult, Run
 from ...config import infer_api_key_env_name
 from ...engine import ShanduEngine
 from ...runtime import get_async_runner
+from ...runtime.calls import ProviderRejectedError
 from ...services.report import RecentReport, list_recent_reports
 from ...services.run_store import default_run_store
 from .constants import DEPTH_POLICIES, DETAIL_LEVELS
@@ -44,13 +45,13 @@ EXAMPLES = [
 # worker thread, which is blocked until the engine sends its next event.
 _ACTIVE_RUNS: dict[str, threading.Event] = {}
 
+_REJECTION_HINTS = {
+    "key": "The model provider rejected the API key. Check Key env var and Key value in Settings.",
+    "model": "The model provider does not know this model. Check Model in Settings.",
+    "credit": "The model provider account is out of credit. Add credit with the provider, then run again.",
+}
 _ERROR_HINTS = (
-    (
-        "AuthenticationError",
-        "The model provider rejected the API key. Check Key env var and Key value in Settings.",
-    ),
     ("RateLimitError", "The model provider is rate limiting requests. Wait a minute, then run again."),
-    ("NotFoundError", "The model provider does not know this model. Check Model in Settings."),
     ("APIConnectionError", "Shandu could not reach the model provider. Check your connection."),
 )
 
@@ -575,6 +576,8 @@ def _stop_action(http_request: gr.Request) -> None:
 
 
 def _error_message(exc: Exception) -> str:
+    if isinstance(exc, ProviderRejectedError):
+        return _REJECTION_HINTS[exc.kind]
     for name, message in _ERROR_HINTS:
         if type(exc).__name__ == name or f"litellm.{name}" in str(exc):
             return message

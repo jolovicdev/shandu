@@ -4,6 +4,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from shandu.agents.auditor import (
     AuditOutcome,
     CitationAuditor,
@@ -25,6 +27,7 @@ from shandu.contracts import (
     SubagentTask,
 )
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
+from shandu.runtime.calls import ProviderRejectedError
 from shandu.services.report import ReportService
 from shandu.services.run_store import RunStore
 
@@ -340,3 +343,19 @@ def test_audit_that_removes_every_marker_leaves_no_references(tmp_path) -> None:
 
     assert result.citations == []
     assert "## References" not in result.report_markdown
+
+
+class _RejectedAuditDesk:
+    async def arun(self, worker, job):
+        del worker, job
+        return SimpleNamespace(
+            status="failed",
+            errors=["litellm.APIError: DeepseekException - Insufficient Balance"],
+            data=None,
+            metrics={},
+        )
+
+
+def test_audit_stops_when_the_account_is_out_of_credit() -> None:
+    with pytest.raises(ProviderRejectedError):
+        asyncio.run(_auditor(_RejectedAuditDesk()).audit(_REPORT, _CITATIONS, _EVIDENCE))

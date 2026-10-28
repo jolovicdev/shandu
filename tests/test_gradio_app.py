@@ -13,6 +13,7 @@ import pytest
 import shandu.ui.gradio.app as app_module
 from shandu.config import config
 from shandu.contracts import RunEvent
+from shandu.runtime.calls import ProviderRejectedError
 from shandu.ui.gradio import layout as layout_module
 from shandu.ui.gradio_app import GuiRunState
 from shandu.ui.gradio.layout import _outputs, build_gui
@@ -184,7 +185,7 @@ def test_stop_ends_the_sessions_run_as_stopped(monkeypatch) -> None:
 def test_rejected_api_key_reads_as_a_settings_problem(monkeypatch) -> None:
     class RejectingEngine(_BlockingEngine):
         async def run(self, request, progress_callback=None) -> None:
-            raise RuntimeError("litellm.AuthenticationError: Your api key: ****3f9a is invalid")
+            raise ProviderRejectedError("key", "Your api key: ****3f9a is invalid")
 
     monkeypatch.setattr(layout_module, "save_configuration", lambda **kwargs: "saved")
     monkeypatch.setattr(layout_module, "ShanduEngine", RejectingEngine)
@@ -194,7 +195,7 @@ def test_rejected_api_key_reads_as_a_settings_problem(monkeypatch) -> None:
     )[-1]
 
     assert "rejected the API key. Check Key env var and Key value in Settings." in final[0]
-    assert "RuntimeError: litellm.AuthenticationError" in final[0]
+    assert "ProviderRejectedError: The model provider rejected the API key" in final[0]
 
 
 def test_error_hints_leave_other_errors_as_they_are() -> None:

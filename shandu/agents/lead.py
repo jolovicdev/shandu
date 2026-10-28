@@ -33,7 +33,7 @@ from ..prompts import (
     synthesizer_instructions,
     synthesizer_job,
 )
-from ..runtime.calls import structured_call, writer_call
+from ..runtime.calls import ProviderRejectedError, structured_call, writer_call
 from ..runtime.costing import add_usage, collect_llm_usage
 from ..runtime.roles import role_model
 
@@ -147,6 +147,8 @@ class LeadAgent:
             else:
                 reason = _failure_reason(report, "brief writer")
             logger.warning("Lead brief call did not complete: %s", reason)
+        except ProviderRejectedError:
+            raise
         except Exception:
             reason = "brief writer raised before completing"
             logger.warning("Lead brief call failed", exc_info=True)
@@ -164,6 +166,8 @@ class LeadAgent:
         job = Job(input=clarifier_job(query), response_schema=_ClarifierPayload)
         try:
             report = await structured_call(self._runtime, worker, job)
+        except ProviderRejectedError:
+            raise
         except Exception:
             logger.warning("Clarifier call failed", exc_info=True)
             return []
@@ -227,6 +231,8 @@ class LeadAgent:
             else:
                 reason = _failure_reason(report, "planner")
             logger.warning("Lead planner call did not complete: %s", reason)
+        except ProviderRejectedError:
+            raise
         except Exception:
             reason = "planner raised before completing"
             logger.warning("Lead planner call failed", exc_info=True)
@@ -298,6 +304,8 @@ class LeadAgent:
                 )
             reason = _failure_reason(report, "synthesizer")
             logger.warning("Lead synthesizer call did not complete: %s", reason)
+        except ProviderRejectedError:
+            raise
         except Exception:
             reason = "synthesizer raised before completing"
             logger.warning("Lead synthesizer call failed", exc_info=True)
@@ -415,6 +423,8 @@ class LeadAgent:
                 if self._is_report(content):
                     return content.strip(), ""
                 reason = f"{label} returned no report: {' '.join(content.split())[:160]}"
+        except ProviderRejectedError:
+            raise
         except Exception:
             logger.warning("%s call failed", name, exc_info=True)
             return None, f"{label} raised before completing"

@@ -29,6 +29,7 @@ from ..interfaces import (
     ReportServiceLike,
     SearchSubagentLike,
 )
+from ..runtime.calls import ProviderRejectedError
 from ..services.findings import build_findings, coverage_matrix
 from ..services.run_store import CompletedIteration, RunStore, StoredRun
 
@@ -481,6 +482,8 @@ class LeadOrchestrator:
                 iteration_evidence: list[EvidenceRecord] = []
                 task_errors = 0
                 for task_result in results:
+                    if isinstance(task_result, ProviderRejectedError):
+                        raise task_result
                     if isinstance(task_result, list):
                         iteration_evidence.extend(task_result)
                     else:

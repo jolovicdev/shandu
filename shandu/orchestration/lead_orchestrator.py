@@ -111,6 +111,12 @@ class _RunState:
             state.saw_llm_usage = bool(counters.get("saw_llm_usage"))
         spend = stored.status.get("llm_totals")
         if spend:
+            # The status also meters the calls after the last iteration (its
+            # report, or an iteration that never finished), which that
+            # iteration's counters miss.
+            state.agent_model_calls += max(
+                0, int(spend.get("llm_calls", 0)) - int(state.llm_totals["llm_calls"])
+            )
             state.llm_totals.update(spend)
             state.saw_llm_usage = True
         return state

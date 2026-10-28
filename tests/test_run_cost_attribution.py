@@ -365,3 +365,23 @@ def test_inspect_run_aggregates_usage(tmp_path) -> None:
         "llm_calls": 1,
         "cost_events": 1,
     }
+
+
+def test_rewrite_counts_calls_made_after_the_last_iteration(tmp_path) -> None:
+    lead = _UsageLead()
+    lead.usage = {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10, "cost_usd": 0.01}
+    orchestrator = LeadOrchestrator(
+        lead_agent=lead,
+        search_subagent=_EmptySearchSubagent(),
+        citation_agent=_EmptyCitationAgent(),
+        run_store=RunStore(tmp_path),
+        report_service=ReportService(),
+    )
+    first = asyncio.run(
+        orchestrator.run(ResearchRequest(query="a", max_iterations=1, parallelism=1))
+    )
+    rewrite = asyncio.run(orchestrator.rewrite_report(first.run_id))
+
+    assert first.run_stats["agent_model_calls"] == first.run_stats["metered_calls"] == 4
+    assert rewrite.run_stats["metered_calls"] == 5
+    assert rewrite.run_stats["agent_model_calls"] == 5

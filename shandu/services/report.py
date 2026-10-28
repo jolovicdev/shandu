@@ -36,6 +36,13 @@ _BANNED_PROVENANCE_HEADERS = {
 }
 
 
+# Writers sometimes print a placeholder where a citation would go.
+_PLACEHOLDER_MARKER = re.compile(
+    r"[ \t]*\[(?:no marker|no citation|citation needed|source needed|unsourced|uncited)\]",
+    re.IGNORECASE,
+)
+
+
 @dataclass(frozen=True, slots=True)
 class RecentReport:
     run_id: str
@@ -424,6 +431,7 @@ class ReportService:
 
         text = marker_pattern.sub(replace, markdown)
         text = re.sub(r"(\[(\d+)\])(?:\s*\[\2\])+", r"[\2]", text)
+        text = _PLACEHOLDER_MARKER.sub("", text)
         text = re.sub(r"[ \t]+\n", "\n", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()

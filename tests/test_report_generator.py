@@ -126,6 +126,32 @@ def test_dropped_markers_take_their_leading_space_with_them() -> None:
     assert "The reply could not be read. Signal depends on size [1] and density, mostly." in rendered
 
 
+def test_placeholder_markers_are_removed() -> None:
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown=(
+            "# Report\n\n## Summary\n\n"
+            "Ratings put the median at 1.98 [no marker]. A lead [Citation needed], then a fact [1].\n"
+        ),
+    )
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=["e1"],
+            url="https://example.com/a",
+            title="A",
+            publisher="example.com",
+            accessed_at="2026-02-21",
+        )
+    ]
+
+    rendered = ReportService().render(ResearchRequest(query="q"), draft, citations)
+
+    assert "Ratings put the median at 1.98. A lead, then a fact [1]." in rendered
+
+
 def test_report_service_reindexes_citation_numbers_without_gaps() -> None:
     service = ReportService()
     request = ResearchRequest(query="Compare X vs Y")

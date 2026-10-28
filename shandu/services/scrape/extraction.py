@@ -254,6 +254,12 @@ def _extract_html(html: str) -> _ExtractionResult:
         result = _extract_with_bs4(html)
     result.site_name = _extract_site_name(html)
     result.published_at = _arxiv_stamp_date(html) or result.published_at
+    # LaTeXML pages (arXiv HTML) set the author footnote inside the h1 the
+    # extractors take the title from; their <title> holds the title alone.
+    if "ltx_title_document" in html:
+        page_title = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        if page_title:
+            result.title = " ".join(unescape(page_title.group(1)).split()) or result.title
     return result
 
 
@@ -262,6 +268,17 @@ _FITZ_BOLD_FLAG = 16
 
 def _inked_size(spans: list[dict[str, Any]]) -> float:
     return max((span["size"] for span in spans if span.get("text", "").strip()), default=0.0)
+
+
+def _body_size(spans: list[dict[str, Any]]) -> float:
+    """Type size weighted by characters, so small caps count at their small size.
+
+    A small-caps section heading sets one capital per word in type larger
+    than the title, which would otherwise outrank the title.
+    """
+    inked = [(span["size"], len(span["text"].strip())) for span in spans if span.get("text", "").strip()]
+    chars = sum(length for _, length in inked)
+    return sum(size * length for size, length in inked) / chars if chars else 0.0
 
 
 def _horizontal_lines(block: dict[str, Any]) -> list[list[dict[str, Any]]]:
@@ -295,11 +312,12 @@ def _pdf_layout_title(page: Any) -> str:
         lines = _horizontal_lines(block)
         if not lines:
             continue
-        size = max(_inked_size(spans) for spans in lines)
+        size = max(_body_size(spans) for spans in lines)
         if size > best_size:
             best_size = size
             best_lines = lines
-    return _title_text([spans for spans in best_lines if _inked_size(spans) >= 0.9 * best_size])
+    top = max((_inked_size(spans) for spans in best_lines), default=0.0)
+    return _title_text([spans for spans in best_lines if _inked_size(spans) >= 0.9 * top])
 
 
 def _pdf_bold_title(page: Any) -> str:

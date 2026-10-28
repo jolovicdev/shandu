@@ -140,6 +140,19 @@ def test_trafilatura_extracts_title_date_and_blocks_in_one_pass() -> None:
 
 
 
+def test_extract_html_takes_a_latexml_title_without_its_author_footnote() -> None:
+    body = " ".join(["The outage began when one content update reached every sensor."] * 12)
+    html = (
+        "<html><head><title>Channel File 291: An Engineering Analysis</title></head><body>"
+        '<article class="ltx_document"><h1 class="ltx_title ltx_title_document">'
+        "Channel File 291: An Engineering Analysis"
+        '<span class="ltx_pubnotes"><span class="ltx_role_thanks">'
+        "Thanks: The author is with Purdue University.</span></span></h1>"
+        f"<p>{body}</p></article></body></html>"
+    )
+    assert _extract_html(html).title == "Channel File 291: An Engineering Analysis"
+
+
 def test_parse_pdf_extracts_title_and_text() -> None:
     doc = fitz.open()
     page = doc.new_page()
@@ -192,6 +205,18 @@ def test_parse_pdf_reads_small_caps_titles_whole() -> None:
     page.insert_text((72, 136), "Yucheng Li, Huiqiang Jiang", fontsize=10)
     result = _parse_pdf(doc.tobytes())
     assert result.title == "SCBENCH: KV CACHE LONG-CONTEXT"
+
+
+def test_parse_pdf_skips_a_small_caps_heading_whose_capitals_outsize_the_title() -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 88), "External Technical Root Cause Analysis", fontsize=16)
+    x = 72.0
+    for text, size in [("I", 18), ("NTRODUCTION", 14.5)]:
+        page.insert_text((x, 200), text, fontsize=size)
+        x += fitz.get_text_length(text, fontsize=size)
+    page.insert_text((72, 230), "This report elaborates on the information shared earlier.", fontsize=11)
+    assert _parse_pdf(doc.tobytes()).title == "External Technical Root Cause Analysis"
 
 
 def test_parse_pdf_reads_bold_titles_set_at_body_size() -> None:

@@ -8,7 +8,8 @@ GUI, with any model [LiteLLM](https://docs.litellm.ai/) supports.
 
 ![A finished report in the Shandu web GUI](assets/report.png)
 
-Example reports, each written by `deepseek/deepseek-flash`:
+Example reports, each written by `deepseek/deepseek-flash` with its thinking
+turned off:
 
 - [The CrowdStrike outage of July 2024](examples/crowdstrike-outage.md): default
   effort, 26 sources.
@@ -55,7 +56,8 @@ pipx install "git+https://github.com/jolovicdev/shandu.git@main"
 
 ## Choose a model
 
-The default model is `deepseek/deepseek-flash`. Put its key in the environment:
+The default model is `deepseek/deepseek-flash`. Create a key at
+<https://platform.deepseek.com> and put it in the environment:
 
 ```bash
 export DEEPSEEK_API_KEY=your-key

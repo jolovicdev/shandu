@@ -462,14 +462,27 @@ def _deliver(
 def _resolve_run_id(engine: ShanduEngine, run_id: str) -> str:
     """The run named by its full id or by the first characters `shandu list` shows.
 
-    An id that matches no run comes back unchanged, so the caller reports it
-    as not found.
+    An id that matches no run comes back unchanged: `inspect` also looks up
+    single model calls by their own ids, and the caller reports the rest as
+    unknown.
     """
+    run_id = run_id.strip()
+    if not run_id:
+        engine.close()
+        raise click.UsageError("Give a run id. `shandu list` shows them.")
     matches = [run.run_id for run in engine.list_runs() if run.run_id.startswith(run_id)]
     if len(matches) > 1 and run_id not in matches:
         engine.close()
-        raise click.ClickException(f"Run id {run_id} matches {len(matches)} runs; give more of it.")
+        shown = ", ".join(match[:8] for match in matches[:5])
+        more = f" and {len(matches) - 5} more" if len(matches) > 5 else ""
+        raise click.ClickException(
+            f"Run id {run_id} matches {len(matches)} runs: {shown}{more}. Type more characters."
+        )
     return matches[0] if len(matches) == 1 else run_id
+
+
+def _no_such_run(run_id: str) -> click.ClickException:
+    return click.ClickException(f"No run starts with {run_id}. See `shandu list`.")
 
 
 def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
@@ -477,7 +490,7 @@ def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
         return engine.load_run(run_id).request
     except RunNotFoundError:
         engine.close()
-        raise click.ClickException(f"Run {run_id} not found.") from None
+        raise _no_such_run(run_id) from None
 
 
 @cli.command("resume")
@@ -574,7 +587,7 @@ def show_command(run_id: str) -> None:
     try:
         result = engine.load_run(run_id)
     except RunNotFoundError:
-        raise click.ClickException(f"Run {run_id} not found.") from None
+        raise _no_such_run(run_id) from None
     finally:
         engine.close()
     console.print(ui.result_summary(result))
@@ -650,8 +663,7 @@ def inspect(run_id: str) -> None:
     run_id = _resolve_run_id(engine, run_id)
     payload = engine.inspect_run(run_id)
     if not payload.get("exists"):
-        console.print(ui.warning(f"Run {run_id} not found."))
-        return
+        raise _no_such_run(run_id)
     console.print(ui.inspect_summary(payload))
 
 

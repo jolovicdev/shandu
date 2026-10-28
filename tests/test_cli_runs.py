@@ -10,7 +10,7 @@ from click.testing import CliRunner
 from shandu.cli import ShanduEngine, cli
 from shandu.config import config
 from shandu.contracts import ResearchRequest, ResearchRunResult
-from shandu.services.run_store import RunSummary
+from shandu.services.run_store import RunNotFoundError, RunSummary
 
 
 @pytest.fixture(autouse=True)
@@ -131,6 +131,77 @@ def test_a_run_id_prefix_shared_by_two_runs_asks_for_more(monkeypatch) -> None:
 
     assert result.exit_code != 0
     assert "matches 2 runs" in result.stderr
+
+
+def _store_engine(monkeypatch, run_ids: list[str]) -> SimpleNamespace:
+    loaded: list[str] = []
+
+    def load_run(run_id):
+        loaded.append(run_id)
+        if run_id not in run_ids:
+            raise RunNotFoundError(run_id)
+        return ResearchRunResult(
+            run_id=run_id, request=ResearchRequest(query="q"), report_markdown="# R"
+        )
+
+    engine = SimpleNamespace(
+        list_runs=lambda: [_stored_run(run_id) for run_id in run_ids],
+        load_run=load_run,
+        inspect_run=lambda run_id: {"exists": run_id in run_ids, "run_id": run_id},
+        close=lambda: None,
+        loaded=loaded,
+    )
+    monkeypatch.setattr(
+        ShanduEngine, "from_config", classmethod(lambda cls, writer_model=None: engine)
+    )
+    return engine
+
+
+@pytest.mark.parametrize("command", ["show", "inspect", "resume", "report"])
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_run_id_is_refused_instead_of_matching_every_run(
+    monkeypatch, command, blank
+) -> None:
+    engine = _store_engine(monkeypatch, ["473677ec1d73484f919f35932bbdeddd"])
+
+    result = CliRunner(mix_stderr=False).invoke(cli, [command, blank])
+
+    assert result.exit_code == 2
+    assert "Give a run id" in result.stderr
+    assert engine.loaded == []
+
+
+@pytest.mark.parametrize(
+    "run_ids,message",
+    [
+        (
+            ["4023c8fb" + "0" * 24, "4e4d5d31" + "0" * 24, "443b0221" + "0" * 24],
+            "Run id 4 matches 3 runs: 4023c8fb, 4e4d5d31, 443b0221. Type more characters.",
+        ),
+        (
+            [f"4{index}a" + "0" * 29 for index in range(7)],
+            "Run id 4 matches 7 runs: 40a00000, 41a00000, 42a00000, 43a00000, 44a00000"
+            " and 2 more. Type more characters.",
+        ),
+    ],
+)
+def test_an_ambiguous_run_id_names_up_to_five_candidates(monkeypatch, run_ids, message) -> None:
+    _store_engine(monkeypatch, run_ids)
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["show", "4"])
+
+    assert result.exit_code == 1
+    assert message in result.stderr
+
+
+@pytest.mark.parametrize("command", ["show", "inspect", "resume", "report"])
+def test_an_unknown_run_id_exits_1_and_points_to_list(monkeypatch, command) -> None:
+    _store_engine(monkeypatch, ["473677ec1d73484f919f35932bbdeddd"])
+
+    result = CliRunner(mix_stderr=False).invoke(cli, [command, "zzzz"])
+
+    assert result.exit_code == 1
+    assert "No run starts with zzzz. See `shandu list`." in result.stderr
 
 
 def test_legacy_storage_in_cwd_prints_notice(monkeypatch, tmp_path) -> None:

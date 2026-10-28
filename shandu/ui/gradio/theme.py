@@ -864,7 +864,11 @@ body.dark,
 
 .shandu-prose h3 {
   margin: 30px 0 10px !important;
-  font-size: 1.08rem !important;
+  font-size: 1.2rem !important;
+}
+
+.shandu-prose .md > :first-child {
+  margin-top: 0 !important;
 }
 
 .shandu-prose p,
@@ -925,11 +929,19 @@ body.dark,
   background: var(--sunken) !important;
   color: var(--ink-2) !important;
   padding: 1px 4px !important;
+  overflow-wrap: anywhere !important;
 }
 
 .shandu-prose table {
+  display: block;
+  overflow-x: auto;
+  border: 0 !important;
   font-family: var(--sans) !important;
   font-size: 0.9rem !important;
+}
+
+.shandu-prose tr {
+  border: 0 !important;
 }
 
 .shandu-prose th,
@@ -938,10 +950,12 @@ body.dark,
   border: 0 !important;
   border-bottom: 1px solid var(--line) !important;
   text-align: left !important;
+  word-break: normal !important;
 }
 
 /* The citation ledger is appended last; set it as a reference list with a
-   hanging indent so the numbers form a column. */
+   hanging indent so the numbers form a column. The number shares its run with
+   the publisher, so the indent is the width of "[N] " for one and two digits. */
 .shandu-prose .md > ul:last-child {
   padding-left: 0 !important;
   list-style: none !important;
@@ -949,11 +963,16 @@ body.dark,
 
 .shandu-prose .md > ul:last-child li {
   margin: 0 0 9px !important;
-  padding-left: 2.4em !important;
-  text-indent: -2.4em !important;
+  padding-left: 2em !important;
+  text-indent: -2em !important;
   font-size: 0.95rem !important;
   line-height: 1.55 !important;
   color: var(--ink-2) !important;
+}
+
+.shandu-prose .md > ul:last-child li:nth-child(-n + 9) {
+  padding-left: 1.5em !important;
+  text-indent: -1.5em !important;
 }
 
 .shandu-prose .md > ul:last-child li strong {
@@ -1113,11 +1132,6 @@ select:focus-visible {
   .shandu-prose .prose,
   .shandu-prose .md {
     font-size: 1.06rem !important;
-  }
-
-  .shandu-prose table {
-    display: block;
-    overflow-x: auto;
   }
 }
 

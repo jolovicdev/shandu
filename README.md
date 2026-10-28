@@ -1,247 +1,147 @@
-# Shandu - Open-Source Deep Research Agent (CLI + GUI)
+# Shandu
 
-Shandu is a Python deep research agent: ask a question, and a team of LLM agents
-plans research loops, runs web searches, scrapes pages and documents, scores every
-source for credibility, and writes a long-form markdown report with numbered
-citations. It is open source and runs on your own machine with any model
-LiteLLM supports: DeepSeek, OpenRouter, Anthropic, OpenAI, or a local endpoint.
-Built on the Blackgeorge agent framework, usable from a terminal CLI or a
-Gradio web GUI.
+Shandu is an open-source deep research agent. Ask a question, and LLM agents
+plan the research, search the web and scholarly indexes, read pages and PDFs,
+weigh each source, and write a markdown report with numbered citations that are
+checked against the sources. It runs on your machine, from a terminal or a web
+GUI, with any model [LiteLLM](https://docs.litellm.ai/) supports.
 
-- Architecture deep dive: [`ARCH.md`](ARCH.md)
-- Example long-form output: see the `examples` directory.
-- DeepSeek Flash example: [`examples/deepseek-flash.md`](examples/deepseek-flash.md)
+![A finished report in the Shandu web GUI](assets/report.png)
 
-## How It Works
+Example reports are in [`examples/`](examples/). The architecture is described
+in [`ARCH.md`](ARCH.md).
 
-- The lead turns your question into a research brief: scope, concrete
-  sub-questions, time window, and the shape of answer you want.
-- It plans iterative research loops against the sub-questions still open, and
-  parallel researchers search the web and, when papers can answer a task, arXiv,
-  OpenAlex, and PubMed.
-- Researchers read whole pages and documents, score every source for
-  credibility, and extract claims with verbatim quotes that code checks against
-  the page. The checked claims drive the coverage rating and the citation audit.
-  An agentic researcher (`--researcher agentic`) also follows links to the
-  primary sources a page cites.
-- After each loop, code rates every sub-question by how many independent credible
-  sources back it, and research continues until each has two or the budget ends.
-- One call writes the report; an auditor then checks every cited sentence
-  against its sources and removes unsupported citations.
-- Every run is saved as it happens, so you can resume it or rewrite its report
-  without searching again.
-- The CLI streams one aligned line per event; the web GUI shows the run live and
-  the finished report with its references.
+## How a run works
 
-## Installation
+1. The lead agent turns the question into a brief: scope, sub-questions, time
+   window, and the kind of answer wanted.
+2. Each iteration plans tasks for the sub-questions that are still open.
+   Researchers run in parallel. They search the web and, when papers can answer
+   a task, arXiv, OpenAlex, and PubMed, then read the best pages whole.
+3. Every page is classified (peer-reviewed, official, journalism, vendor, blog,
+   and so on) and scored for credibility. Claims are extracted with verbatim
+   quotes, and a claim whose quote is not on the page is dropped.
+4. Code rates each sub-question by how many independent credible sites back it.
+   Research continues until each has two, or the budget runs out.
+5. The writer drafts the report from the evidence. An auditor then checks every
+   cited sentence against its sources and removes the citations they do not
+   support.
+6. The run is saved as it happens, so it can be resumed, or its report rewritten
+   without searching again.
 
-Recommended for end users (no manual venv management):
+## Install
+
+Shandu needs Python 3.12 or newer.
 
 ```bash
 pipx install shandu
 ```
 
-Standard pip install:
-
-```bash
-pip install shandu
-```
-
-Install latest from GitHub:
+`pip install shandu` works too. To install the latest code from GitHub:
 
 ```bash
 pipx install "git+https://github.com/jolovicdev/shandu.git@main"
 ```
 
-## Quick Start
+## Choose a model
+
+The default model is `deepseek/deepseek-flash`. Put its key in the environment:
 
 ```bash
-uv sync --dev
-source .venv/bin/activate
-cp .env.example .env
-# edit .env with your provider/model settings
+export DEEPSEEK_API_KEY=your-key
 ```
 
-## API Key Configuration (LiteLLM Style)
+To use another provider, set `SHANDU_MODEL` to its LiteLLM model name, for
+example `openrouter/minimax/minimax-m2.5`, and set that provider's key variable,
+here `OPENROUTER_API_KEY`. `shandu configure` asks for the model and key and
+saves them to `~/.shandu/config.json`. `shandu info` shows what is in use.
 
-`shandu configure` asks for:
-
-- `Default model` (example: `deepseek/deepseek-flash`, `openrouter/minimax/minimax-m2.5`)
-- `API key env var name` (example: `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `ANYSUPPORTED_API_KEY`)
-- `API key value` (hidden input)
-
-Shandu saves these in user config storage and exports the configured env var at runtime for LiteLLM if it is not already set in your shell.
-
-Examples:
+## Research from the terminal
 
 ```bash
-# DeepSeek
-shandu configure
-# model: deepseek/deepseek-flash
-# env var name: DEEPSEEK_API_KEY
-# key value: <your key>
-
-# OpenRouter
-shandu configure
-# model: openrouter/minimax/minimax-m2.5
-# env var name: OPENROUTER_API_KEY
-# key value: <your key>
+shandu run "What did the SELECT trial find about semaglutide and cardiovascular events?"
 ```
 
-You can still configure keys only through shell env vars if you prefer:
+Progress streams one line per event. The report prints at the end and is saved
+with the run; `--output report.md` also writes it to a file.
+
+| Option | Effect |
+|---|---|
+| `--effort low\|medium\|high\|max` | Research budget preset, below. Individual budget flags override it. |
+| `--researcher pipeline\|agentic` | How each task gathers evidence, below. |
+| `--detail-level concise\|standard\|high` | Report length: about 1,200, 2,200, or 3,600 words. |
+| `--include-domain`, `--exclude-domain` | Only use, or never use, a site. Repeatable. |
+| `--since YYYY-MM-DD` | Skip pages dated before this day. |
+| `--max-cost USD` | Stop researching once this much is spent, then write the report. |
+| `--clarify` | Answer up to three clarifying questions first. |
+| `--no-audit` | Skip checking citations against their sources. |
+| `--json-output` | Emit the full result as JSON. |
+
+`shandu run --help` lists every option, including the individual budget flags.
+
+| Effort | Iterations | Parallel tasks | Pages per task | Results per query | Searches per task |
+|---|---|---|---|---|---|
+| `low` | 1 | 2 | 3 | 6 | 3 |
+| `medium` (default) | 2 | 3 | 6 | 8 | 6 |
+| `high` | 3 | 4 | 6 | 8 | 8 |
+| `max` | 4 | 6 | 8 | 10 | 10 |
+
+Two researchers are available:
+
+- `pipeline` (default) searches, ranks the results, and reads the best pages in
+  one pass per task. It is the faster and cheaper one.
+- `agentic` runs each task as a tool loop: it searches, reads, refines its
+  queries, and follows links from secondary coverage to the primary source. It
+  takes longer and costs more, and can reach primary documents the pipeline
+  misses.
+
+The run summary lists evidence, citations, the citation check, model calls,
+tokens, and cost.
+
+## Research in the web GUI
 
 ```bash
-export OPENROUTER_API_KEY="your_real_key"
+shandu gui
 ```
 
-## Environment Variables (Without `shandu configure`)
+Open <http://127.0.0.1:7860>, type a question, and press Research. The page
+shows the run's stages and each subagent's searches, then the report with its
+contents and references, and a markdown download.
 
-If you prefer not to use interactive configuration, set env vars directly.
+- The Options row under the question sets the effort, researcher, cost limit,
+  site filters, start date, and citation check for one run.
+- Settings, at the top right, holds the saved defaults: model, API key, and the
+  research budget.
+- Recent reports are listed below the question and open with one click.
 
-Provider/model:
+![A run in progress in the Shandu web GUI](assets/main.png)
 
-- `SHANDU_MODEL` (primary model selector, example `deepseek/deepseek-flash`)
-- `OPENAI_MODEL_NAME` (compatibility fallback if `SHANDU_MODEL` is not set)
+`shandu gui --share --auth user:pass` serves a public link. A password is
+required because the page spends your API key.
 
-Provider API key routing:
+## Stored runs
 
-- `SHANDU_API_KEY_ENV` (name of provider key env var, example `OPENROUTER_API_KEY`)
-- `SHANDU_API_KEY` (actual key value that Shandu exports into `SHANDU_API_KEY_ENV` at runtime if missing)
+Each run lives in `~/.shandu/storage/runs/<run_id>/`; `SHANDU_STORAGE_DIR` moves
+the storage. Commands take a full run id or any unique start of one, such as the
+eight characters `shandu list` prints.
 
-Direct LiteLLM-style provider key env vars (examples):
+| Command | Effect |
+|---|---|
+| `shandu list` | Stored runs, newest first. |
+| `shandu show <run_id>` | A run's summary and report. |
+| `shandu report <run_id>` | Rewrite the report from stored evidence, with no new searches. Takes `--detail-level`, `--model`, and `--no-audit`. |
+| `shandu resume <run_id>` | Continue a stopped run after its last completed iteration. |
+| `shandu inspect <run_id>` | Status, timestamps, event count, and stats. |
+| `shandu clean` | Delete runtime caches and keep stored runs. `--all` also deletes the runs. |
 
-- `DEEPSEEK_API_KEY`
-- `OPENROUTER_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY`
-- Any other provider key name LiteLLM supports, for example `ANYSUPPORTED_API_KEY`
-
-Generation/runtime controls:
-
-- `SHANDU_TEMPERATURE` (default `0.2`)
-- `SHANDU_MAX_TOKENS` (default `32768`)
-- `SHANDU_STORAGE_DIR` (default `~/.shandu/storage`)
-- `SHANDU_PROXY` (optional proxy for scraping)
-- `SHANDU_SEARCH_BACKEND` (default `ddgs`): web search through `ddgs`, or a
-  search API: `tavily` (`TAVILY_API_KEY`), `brave` (`BRAVE_API_KEY`), `exa`
-  (`EXA_API_KEY`), or `searxng` (`SEARXNG_URL`, an instance with JSON output
-  enabled). A backend without its variable falls back to `ddgs` with a warning.
-- `OPENALEX_API_KEY`, `NCBI_API_KEY` (optional): raise the OpenAlex and PubMed
-  rate limits for paper search.
-- `SHANDU_MODEL_PLANNER`, `SHANDU_MODEL_RESEARCHER`, `SHANDU_MODEL_EXTRACTOR`,
-  `SHANDU_MODEL_SYNTHESIZER`, `SHANDU_MODEL_WRITER`, `SHANDU_MODEL_AUDITOR`
-  (optional): a model for one role, overriding the default model. The same
-  overrides live under `api.models` in `~/.shandu/config.json`. Extraction makes
-  most of the calls, so a cheaper extractor model cuts cost the most. A role on
-  another provider needs that provider's key in the environment, for example
-  `ANTHROPIC_API_KEY`.
-
-Precedence:
-
-1. If your provider key env var (for example `OPENROUTER_API_KEY`) is already set in shell, Shandu uses it.
-2. Otherwise, Shandu uses `SHANDU_API_KEY_ENV` + `SHANDU_API_KEY` from config/env.
-
-## CLI
+## Quick answers
 
 ```bash
-shandu run "What did the SELECT trial find about semaglutide and cardiovascular events?" \
-  --effort medium \
-  --researcher agentic \
-  --output report.md
+shandu aisearch "Which open-source browser automation frameworks are maintained in 2026?"
 ```
 
-Research options for `shandu run`:
-
-- `--effort low|medium|high|max`: iterations, parallel tasks, pages and searches
-  per task, and results per query together. Explicit flags below override it.
-- `--max-iterations`, `--parallelism`, `--max-pages-per-task`,
-  `--max-results-per-query`: the individual budgets. `--parallelism` caps how
-  many tasks run at once inside each iteration.
-- `--researcher pipeline|agentic`: a fixed search, rank, and read pass per task,
-  or a tool loop that searches, reads, and follows links.
-- `--include-domain`, `--exclude-domain` (repeatable), `--since YYYY-MM-DD`:
-  source filters.
-- `--clarify`: answer up to three clarifying questions before research starts.
-- `--max-cost USD`: stop researching once this much is spent, then write the report.
-  A model with no known price cannot be budgeted; the run says so and continues.
-- `--no-audit`: skip checking citations against their sources.
-
-During `shandu run`, progress events stream live in the terminal:
-
-- `BOOTSTRAP` / `PLAN` / `SEARCH` / `SYNTHESIZE` / `CITE` / `REPORT` / `COMPLETE`
-- Per-task search events (`Task <id> started` and `Task <id> completed`) with metrics
-- Iteration index and task IDs for long-running model calls
-- Run summary includes model call count across lead, subagents, and extraction
-- Metered calls/tokens/cost appear when provider exposes billing/usage metrics
-
-```bash
-shandu aisearch "latest state of open-source browser automation in 2026" \
-  --max-results 8 \
-  --max-pages 3 \
-  --detail-level high \
-  --output aisearch.md
-```
-
-`aisearch` is the quick mode: a single answer built from live web search, with
-source citations, when a full deep-research run is more than you need.
-
-Citation behavior:
-
-- Final reports enforce numeric citation markers (`[1]`, `[2]`, ...).
-- Raw internal evidence IDs are removed from the rendered markdown.
-- The final `## References` section is rendered from the citation ledger to keep numbering stable.
-
-Other commands:
-
-- `shandu info`
-- `shandu configure`
-- `shandu gui`
-- `shandu aisearch <query>`
-- `shandu list`: stored runs, newest first
-- `shandu show <run_id>`: a stored run's summary and report
-- `shandu report <run_id> [--detail-level] [--model] [--no-audit] [--output]`: rewrite the report from stored evidence, with no new searches
-- `shandu resume <run_id>`: continue a stopped run after its last completed iteration
-- `shandu inspect <run_id>`
-- `shandu clean`: delete runtime caches and keep stored runs; `--all` also deletes the runs and their reports
-
-Each run lives in `<storage_dir>/runs/<run_id>/`: the request, live events,
-evidence checkpointed after every task, per-iteration plans and syntheses, the
-citation ledger, `report.md`, and run stats.
-
-### GUI
-
-Launch the visual control room:
-
-```bash
-shandu gui --host 127.0.0.1 --port 7860
-```
-
-`gradio` ships with the default Shandu install, so `shandu gui` works out of the box.
-
-GUI features:
-
-- one screen that moves through three states: ask, watch the run, read the report
-- run strip with stage, iteration progress, evidence, pages read, model calls, cost, and run id
-- stage sequence (plan, search, synthesize, cite, write) marking the step in flight
-- activity feed and a subagent board (focus, last query, hits, pages, evidence)
-- report set at one reading measure, with a contents list and its reference list
-- markdown download, plus recent reports listed with their question, citations, and cost
-- settings in a sidebar (model, key env var, key, iterations, parallelism, detail, depth, search limits)
-- light and dark, following the browser setting; `?__theme=dark` forces one
-
-### GUI Preview
-
-#### Running a query
-
-![Shandu GUI during a run](assets/main.png)
-
-#### Reading the report
-
-![Shandu GUI report view](assets/report.png)
-
-#### References
-
-![Shandu GUI reference list](assets/citations.png)
+One round of search and reading, then a short answer with its sources, for when
+a full research run is more than you need.
 
 ## Python API
 
@@ -249,47 +149,58 @@ GUI features:
 from shandu import ResearchRequest, ShanduEngine
 
 engine = ShanduEngine.from_config()
-result = engine.run_sync(
-    ResearchRequest(
-        query="AI inference infrastructure 2026",
-        max_iterations=2,
-        parallelism=3,
+try:
+    result = engine.run_sync(
+        ResearchRequest(query="How do solid-state batteries compare with lithium-ion?", effort="high")
     )
-)
-print(result.report_markdown)
-engine.close()  # release the shared HTTP session
+    print(result.report_markdown)
+finally:
+    engine.close()
 ```
+
+## Configuration
+
+Environment variables, which can also live in a `.env` file:
+
+| Variable | Purpose |
+|---|---|
+| `SHANDU_MODEL` | Model for every role. Default `deepseek/deepseek-flash`. |
+| `SHANDU_MODEL_PLANNER`, `_RESEARCHER`, `_EXTRACTOR`, `_SYNTHESIZER`, `_WRITER`, `_AUDITOR` | A model for one role. Extraction makes most of the calls, so a cheaper extractor cuts cost the most. A role on another provider needs that provider's key too. |
+| `SHANDU_API_KEY_ENV`, `SHANDU_API_KEY` | The name of the provider's key variable, and a key Shandu exports under that name when the variable is unset. |
+| `SHANDU_TEMPERATURE`, `SHANDU_MAX_TOKENS` | Sampling temperature (default `0.2`) and output cap (default `32768`). |
+| `SHANDU_STORAGE_DIR` | Where runs and caches live. Default `~/.shandu/storage`. |
+| `SHANDU_SEARCH_BACKEND` | `ddgs` (default), or a search API: `tavily` with `TAVILY_API_KEY`, `brave` with `BRAVE_API_KEY`, `exa` with `EXA_API_KEY`, or `searxng` with `SEARXNG_URL`, an instance with JSON output enabled. A backend whose variable is missing falls back to `ddgs`. |
+| `OPENALEX_API_KEY`, `NCBI_API_KEY` | Optional. Raise the OpenAlex and PubMed rate limits for paper search. |
+| `SHANDU_PROXY` | Optional proxy for fetching pages. |
+
+Saved settings in `~/.shandu/config.json` apply when no variable overrides them.
+
+## How sources and citations are checked
+
+- Every page gets a source class, a credibility score, and flags such as
+  undated, anonymous, promotional, or secondhand. The writer leans on strong
+  sources and names weak support as weak.
+- A claim reaches the report only if its quote is found on the page it came from.
+- Pages below the credibility bar stay out of the references; they can still
+  inform caveats in prose.
+- Copies of one work share a reference: an article's HTML and PDF, a DOI page
+  and its publisher page, an arXiv abstract and full text, or the same paper on
+  two sites.
+- After writing, every cited sentence, bullet, and table row is checked against
+  its sources. Unsupported citations are removed, and the summary counts
+  supported, partial, and removed citations.
+
+Pages are read with layered HTML extraction (trafilatura, then readability, then
+BeautifulSoup) and parsers for PDF, DOCX, XLSX, CSV, and plain text, with
+per-domain rate limits and detection of paywalls, captchas, error pages, and
+empty JavaScript shells.
 
 ## Development
 
 ```bash
-uv run ruff check .
+uv sync --dev
 uv run pytest -q
+uv run ruff check .
 ```
-
-## Web Scraping Pipeline
-
-- Three-layer HTML extraction: trafilatura → readability-lxml → BS4.
-- Document-format support: PDF, DOCX, XLSX, CSV, plaintext, markdown.
-- Structured blocks preserve headings, tables, code, blockquotes, and list items.
-- Per-domain rate limiting with exponential backoff; 3 retry attempts with jitter.
-- Fetch-error detection: paywall, captcha, empty JS shell, blocked, login-required.
-- Publication-date extraction from OpenGraph, JSON-LD, DC, prism, sailthru, parsely meta tags.
-- In-flight deduplication prevents concurrent duplicate fetches of the same URL.
-- Redirect-aware: pages tracked by requested URL so redirects don't cause false misses.
-
-## Source-Quality Enforcement
-
-Shandu grades every page it reads instead of treating all search results as
-equal, so reports lean on primary sources and peer-reviewed work rather than
-undated blogs and marketing pages.
-
-- The per-page extractor classifies each source on the existing extraction call (primary, official, peer-reviewed, journalism, corporate, community, personal blog, advocacy/marketing, aggregator, social profile, or unknown) and records authorship, dating, and whether the page only summarizes work it does not contain.
-- Each evidence record carries a `source_class`, a `credibility_score` derived from those signals, and `quality_flags` such as `undated`, `no_author`, `promotional`, `snippet_only`, or `unassessed`.
-- The synthesizer and reporter weight claims by credibility and name weak-only support explicitly; undated evidence is treated as stale for time-sensitive queries.
-- The adaptive loop treats high-confidence but low-credibility evidence as weak, so weak-source corpora keep searching; run stats report source-class counts and the fraction of dated evidence.
-- The citation ledger excludes evidence below the credibility bar (weak pages can still inform caveats in prose), merges URL variants of the same work (abstract/HTML/PDF) into one reference, and sanitizes boilerplate titles.
-- Claims carry verbatim quotes; a claim whose quote is not in the page it came from is dropped before it can reach the report.
-- After writing, every cited sentence, bullet, and table row is checked against the evidence behind its markers. Unsupported citations are removed, and the run summary counts supported, partial, and removed citations.
 
 MIT license.

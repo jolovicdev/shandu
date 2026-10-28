@@ -93,6 +93,8 @@ def build_theme() -> gr.Theme:
         button_primary_background_fill_hover_dark=_ACCENT_DARK,
         button_primary_border_color=_INK,
         button_primary_border_color_dark="#d8d1c4",
+        button_primary_border_color_hover=_ACCENT,
+        button_primary_border_color_hover_dark=_ACCENT_DARK,
         button_primary_text_color=_PAPER,
         button_primary_text_color_dark=_PAPER_DARK,
         button_secondary_background_fill="transparent",
@@ -244,6 +246,7 @@ body.dark,
 /* Composer */
 
 .shandu-composer {
+  gap: 0 !important;
   margin-top: 30px;
   border: 1px solid var(--line-strong);
   background: var(--surface);
@@ -258,8 +261,10 @@ body.dark,
   border-left-color: var(--accent) !important;
 }
 
-.shandu-composer:focus-within {
-  border-color: var(--ink-3);
+/* Only the question box frames the card; every other control has its own ring. */
+.shandu-composer:has(.shandu-question textarea:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .shandu-question textarea {
@@ -276,11 +281,6 @@ body.dark,
 .shandu-question textarea:focus {
   box-shadow: none !important;
   outline: none !important;
-}
-
-.shandu-composer:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 #shandu-examples {
@@ -331,8 +331,8 @@ body.dark,
 }
 
 .shandu-actions {
-  margin-top: 4px !important;
-  padding: 10px 20px !important;
+  margin-top: 0 !important;
+  padding: 14px 20px !important;
   border-top: 1px solid var(--line) !important;
   gap: 10px !important;
   align-items: center !important;
@@ -388,12 +388,29 @@ body.dark,
   color: var(--ink-3) !important;
   font-size: 0.76rem !important;
   line-height: 1.45 !important;
+  text-wrap: balance;
 }
 
 .shandu-options input,
 .shandu-options select {
   border-radius: 2px !important;
   font-size: 0.88rem !important;
+}
+
+/* A text box and a dropdown in one row share a height at rest; a text box
+   still grows with what is pasted into it. */
+.shandu-options textarea,
+.shandu-options .container > .wrap {
+  min-height: 40px !important;
+}
+
+.shandu-options textarea {
+  padding: 9px 10px !important;
+}
+
+.shandu-options ul.options,
+.shandu-settings ul.options {
+  border: 1px solid var(--line-strong) !important;
 }
 
 .shandu-options .shandu-note {
@@ -472,7 +489,8 @@ body.dark,
   overflow-wrap: anywhere;
 }
 
-.shandu-fault {
+.shandu-fault,
+.shandu-hint {
   margin: 16px 0 0;
   padding: 12px 14px;
   border-left: 2px solid var(--err);
@@ -490,12 +508,6 @@ body.dark,
   font-size: 0.74rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
-}
-
-.shandu-hint {
-  margin: 18px 0 0;
-  color: var(--ink-2);
-  font-size: 0.9rem;
 }
 
 .shandu-steps {
@@ -1174,6 +1186,24 @@ select:focus-visible {
   outline-offset: 2px !important;
 }
 
+/* The panels clip an outline on three sides, so a field is ringed inside its
+   border. A dropdown's border is on the wrapper around its input. */
+.shandu-options :is(textarea, input:not([type=checkbox], [role=listbox])):focus-visible,
+.shandu-settings :is(textarea, input:not([type=range], [role=listbox])):focus-visible {
+  outline: none !important;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.shandu-options [role=listbox]:focus-visible,
+.shandu-settings [role=listbox]:focus-visible {
+  outline: none !important;
+}
+
+.shandu-options .container > .wrap:focus-within,
+.shandu-settings .container > .wrap:focus-within {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 @media (max-width: 860px) {
   .shandu-masthead {
     flex-direction: column;
@@ -1205,6 +1235,14 @@ select:focus-visible {
 @media (max-width: 560px) {
   .shandu-actions {
     flex-wrap: wrap !important;
+  }
+
+  .shandu-option-row {
+    margin-bottom: 0 !important;
+  }
+
+  .shandu-options .column {
+    gap: 12px !important;
   }
 
   #shandu-examples {

@@ -141,6 +141,28 @@ def test_ledger_strips_markup_and_merges_variants_that_differ_only_by_it() -> No
     assert set(citations[0].evidence_ids) == {"e1", "e2"}
 
 
+def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
+    agent = CitationAgent()
+    evidence = [
+        _record("e1", "https://www.crowdstrike.com/blog/report/", "Falcon Content Update Preliminary Report | CrowdStrike"),
+        _record(
+            "e2",
+            "https://blogs.microsoft.com/blog/help/",
+            "Helping our customers through the outage - The Official Microsoft Blog",
+            site_name="The Official Microsoft Blog",
+        ),
+        _record("e3", "https://learn.microsoft.com/qmr", "Configure quick machine recovery - Windows Server"),
+    ]
+
+    citations = asyncio.run(agent.build_citations("q", evidence))
+
+    assert [entry.title for entry in citations] == [
+        "Falcon Content Update Preliminary Report",
+        "Helping our customers through the outage",
+        "Configure quick machine recovery - Windows Server",
+    ]
+
+
 def test_ledger_names_an_untitled_document_after_its_file() -> None:
     agent = CitationAgent()
     url = "https://gov.example/Documents/2025/Informe-no-confidencial-Comite-28A.pdf"

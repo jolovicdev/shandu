@@ -20,6 +20,8 @@ _MIN_CITABLE_CONFIDENCE = 0.35
 # titles ("10-K", "FAQ") collide across unrelated pages on the same site.
 _MIN_MERGE_TITLE_LEN = 12
 _MARKUP = re.compile(r"<[^>]+>")
+# Page titles often end with their site's name: "Incident report | CrowdStrike".
+_SITE_SUFFIX = re.compile(r"^(?P<head>.*\S)\s+[|\-–—]\s+(?P<tail>[^|\-–—]+)$")
 
 
 class CitationAgent:
@@ -65,6 +67,18 @@ class CitationAgent:
         return host, normalized
 
     @staticmethod
+    def _without_site_suffix(title: str, publisher: str, host: str) -> str:
+        """Drop a trailing site name that the reference already shows as its publisher."""
+        match = _SITE_SUFFIX.match(title)
+        if match is None or len(match.group("head").split()) < 3:
+            return title
+        labels = host.split(".")
+        brand = labels[-2] if len(labels) >= 2 else host
+        names = {re.sub(r"[\W_]+", "", name.casefold()) for name in (publisher, brand)}
+        tail = re.sub(r"[\W_]+", "", match.group("tail").casefold())
+        return match.group("head") if tail in names else title
+
+    @staticmethod
     def _title_from_url(url: str) -> str:
         """A document served without a title is named after its file."""
         stem = unquote(urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]).rsplit(".", 1)[0]
@@ -86,6 +100,7 @@ class CitationAgent:
             title = self._sanitize_title(first.title, "")
             if not title or title.casefold() == host.casefold():
                 title = self._title_from_url(url) or publisher
+            title = self._without_site_suffix(title, publisher, host)
             evidence_ids = sorted({entry.evidence_id for entry in items})
             # Fallback titles equal the publisher; merging on them would fuse
             # unrelated pages from the same site.

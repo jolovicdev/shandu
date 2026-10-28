@@ -60,6 +60,37 @@ DEFAULT_STORAGE_DIR = "~/.shandu/storage"
 # Research roles that can each run on their own model.
 Role = Literal["planner", "researcher", "extractor", "synthesizer", "writer", "auditor"]
 ROLES: tuple[Role, ...] = get_args(Role)
+# Research budget presets for --effort and the GUI's Effort option.
+EFFORT_PRESETS: dict[str, dict[str, int]] = {
+    "low": {
+        "max_iterations": 1,
+        "parallelism": 2,
+        "max_pages_per_task": 3,
+        "max_results_per_query": 6,
+        "max_searches_per_task": 3,
+    },
+    "medium": {
+        "max_iterations": 2,
+        "parallelism": 3,
+        "max_pages_per_task": 6,
+        "max_results_per_query": 8,
+        "max_searches_per_task": 6,
+    },
+    "high": {
+        "max_iterations": 3,
+        "parallelism": 4,
+        "max_pages_per_task": 6,
+        "max_results_per_query": 8,
+        "max_searches_per_task": 8,
+    },
+    "max": {
+        "max_iterations": 4,
+        "parallelism": 6,
+        "max_pages_per_task": 8,
+        "max_results_per_query": 10,
+        "max_searches_per_task": 10,
+    },
+}
 _LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 
 

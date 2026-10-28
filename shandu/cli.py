@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from . import __version__
-from .config import config, infer_api_key_env_name
+from .config import EFFORT_PRESETS, config, infer_api_key_env_name
 from .contracts import ResearchRequest, ResearchRunResult, RunEvent
 from .engine import ShanduEngine
 from .interfaces import DepthPolicy, DetailLevel
@@ -26,36 +26,6 @@ console = ui.console
 err_console = Console(theme=ui.theme, stderr=True)
 
 _DETAIL_LEVELS: tuple[DetailLevel, ...] = ("concise", "standard", "high")
-_EFFORT_PRESETS: dict[str, dict[str, int]] = {
-    "low": {
-        "max_iterations": 1,
-        "parallelism": 2,
-        "max_pages_per_task": 3,
-        "max_results_per_query": 6,
-        "max_searches_per_task": 3,
-    },
-    "medium": {
-        "max_iterations": 2,
-        "parallelism": 3,
-        "max_pages_per_task": 6,
-        "max_results_per_query": 8,
-        "max_searches_per_task": 6,
-    },
-    "high": {
-        "max_iterations": 3,
-        "parallelism": 4,
-        "max_pages_per_task": 6,
-        "max_results_per_query": 8,
-        "max_searches_per_task": 8,
-    },
-    "max": {
-        "max_iterations": 4,
-        "parallelism": 6,
-        "max_pages_per_task": 8,
-        "max_results_per_query": 10,
-        "max_searches_per_task": 10,
-    },
-}
 _DEPTH_POLICIES: tuple[DepthPolicy, ...] = ("adaptive", "fixed")
 
 
@@ -239,7 +209,7 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 @click.option(
     "--effort",
     default=None,
-    type=click.Choice(list(_EFFORT_PRESETS)),
+    type=click.Choice(list(EFFORT_PRESETS)),
     help="Research budget preset; explicit budget flags override it.",
 )
 @click.option(
@@ -285,7 +255,7 @@ def run_command(
         str(config.get("orchestration", "depth_policy", "adaptive")),
         "adaptive",
     )
-    preset = _EFFORT_PRESETS.get(effort or "", {})
+    preset = EFFORT_PRESETS.get(effort or "", {})
 
     def budget(flag: int | None, key: str, fallback: int) -> int:
         if flag is not None:

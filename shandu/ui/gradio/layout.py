@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import queue
+import re
 import threading
 from concurrent import futures
+from datetime import date
 from html import escape
 from pathlib import Path
 from typing import Any
 
 import gradio as gr
+from pydantic import ValidationError
 
 from ...contracts import ResearchRequest, ResearchRunResult, RunEvent
-from ...config import infer_api_key_env_name
+from ...config import EFFORT_PRESETS, infer_api_key_env_name
 from ...engine import ShanduEngine
 from ...runtime import get_async_runner
 from ...services.report import RecentReport, list_recent_reports
@@ -52,6 +55,23 @@ _ERROR_HINTS = (
 )
 
 EMPTY_QUESTION = "<p class='shandu-hint'>Type a research question first.</p>"
+
+EFFORT_CHOICES = [
+    ("From settings", "settings"),
+    ("Low", "low"),
+    ("Medium", "medium"),
+    ("High", "high"),
+    ("Max", "max"),
+]
+RESEARCHER_CHOICES = [("Pipeline", "pipeline"), ("Agentic", "agentic")]
+OPTIONS_NOTE = (
+    "An effort preset replaces the budget in Settings for this run. The agentic "
+    "researcher also follows links to primary sources, so it takes longer and costs more."
+)
+
+
+def _hint(message: str) -> str:
+    return f"<p class='shandu-hint'>{escape(message)}</p>"
 
 
 def _masthead(model: str) -> str:
@@ -195,6 +215,23 @@ def build_gui() -> gr.Blocks:
                 )
                 run_button = gr.Button("Research", variant="primary")
                 stop_button = gr.Button("Stop", variant="secondary", visible=False)
+            with gr.Accordion("Options", open=False, elem_classes=["shandu-options"]):
+                with gr.Row(elem_classes=["shandu-option-row"]):
+                    effort = gr.Dropdown(choices=EFFORT_CHOICES, value="settings", label="Effort")
+                    researcher = gr.Dropdown(
+                        choices=RESEARCHER_CHOICES, value="pipeline", label="Researcher"
+                    )
+                    max_cost = gr.Textbox(label="Max cost (USD)", placeholder="No limit")
+                with gr.Row(elem_classes=["shandu-option-row"]):
+                    include_sites = gr.Textbox(
+                        label="Only these sites", placeholder="nature.com, who.int"
+                    )
+                    exclude_sites = gr.Textbox(
+                        label="Skip these sites", placeholder="example.com"
+                    )
+                    since = gr.Textbox(label="Pages dated since", placeholder="YYYY-MM-DD")
+                audit = gr.Checkbox(value=True, label="Check every citation against its sources")
+                gr.Markdown(OPTIONS_NOTE, elem_classes=["shandu-note"])
 
         strip = gr.HTML(
             initial_state.strip_html(running=False), elem_classes=["shandu-plain"]
@@ -279,10 +316,20 @@ def build_gui() -> gr.Blocks:
             concurrency_limit=1,
         )
 
+        option_inputs: list[Any] = [
+            effort,
+            researcher,
+            max_cost,
+            audit,
+            include_sites,
+            exclude_sites,
+            since,
+        ]
+
         run_event = gr.on(
             triggers=[run_button.click, query.submit],
             fn=_run_action,
-            inputs=[query] + config_inputs,
+            inputs=[query] + config_inputs + option_inputs,
             outputs=[
                 strip,
                 doc_title,
@@ -372,11 +419,62 @@ def _run_action(
     depth_value: str,
     results_value: float,
     pages_value: float,
+    effort_value: str = "settings",
+    researcher_value: str = "pipeline",
+    max_cost_value: str = "",
+    audit_value: bool = True,
+    include_value: str = "",
+    exclude_value: str = "",
+    since_value: str = "",
     http_request: gr.Request | None = None,
 ):
     text = query_value.strip()
     if not text:
         yield (EMPTY_QUESTION, *(gr.skip(),) * 12)
+        return
+
+    since_text = (since_value or "").strip()
+    try:
+        since_day = date.fromisoformat(since_text) if since_text else None
+    except ValueError:
+        yield (_hint("Pages dated since takes a date like 2025-01-31."), *(gr.skip(),) * 12)
+        return
+
+    cost_text = (max_cost_value or "").strip().removeprefix("$")
+    try:
+        max_cost_usd = float(cost_text) if cost_text else None
+    except ValueError:
+        max_cost_usd = -1.0
+    if max_cost_usd is not None and max_cost_usd <= 0:
+        yield (
+            _hint("Max cost takes an amount above zero, like 0.50. Leave it blank for no limit."),
+            *(gr.skip(),) * 12,
+        )
+        return
+
+    preset = EFFORT_PRESETS.get(effort_value or "", {})
+    try:
+        request = ResearchRequest(
+            query=text,
+            max_iterations=preset.get("max_iterations", int(iter_value)),
+            parallelism=preset.get("parallelism", int(par_value)),
+            detail_level=resolved_detail_level(detail_value),
+            depth_policy=resolved_depth_policy(depth_value),
+            max_results_per_query=preset.get("max_results_per_query", int(results_value)),
+            max_pages_per_task=preset.get("max_pages_per_task", int(pages_value)),
+            max_searches_per_task=preset.get("max_searches_per_task", 6),
+            effort=effort_value if effort_value in EFFORT_PRESETS else "medium",
+            researcher="agentic" if researcher_value == "agentic" else "pipeline",
+            audit=bool(audit_value),
+            max_cost_usd=max_cost_usd,
+            include_domains=_sites(include_value),
+            exclude_domains=_sites(exclude_value),
+            since=since_day,
+        )
+    except ValidationError as exc:
+        problem = exc.errors()[0]
+        field = str(problem["loc"][0]).replace("_", " ") if problem["loc"] else "options"
+        yield (_hint(f"Check {field}: {problem['msg']}."), *(gr.skip(),) * 12)
         return
 
     save_configuration(
@@ -393,16 +491,7 @@ def _run_action(
         max_pages_per_task=int(pages_value),
     )
 
-    request = ResearchRequest(
-        query=text,
-        max_iterations=int(iter_value),
-        parallelism=int(par_value),
-        detail_level=resolved_detail_level(detail_value),
-        depth_policy=resolved_depth_policy(depth_value),
-        max_results_per_query=int(results_value),
-        max_pages_per_task=int(pages_value),
-    )
-    state = GuiRunState(max_iterations=int(iter_value))
+    state = GuiRunState(max_iterations=request.max_iterations)
     state.stage = "bootstrap"
     yield _outputs(state=state, running=True, download_path=None)
 
@@ -478,6 +567,10 @@ def _run_action(
 
     state.apply_error("Run did not return a valid result.")
     yield _outputs(state=state, running=False, download_path=None)
+
+
+def _sites(value: str | None) -> list[str]:
+    return [part for part in re.split(r"[\s,]+", value or "") if part]
 
 
 def _stop_action(http_request: gr.Request) -> None:

@@ -181,7 +181,7 @@ body.dark,
   padding-right: clamp(16px, 4vw, 32px) !important;
 }
 
-.gradio-container footer .show-api-divider {
+.gradio-container footer .divider {
   display: none !important;
 }
 
@@ -360,6 +360,52 @@ body.dark,
   cursor: pointer !important;
 }
 
+/* Run options: a closed row at the foot of the composer. */
+
+.shandu-options {
+  border-top: 1px solid var(--line) !important;
+  padding: 0 20px !important;
+}
+
+.shandu-options .label-wrap {
+  padding: 10px 0 !important;
+}
+
+.shandu-options .label-wrap span {
+  color: var(--ink-3) !important;
+  font-size: 0.8rem !important;
+  font-weight: 500 !important;
+}
+
+/* Gradio wraps neighbouring inputs in one .form with no gap between them. */
+.shandu-option-row,
+.shandu-options .form {
+  gap: 12px !important;
+}
+
+.shandu-option-row {
+  margin-bottom: 4px !important;
+}
+
+.shandu-options span.md,
+.shandu-options span.md p {
+  color: var(--ink-3) !important;
+  font-size: 0.76rem !important;
+  line-height: 1.45 !important;
+}
+
+.shandu-options input,
+.shandu-options select {
+  border-radius: 2px !important;
+  font-size: 0.88rem !important;
+}
+
+.shandu-options .shandu-note {
+  margin: 2px 0 14px !important;
+}
+
+.shandu-options label span,
+.shandu-options [data-testid="block-info"],
 .shandu-settings label span,
 .shandu-settings [data-testid="block-info"] {
   color: var(--ink-3) !important;

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
+from datetime import date
 from types import SimpleNamespace
 
 import gradio as gr
+import pytest
 
 import shandu.ui.gradio.app as app_module
 from shandu.config import config
@@ -165,7 +168,7 @@ def test_stop_ends_the_sessions_run_as_stopped(monkeypatch) -> None:
     page = SimpleNamespace(session_hash="s1")
 
     gen = layout_module._run_action(
-        "q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3, page
+        "q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3, http_request=page
     )
     next(gen)
     next(gen)
@@ -204,6 +207,79 @@ def test_empty_question_asks_for_one_without_a_failed_run() -> None:
 
     assert outputs[0] == layout_module.EMPTY_QUESTION
     assert len(outputs) == 13
+
+
+def _capture_request(monkeypatch, *args) -> object:
+    captured = {}
+
+    class CapturingEngine(_BlockingEngine):
+        async def run(self, request, progress_callback=None) -> None:
+            captured["request"] = request
+            raise RuntimeError("captured")
+
+    monkeypatch.setattr(layout_module, "save_configuration", lambda **kwargs: "saved")
+    monkeypatch.setattr(layout_module, "ShanduEngine", CapturingEngine)
+    list(layout_module._run_action("q", "m", "", "", 0.2, 100, 2, 3, "high", "adaptive", 8, 6, *args))
+    return captured["request"]
+
+
+def test_run_options_reach_the_request(monkeypatch) -> None:
+    request = _capture_request(
+        monkeypatch,
+        "low",
+        "agentic",
+        "0.5",
+        False,
+        "nature.com, https://www.who.int/news",
+        "example.com",
+        "2025-01-31",
+    )
+
+    assert (request.max_iterations, request.parallelism, request.max_pages_per_task) == (1, 2, 3)
+    assert (request.max_results_per_query, request.max_searches_per_task) == (6, 3)
+    assert (request.researcher, request.audit, request.max_cost_usd) == ("agentic", False, 0.5)
+    assert request.include_domains == ["nature.com", "who.int"]
+    assert request.exclude_domains == ["example.com"]
+    assert request.since == date(2025, 1, 31)
+
+
+def test_effort_from_settings_keeps_the_settings_budget(monkeypatch) -> None:
+    request = _capture_request(monkeypatch, "settings", "pipeline", "", True, "", "", "")
+
+    assert (request.max_iterations, request.parallelism, request.max_pages_per_task) == (2, 3, 6)
+    assert (request.researcher, request.audit, request.max_cost_usd) == ("pipeline", True, None)
+
+
+def test_a_malformed_since_date_asks_for_a_date() -> None:
+    outputs = next(
+        layout_module._run_action(
+            "q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3, since_value="31/01/2025"
+        )
+    )
+
+    assert "takes a date like 2025-01-31" in outputs[0]
+    assert len(outputs) == 13
+
+
+@pytest.mark.parametrize("amount", ["abc", "0"])
+def test_a_max_cost_that_is_not_a_positive_amount_is_refused(amount: str) -> None:
+    outputs = next(
+        layout_module._run_action(
+            "q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3, max_cost_value=amount
+        )
+    )
+
+    assert "Max cost takes an amount above zero" in outputs[0]
+
+
+def test_run_button_sends_every_run_option() -> None:
+    demo = build_gui()
+    run = next(dep for dep in demo.fns.values() if getattr(dep.fn, "__name__", "") == "_run_action")
+    handler_inputs = [
+        name for name in inspect.signature(layout_module._run_action).parameters if name != "http_request"
+    ]
+
+    assert len(run.inputs) == len(handler_inputs)
 
 
 def test_save_and_run_share_runtime_concurrency_group() -> None:

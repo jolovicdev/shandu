@@ -8,8 +8,16 @@ GUI, with any model [LiteLLM](https://docs.litellm.ai/) supports.
 
 ![A finished report in the Shandu web GUI](assets/report.png)
 
-Example reports are in [`examples/`](examples/). The architecture is described
-in [`ARCH.md`](ARCH.md).
+Example reports, each written by `deepseek/deepseek-flash`:
+
+- [The CrowdStrike outage of July 2024](examples/crowdstrike-outage.md): default
+  effort, 26 sources.
+- [Microplastics in human brain tissue](examples/microplastics-in-the-brain.md):
+  default effort, 18 sources.
+- [KV-cache compression for long-context inference](examples/kv-cache-compression.md):
+  high effort, 34 sources.
+
+The architecture is described in [`ARCH.md`](ARCH.md).
 
 ## How a run works
 

@@ -100,6 +100,32 @@ def test_report_service_normalizes_evidence_id_markers_to_numeric_citations() ->
     assert "[Source](https://energy.example/analysis)" in rendered
 
 
+def test_dropped_markers_take_their_leading_space_with_them() -> None:
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown=(
+            "# Report\n\n## Summary\n\n"
+            "The reply could not be read [99]. Signal depends on size [1] and density [42], mostly.\n"
+        ),
+    )
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=["e1"],
+            url="https://example.com/a",
+            title="A",
+            publisher="example.com",
+            accessed_at="2026-02-21",
+        )
+    ]
+
+    rendered = ReportService().render(ResearchRequest(query="q"), draft, citations)
+
+    assert "The reply could not be read. Signal depends on size [1] and density, mostly." in rendered
+
+
 def test_report_service_reindexes_citation_numbers_without_gaps() -> None:
     service = ReportService()
     request = ResearchRequest(query="Compare X vs Y")

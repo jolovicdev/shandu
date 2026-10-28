@@ -403,19 +403,21 @@ class ReportService:
                 if evidence_id:
                     evidence_to_number[evidence_id] = number
 
-        marker_pattern = re.compile(r"\[([A-Za-z0-9_-]{1,64})\]")
+        # A dropped marker takes the spaces before it, so "size [99]." reads
+        # "size." rather than "size .".
+        marker_pattern = re.compile(r"([ \t]*)\[([A-Za-z0-9_-]{1,64})\]")
 
         def replace(match: re.Match[str]) -> str:
-            token = match.group(1).strip()
+            space, token = match.group(1), match.group(2).strip()
             if not token:
                 return ""
             if token.isdigit():
                 if token in valid_numbers:
-                    return f"[{int(token)}]"
+                    return f"{space}[{int(token)}]"
                 return ""
             mapped = evidence_to_number.get(token)
             if mapped:
-                return f"[{mapped}]"
+                return f"{space}[{mapped}]"
             if re.fullmatch(r"[0-9a-fA-F]{32}", token):
                 return ""
             return match.group(0)
@@ -481,13 +483,13 @@ class ReportService:
             id_map[old_id] = new_id
 
         def replace(match: re.Match[str]) -> str:
-            old_id = int(match.group(1))
+            old_id = int(match.group(2))
             mapped = id_map.get(old_id)
             if mapped is None:
                 return ""
-            return f"[{mapped}]"
+            return f"{match.group(1)}[{mapped}]"
 
-        normalized_body = marker_pattern.sub(replace, body)
+        normalized_body = re.sub(r"([ \t]*)\[(\d+)\]", replace, body)
         normalized_body = re.sub(r"(\[(\d+)\])(?:\s*\[\2\])+", r"[\2]", normalized_body)
         normalized_body = re.sub(r"[ \t]+\n", "\n", normalized_body)
         normalized_body = re.sub(r"\n{3,}", "\n\n", normalized_body).strip()

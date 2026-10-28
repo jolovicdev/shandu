@@ -502,6 +502,8 @@ _REJECTED_KEY = (
     [
         (_REJECTED_KEY, "key"),
         ("litellm.AuthenticationError: OpenAIException - Incorrect API key provided", "key"),
+        ('litellm.BadRequestError: VertexAIException - {"status": "PERMISSION_DENIED"}', "key"),
+        ("litellm.BadRequestError: AnthropicException - invalid x-api-key", "key"),
         ("litellm.BadRequestError: LLM Provider NOT provided. You passed model=bogus/x", "model"),
         (
             'litellm.BadRequestError: DeepseekException - {"error":{"message":"The supported API '

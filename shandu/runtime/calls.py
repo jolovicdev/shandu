@@ -35,7 +35,7 @@ _CREDIT = re.compile(
 )
 _RATE_LIMIT = re.compile(r"rate[ _]?limit|too many requests", re.IGNORECASE)
 _KEY = re.compile(
-    r"authenticat|api[ _]?key|unauthori[sz]ed|no auth credentials|permission ?denied",
+    r"authenticat|api[ _-]?key|unauthori[sz]ed|no auth credentials|permission[ _]?denied",
     re.IGNORECASE,
 )
 _MODEL = re.compile(

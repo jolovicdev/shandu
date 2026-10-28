@@ -377,10 +377,13 @@ def test_gradio_stopped_run_marks_open_subagents_stopped() -> None:
         RunEvent(stage="search", message="Task t1 completed", payload={"task_id": "t1"})
     )
 
+    state.run_id = "e319d654da6f4c02977"
     state.apply_stopped()
+    strip = state.strip_html(running=False)
 
     assert [row["Status"] for row in state.task_rows.values()] == ["completed", "stopped"]
-    assert "<span class='stage'>Stopped</span>" in state.strip_html(running=False)
+    assert "<span class='stage'>Stopped</span>" in strip
+    assert "Continue it with <code>shandu resume e319d654</code>." in strip
 
 
 def test_gradio_feed_lines_use_words_not_raw_fields() -> None:

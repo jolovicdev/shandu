@@ -215,6 +215,12 @@ class GuiRunState:
         )
         if running or self.stage == "complete":
             strip += self._steps_html()
+        if self.stage == "stopped" and self.run_id:
+            run = escape(self.run_id[:8])
+            strip += (
+                "<p class='shandu-stop-note'>Progress up to the last finished iteration is "
+                f"saved as run {run}. Continue it with <code>shandu resume {run}</code>.</p>"
+            )
         if not self.errors:
             return strip
         faults = "".join(

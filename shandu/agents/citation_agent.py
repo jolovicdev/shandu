@@ -122,7 +122,7 @@ class CitationAgent:
         """A document served without a title is named after its file."""
         stem = unquote(urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]).rsplit(".", 1)[0]
         words = " ".join(re.sub(r"[-_+]+", " ", stem).split())
-        return words if sum(char.isalpha() for char in words) >= 8 else ""
+        return words[:1].upper() + words[1:] if sum(char.isalpha() for char in words) >= 8 else ""
 
     def _build_ledger(self, evidence: list[EvidenceRecord]) -> list[CitationEntry]:
         grouped: dict[str, list[EvidenceRecord]] = {}
@@ -137,8 +137,15 @@ class CitationAgent:
             host = urlparse(url).netloc.removeprefix("www.")
             publisher = first.site_name or host or "unknown"
             title = self._sanitize_title(first.title, "")
-            if not title or title.casefold() == host.casefold():
-                title = self._title_from_url(url) or publisher
+            from_url = self._title_from_url(url)
+            # A one-word title is usually the site's section ("Solutions")
+            # when the address names the article itself.
+            if (
+                not title
+                or title.casefold() == host.casefold()
+                or (len(title.split()) == 1 and len(from_url.split()) >= 3)
+            ):
+                title = from_url or publisher
             title = self._without_site_suffix(title, publisher, host)
             evidence_ids = sorted({entry.evidence_id for entry in items})
             keys = self._same_work_keys(url, title, publisher)

@@ -189,6 +189,20 @@ def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
     ]
 
 
+def test_ledger_prefers_the_address_over_a_one_word_section_title() -> None:
+    evidence = [
+        _record("e1", "https://www.eci.com/blog/crowdstrike-incident-what-happened-and-what-now", "Solutions"),
+        _record("e2", "https://en.wikipedia.org/wiki/Microplastics", "Microplastics"),
+    ]
+
+    citations = asyncio.run(CitationAgent().build_citations("q", evidence))
+
+    assert [entry.title for entry in citations] == [
+        "Crowdstrike incident what happened and what now",
+        "Microplastics",
+    ]
+
+
 def test_ledger_names_an_untitled_document_after_its_file() -> None:
     agent = CitationAgent()
     url = "https://gov.example/Documents/2025/Informe-no-confidencial-Comite-28A.pdf"

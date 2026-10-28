@@ -60,6 +60,7 @@ def cli() -> None:
 
 @cli.command()
 def info() -> None:
+    """Show the model, key status, and storage in use."""
     api_key_env = config.get_api_key_env_name()
     key_in_env = bool(api_key_env and os.getenv(api_key_env))
     key_in_config = bool(str(config.get("api", "api_key", "")).strip())
@@ -91,6 +92,7 @@ def info() -> None:
 
 @cli.command()
 def configure() -> None:
+    """Choose the model, save its API key, and set run defaults."""
     model = click.prompt("Default model", default=config.get("api", "model"))
     inferred_env_name = infer_api_key_env_name(model)
     api_key_env = click.prompt(
@@ -142,12 +144,15 @@ def configure() -> None:
 
 
 @cli.command("gui")
-@click.option("--host", default="127.0.0.1", show_default=True)
-@click.option("--port", default=7860, type=int, show_default=True)
+@click.option("--host", default="127.0.0.1", show_default=True, help="Address to listen on.")
+@click.option("--port", default=7860, type=int, show_default=True, help="Port to listen on.")
 @click.option("--share", is_flag=True, help="Create a public gradio share URL.")
 @click.option("--auth", default=None, help="Basic auth credentials as user:pass.")
-@click.option("--browser/--no-browser", default=False, show_default=True)
+@click.option(
+    "--browser/--no-browser", default=False, show_default=True, help="Open the GUI in a browser tab."
+)
 def gui_command(host: str, port: int, share: bool, auth: str | None, browser: bool) -> None:
+    """Open the web GUI."""
     credentials = _parse_gui_auth(auth)
     if share and credentials is None:
         raise click.ClickException("--share requires --auth user:pass.")
@@ -182,15 +187,28 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 
 @cli.command("run")
 @click.argument("query")
-@click.option("--max-iterations", default=None, type=int)
-@click.option("--parallelism", default=None, type=int)
-@click.option("--detail-level", default=None, type=click.Choice(["concise", "standard", "high"]))
-@click.option("--depth-policy", default=None, type=click.Choice(["adaptive", "fixed"]))
-@click.option("--max-results-per-query", default=None, type=int)
-@click.option("--max-pages-per-task", default=None, type=int)
-@click.option("--output", default=None)
-@click.option("--json-output", is_flag=True)
-@click.option("--verbose", is_flag=True)
+@click.option("--max-iterations", default=None, type=int, help="Research loops before writing (1-8).")
+@click.option("--parallelism", default=None, type=int, help="Tasks that run at once in each loop (1-8).")
+@click.option(
+    "--detail-level",
+    default=None,
+    type=click.Choice(["concise", "standard", "high"]),
+    help="Report length: about 1,200, 2,200, or 3,600 words.",
+)
+@click.option(
+    "--depth-policy",
+    default=None,
+    type=click.Choice(["adaptive", "fixed"]),
+    help="adaptive keeps searching while a sub-question lacks two credible sources; "
+    "fixed lets the lead agent decide.",
+)
+@click.option(
+    "--max-results-per-query", default=None, type=int, help="Search results ranked per query (1-20)."
+)
+@click.option("--max-pages-per-task", default=None, type=int, help="Pages each task reads (1-10).")
+@click.option("--output", default=None, help="Save the report, or with --json-output the full result, to this file.")
+@click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
+@click.option("--verbose", is_flag=True, help="Print a recap of every stage when the run ends.")
 @click.option(
     "--clarify", is_flag=True, help="Answer up to three clarifying questions first."
 )
@@ -246,6 +264,7 @@ def run_command(
     no_audit: bool,
     max_cost: float | None,
 ) -> None:
+    """Research a question and write a report with citations."""
     diag = err_console if (json_output and not output) else console
     default_detail = _resolve_detail_level(
         str(config.get("orchestration", "detail_level", "high")),
@@ -411,9 +430,9 @@ def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
 
 @cli.command("resume")
 @click.argument("run_id")
-@click.option("--output", default=None)
-@click.option("--json-output", is_flag=True)
-@click.option("--verbose", is_flag=True)
+@click.option("--output", default=None, help="Save the report, or with --json-output the full result, to this file.")
+@click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
+@click.option("--verbose", is_flag=True, help="Print a recap of every stage when the run ends.")
 def resume_command(
     run_id: str, output: str | None, json_output: bool, verbose: bool
 ) -> None:
@@ -435,13 +454,13 @@ def resume_command(
     _deliver(engine, result, output, json_output, diag)
 
 
-@cli.command("report")
+@cli.command("report", short_help="Rewrite a stored run's report without searching.")
 @click.argument("run_id")
 @click.option("--detail-level", default=None, type=click.Choice(["concise", "standard", "high"]))
 @click.option("--model", default=None, help="Model for the report writer.")
 @click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
-@click.option("--output", default=None)
-@click.option("--json-output", is_flag=True)
+@click.option("--output", default=None, help="Save the report, or with --json-output the full result, to this file.")
+@click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
 def report_command(
     run_id: str,
     detail_level: str | None,
@@ -515,11 +534,17 @@ def show_command(run_id: str) -> None:
 
 @cli.command("aisearch")
 @click.argument("query")
-@click.option("--max-results", default=8, type=int)
-@click.option("--max-pages", default=3, type=int)
-@click.option("--detail-level", default="standard", type=click.Choice(["concise", "standard", "high"]))
-@click.option("--output", default=None)
-@click.option("--json-output", is_flag=True)
+@click.option("--max-results", default=8, type=int, show_default=True, help="Search results to choose pages from.")
+@click.option("--max-pages", default=3, type=int, show_default=True, help="Pages to read.")
+@click.option(
+    "--detail-level",
+    default="standard",
+    show_default=True,
+    type=click.Choice(["concise", "standard", "high"]),
+    help="Answer length.",
+)
+@click.option("--output", default=None, help="Save the answer, or with --json-output the full result, to this file.")
+@click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
 def ai_search_command(
     query: str,
     max_results: int,
@@ -528,6 +553,7 @@ def ai_search_command(
     output: str | None,
     json_output: bool,
 ) -> None:
+    """Answer a question from one round of web search, with citations."""
     diag = err_console if (json_output and not output) else console
     diag.print(
         ui.header(
@@ -567,6 +593,7 @@ def ai_search_command(
 @cli.command()
 @click.argument("run_id")
 def inspect(run_id: str) -> None:
+    """Show a stored run's status, timestamps, event count, and stats."""
     engine = ShanduEngine.from_config()
     run_id = _resolve_run_id(engine, run_id)
     payload = engine.inspect_run(run_id)
@@ -577,7 +604,7 @@ def inspect(run_id: str) -> None:
 
 
 @cli.command()
-@click.option("--force", is_flag=True)
+@click.option("--force", is_flag=True, help="Delete without asking first.")
 @click.option(
     "--all", "include_runs", is_flag=True, help="Also delete stored runs and their reports."
 )

@@ -20,6 +20,9 @@ _MIN_CITABLE_CONFIDENCE = 0.35
 # titles ("10-K", "FAQ") collide across unrelated pages on the same site.
 _MIN_MERGE_TITLE_LEN = 12
 _MARKUP = re.compile(r"<[^>]+>")
+# Documentation themes end a heading with its anchor ("Quantized KV Cache¶").
+# A "#" after a capital is part of a name such as C#.
+_HEADING_ANCHOR = re.compile(r"(?:\s*\u00b6|(?<=[a-z])#)$")
 # Copies of one paper share a DOI or an arXiv id, and a publisher's PDF sits
 # beside its HTML page with ".pdf" added.
 _DOI = re.compile(r"10\.\d{4,9}/[^\s?#]+", re.IGNORECASE)
@@ -56,6 +59,7 @@ class CitationAgent:
     def _sanitize_title(title: str, fallback: str) -> str:
         # Publisher pages leave markup and soft hyphens inside titles.
         cleaned = " ".join(_MARKUP.sub("", title).replace("\u00ad", "").split())
+        cleaned = _HEADING_ANCHOR.sub("", cleaned)
         if len(cleaned) < 3 or cleaned.lower().startswith(
             ("http://", "https://", "www.")
         ):

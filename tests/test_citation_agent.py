@@ -258,3 +258,19 @@ def test_ledger_leaves_out_pages_the_extractor_judged_off_topic() -> None:
     citations = asyncio.run(agent.build_citations("query", [useful, off_topic]))
 
     assert [entry.url for entry in citations] == ["https://example.org/study"]
+
+
+def test_ledger_drops_a_documentation_heading_anchor_from_titles() -> None:
+    evidence = [
+        _record("e1", "https://docs.vllm.ai/quantized-kv", "Quantized KV Cache¶"),
+        _record("e2", "https://nvidia.github.io/attention", "Multi-Head, Multi-Query, and Group-Query Attention#"),
+        _record("e3", "https://learn.example/csharp", "Getting started with C#"),
+    ]
+
+    citations = asyncio.run(CitationAgent().build_citations("q", evidence))
+
+    assert [entry.title for entry in citations] == [
+        "Quantized KV Cache",
+        "Multi-Head, Multi-Query, and Group-Query Attention",
+        "Getting started with C#",
+    ]

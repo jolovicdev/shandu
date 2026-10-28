@@ -12,11 +12,11 @@ Example reports, each written by `deepseek/deepseek-flash` with its thinking
 turned off:
 
 - [The CrowdStrike outage of July 2024](examples/crowdstrike-outage.md): default
-  effort, 26 sources.
+  effort, 27 sources, 3 minutes.
 - [Microplastics in human brain tissue](examples/microplastics-in-the-brain.md):
-  default effort, 18 sources.
+  default effort, 15 sources, 3 minutes.
 - [KV-cache compression for long-context inference](examples/kv-cache-compression.md):
-  high effort, 34 sources.
+  high effort, 22 sources, 5 minutes.
 
 The architecture is described in [`ARCH.md`](ARCH.md).
 
@@ -74,8 +74,13 @@ saves them to `~/.shandu/config.json`. `shandu info` shows what is in use.
 shandu run "What did the SELECT trial find about semaglutide and cardiovascular events?"
 ```
 
-Progress streams one line per event. The report prints at the end and is saved
-with the run; `--output report.md` also writes it to a file.
+Progress streams one plain line per step, and `--verbose` adds every event with
+its raw metrics. The run ends with a summary of the evidence, sources, citation
+checks, model calls, tokens, and cost, then the source list and the report. The
+report is saved with the run; `--output report.md` writes it to a file instead
+of printing it.
+
+![A terminal run: progress lines, the run summary, and the sources](assets/cli.png)
 
 | Option | Effect |
 |---|---|
@@ -106,9 +111,6 @@ Two researchers are available:
   queries, and follows links from secondary coverage to the primary source. It
   takes longer and costs more, and can reach primary documents the pipeline
   misses.
-
-The run summary lists evidence, citations, the citation check, model calls,
-tokens, and cost.
 
 ## Research in the web GUI
 
@@ -201,6 +203,8 @@ Saved settings in `~/.shandu/config.json` apply when no variable overrides them.
 - After writing, every cited sentence, bullet, and table row is checked against
   its sources. Unsupported citations are removed, and the summary counts
   supported, partial, and removed citations.
+
+![Citation markers in a saved report and the references they link to](assets/citations.png)
 
 Pages are read with layered HTML extraction (trafilatura, then readability, then
 BeautifulSoup) and parsers for PDF, DOCX, XLSX, CSV, and plain text, with

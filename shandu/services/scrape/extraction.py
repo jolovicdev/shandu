@@ -5,6 +5,7 @@ import io
 import json
 import re
 import threading
+import warnings
 from collections.abc import Iterable
 from datetime import datetime
 from html import unescape
@@ -13,7 +14,7 @@ from urllib.parse import urljoin, urlsplit
 
 import lxml.etree
 import lxml.html
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
 from .constants import (
     _CAPTCHA_PATTERNS,
@@ -26,6 +27,10 @@ from .constants import (
     _PAYWALL_PATTERNS,
 )
 from .models import ContentBlock, PageLink, _ExtractionResult, _ParseError
+
+# Feeds and other XML sent as text/xml take the HTML path, which reads their
+# title and text; bs4 would warn about each one.
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 
 def _cap_text(text: str) -> str:

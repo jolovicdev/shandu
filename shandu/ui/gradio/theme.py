@@ -53,6 +53,7 @@ def build_theme() -> gr.Theme:
         color_accent=_ACCENT,
         color_accent_soft="rgba(154, 59, 35, 0.09)",
         color_accent_soft_dark="rgba(224, 128, 85, 0.14)",
+        slider_color_dark=_ACCENT_DARK,
         block_background_fill=_PAPER,
         block_background_fill_dark=_PAPER_DARK,
         block_border_width="0px",
@@ -255,11 +256,6 @@ body.dark,
 
 .dark .shandu-prose blockquote {
   border-left-color: var(--accent) !important;
-}
-
-.shandu-settings .sidebar-content {
-  background: var(--surface) !important;
-  border-left: 1px solid var(--line-strong);
 }
 
 .shandu-composer:focus-within {
@@ -1032,8 +1028,30 @@ body.dark,
 
 /* Settings */
 
+/* The edge rule runs the full height of the panel and takes no layout space,
+   so the toggle's offsets stay measured from the panel edge. */
+.shandu-settings::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--line-strong);
+}
+
+/* The toggle floats over the top of the panel, so the scroller starts below it. */
 .shandu-settings .sidebar-content {
-  padding: 64px 24px 40px !important;
+  margin-top: 56px;
+  height: calc(100% - 56px) !important;
+  padding: 8px 24px 40px !important;
+  background: var(--surface) !important;
+  transition: visibility 0.3s;
+}
+
+/* A closed sidebar waits off screen; keep its fields out of the tab order. */
+.shandu-settings:not(.open) .sidebar-content {
+  visibility: hidden;
 }
 
 .shandu-settings .toggle-button {
@@ -1046,6 +1064,15 @@ body.dark,
   box-shadow: none !important;
   color: var(--ink-2) !important;
   font-size: 0.8rem !important;
+}
+
+.shandu-settings:not(.open) .toggle-button {
+  margin-right: 16px;
+}
+
+.shandu-settings.open .toggle-button {
+  margin-left: 24px;
+  background: var(--surface) !important;
 }
 
 /* Gradio turns the closed right-hand toggle 180 degrees; the label turns
@@ -1077,14 +1104,44 @@ body.dark,
 }
 
 .shandu-settings .block {
-  margin-bottom: 14px !important;
+  margin-bottom: 22px !important;
+}
+
+.shandu-settings .sidebar-content > .column {
+  max-width: 480px;
+}
+
+.shandu-settings button.lg {
+  min-height: 38px !important;
+  padding: 0 20px !important;
+  font-size: 0.9rem !important;
+  font-weight: 500 !important;
 }
 
 .shandu-settings span.md,
 .shandu-settings span.md p {
+  color: var(--ink-3) !important;
   font-size: 0.76rem !important;
   font-weight: 400 !important;
   line-height: 1.45 !important;
+}
+
+/* Gradio paints the unfilled track a fixed light grey and the thumb white,
+   which disappear on the dark panel and wash out on the light one. */
+.dark .shandu-settings input[type=range] {
+  --neutral-200: var(--line-strong);
+}
+
+.shandu-settings input[type=range]::-webkit-slider-thumb {
+  border: 1.5px solid var(--ink-3) !important;
+  background-color: var(--surface) !important;
+  box-shadow: none !important;
+}
+
+.shandu-settings input[type=range]::-moz-range-thumb {
+  border: 1.5px solid var(--ink-3) !important;
+  background-color: var(--surface) !important;
+  box-shadow: none !important;
 }
 
 .shandu-note {
@@ -1132,6 +1189,16 @@ select:focus-visible {
   .shandu-prose .prose,
   .shandu-prose .md {
     font-size: 1.06rem !important;
+  }
+
+  /* Over a full-width page the labelled toggle would cover text as it scrolls. */
+  .shandu-settings:not(.open) .toggle-button {
+    background: color-mix(in srgb, var(--paper) 80%, transparent) !important;
+    backdrop-filter: blur(6px);
+  }
+
+  .shandu-settings:not(.open) .toggle-button::after {
+    display: none;
   }
 }
 

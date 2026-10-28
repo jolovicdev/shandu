@@ -16,6 +16,11 @@ from ..config import config
 from .search_apis import API_ENV, ApiSearchClient
 
 logger = logging.getLogger(__name__)
+# ddgs picks a browser profile at random, and primp logs a warning for each
+# one it does not know before it falls back to another, which lands in the
+# middle of the CLI's progress stream. primp's Rust logger reads a Python
+# logger's level on its first message only, so this must run before any search.
+logging.getLogger("primp.impersonate").setLevel(logging.ERROR)
 
 # ddgs 9.x text backends. A comma-delimited entry queries those engines in
 # parallel threads and merges URL-deduped results, so the primary entry gets

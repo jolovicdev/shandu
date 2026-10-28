@@ -33,6 +33,16 @@ _SITE_OPERATOR = re.compile(r"\s*\bsite:\S+")
 # Provider records sometimes carry markup debris after the URL.
 _CLEAN_URL = re.compile(r"https?://[^\s<>\"']+")
 _RATE_LIMITED_RETRY_SECONDS = 2.0
+# A 429 asking for a longer wait than this means the provider's budget is
+# spent (keyless OpenAlex allows about 100 searches a day), so the provider
+# sits out the wait instead of failing every query until then.
+_SPENT_RATE_LIMIT_SECONDS = 60
+
+
+class _RateLimitSpent(Exception):
+    def __init__(self, seconds: int) -> None:
+        super().__init__(f"rate limit spent for {seconds} seconds")
+        self.seconds = seconds
 
 
 class _Throttle:
@@ -100,6 +110,7 @@ class ScholarlySearchService:
         self._arxiv_throttle = _Throttle(_ARXIV_INTERVAL_SECONDS)
         self._pubmed_throttle = _Throttle(_PUBMED_INTERVAL_SECONDS)
         self._errors: dict[str, str] = {}
+        self._resting_until: dict[str, float] = {}
 
     def last_error_for(self, query: str, max_results: int) -> str | None:
         return self._errors.get(f"{query}:{max_results}")
@@ -111,18 +122,34 @@ class ScholarlySearchService:
             "openalex": self._search_openalex,
             "pubmed": self._search_pubmed,
         }
+        now = time.monotonic()
+        resting = {name for name in providers if self._resting_until.get(name, 0.0) > now}
+        searching = {
+            name: search for name, search in providers.items() if name not in resting
+        }
         outcomes = await asyncio.gather(
-            *(search(query, terms, max_results) for search in providers.values()),
+            *(search(query, terms, max_results) for search in searching.values()),
             return_exceptions=True,
         )
         hit_lists: list[list[SearchHit]] = []
-        failures: list[str] = []
-        for name, outcome in zip(providers, outcomes):
+        failures = [f"{name}: rate limit spent" for name in sorted(resting)]
+        for name, outcome in zip(searching, outcomes):
             if isinstance(outcome, BaseException):
                 if not isinstance(outcome, Exception):
                     raise outcome
                 failures.append(f"{name}: {outcome}")
-                logger.warning("Scholarly search on %s failed: %s", name, outcome)
+                if not isinstance(outcome, _RateLimitSpent):
+                    logger.warning("Scholarly search on %s failed: %s", name, outcome)
+                # Queries in flight when the budget ran out all report it;
+                # one warning covers them.
+                elif self._resting_until.get(name, 0.0) <= time.monotonic():
+                    self._resting_until[name] = time.monotonic() + outcome.seconds
+                    logger.warning(
+                        "Scholarly search on %s is rate limited for %d minutes and "
+                        "pauses until then; the other indexes continue.",
+                        name,
+                        outcome.seconds // 60,
+                    )
             else:
                 hit_lists.append(outcome)
         key = f"{query}:{max_results}"
@@ -160,6 +187,11 @@ class ScholarlySearchService:
             if response.status != 429:
                 response.raise_for_status()
                 return await response.text()
+            retry_after = response.headers.get("Retry-After", "")
+        # A Retry-After given as an HTTP date counts as a short wait; the
+        # providers searched here send seconds.
+        if retry_after.isdigit() and int(retry_after) > _SPENT_RATE_LIMIT_SECONDS:
+            raise _RateLimitSpent(int(retry_after))
         # One retry covers the short rate-limit bursts these APIs return
         # under parallel tasks.
         await asyncio.sleep(_RATE_LIMITED_RETRY_SECONDS)

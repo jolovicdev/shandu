@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from shandu.services import scholarly
 from shandu.services.scholarly import ScholarlySearchService
@@ -147,3 +148,75 @@ def test_titles_in_other_scripts_are_not_merged_as_duplicates() -> None:
         "!!!",
         "???",
     ]
+
+
+def test_a_spent_rate_limit_pauses_the_provider_with_one_warning(caplog) -> None:
+    from shandu.services.search import SearchHit
+
+    service = ScholarlySearchService()
+    calls: list[str] = []
+
+    async def spent(query, terms, max_results):
+        calls.append(query)
+        raise scholarly._RateLimitSpent(3600)
+
+    async def one_hit(query, terms, max_results):
+        return [SearchHit(query=query, url="https://arxiv.org/abs/1", title="A", snippet="")]
+
+    service._search_openalex = spent
+    service._search_arxiv = one_hit
+    service._search_pubmed = one_hit
+
+    async def run():
+        await asyncio.gather(service.search("a", 8), service.search("b", 8))
+        return await service.search("c", 8)
+
+    with caplog.at_level(logging.WARNING, logger="shandu.services.scholarly"):
+        hits = asyncio.run(run())
+
+    assert sorted(calls) == ["a", "b"]
+    assert [hit.title for hit in hits] == ["A"]
+    assert service.last_error_for("c", 8) is None
+    warnings = [record.message for record in caplog.records]
+    assert len(warnings) == 1
+    assert "openalex is rate limited for 60 minutes" in warnings[0]
+
+
+def test_only_a_long_retry_after_skips_the_retry(monkeypatch) -> None:
+    from aiohttp import web
+
+    monkeypatch.setattr(scholarly, "_RATE_LIMITED_RETRY_SECONDS", 0)
+
+    async def run(retry_after: str) -> tuple[BaseException | None, int]:
+        requests: list[int] = []
+
+        async def handler(request: web.Request) -> web.Response:
+            requests.append(1)
+            return web.Response(status=429, headers={"Retry-After": retry_after})
+
+        app = web.Application()
+        app.router.add_get("/", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        service = ScholarlySearchService()
+        try:
+            await service._get(f"http://127.0.0.1:{port}/", {})
+            error = None
+        except Exception as caught:
+            error = caught
+        finally:
+            await service.aclose()
+            await runner.cleanup()
+        return error, len(requests)
+
+    spent, spent_requests = asyncio.run(run("22539"))
+    assert isinstance(spent, scholarly._RateLimitSpent)
+    assert spent.seconds == 22539
+    assert spent_requests == 1
+
+    burst, burst_requests = asyncio.run(run("1"))
+    assert not isinstance(burst, scholarly._RateLimitSpent)
+    assert burst_requests == 2

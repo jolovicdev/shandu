@@ -178,7 +178,7 @@ Environment variables, which can also live in a `.env` file:
 | `SHANDU_TEMPERATURE`, `SHANDU_MAX_TOKENS` | Sampling temperature (default `0.2`) and output cap (default `32768`). |
 | `SHANDU_STORAGE_DIR` | Where runs and caches live. Default `~/.shandu/storage`. |
 | `SHANDU_SEARCH_BACKEND` | `ddgs` (default), or a search API: `tavily` with `TAVILY_API_KEY`, `brave` with `BRAVE_API_KEY`, `exa` with `EXA_API_KEY`, or `searxng` with `SEARXNG_URL`, an instance with JSON output enabled. A backend whose variable is missing falls back to `ddgs`. |
-| `OPENALEX_API_KEY`, `NCBI_API_KEY` | Optional. Raise the OpenAlex and PubMed rate limits for paper search. |
+| `OPENALEX_API_KEY`, `NCBI_API_KEY` | Optional. Raise the OpenAlex and PubMed rate limits for paper search. Without a key, OpenAlex allows about 100 searches a day; once they are spent, paper search continues on arXiv and PubMed. |
 | `SHANDU_PROXY` | Optional proxy for fetching pages. |
 
 Saved settings in `~/.shandu/config.json` apply when no variable overrides them.

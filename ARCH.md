@@ -134,7 +134,11 @@ and after three attempts a deterministic report is built from the syntheses.
 - References are rebuilt from the citation ledger; unused entries drop out and
   the rest renumber.
 - Evidence below the credibility bar stays out of the ledger unless nothing
-  stronger exists; URL variants of the same work merge into one entry.
+  stronger exists. Copies of one work merge into one entry: an article's HTML
+  and PDF, a DOI page and its publisher page, an arXiv abstract and full text,
+  and the same long title on two sites.
+- Markers for citations the ledger does not hold, and placeholders a writer
+  prints in place of a citation, are removed with the space before them.
 - Tables with a dedicated provenance column are rewritten at render time.
 - The auditor checks every cited sentence, bullet, and table row against the
   evidence text and verified quotes behind each marker, and removes unsupported
@@ -171,5 +175,6 @@ Each run lives in `<storage_dir>/runs/<run_id>/`:
   publication dates, SSRF-safe fetching with per-domain backoff.
 - Report service: marker normalization and rendering.
 - Run store: one directory per run.
-- Runtime: model wiring, per-role models, a deadline for structured calls so a
-  stalled provider falls back instead of holding the run, async bridge.
+- Runtime: model wiring, per-role models, async bridge, and deadlines on
+  structured calls (420 s), each writing attempt (900 s), and each agentic task
+  (1200 s), so a stalled provider falls back instead of holding the run.

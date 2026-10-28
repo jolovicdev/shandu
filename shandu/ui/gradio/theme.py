@@ -549,6 +549,10 @@ body.dark,
   margin-top: 4px;
 }
 
+.shandu-activity:not(:has(.shandu-tasks)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .shandu-activity h3 {
   margin: 0 0 4px;
   padding: 18px 0 8px;
@@ -558,14 +562,17 @@ body.dark,
   border-bottom: 1px solid var(--line);
 }
 
+/* The bottom padding is a fade zone: rows scroll into it and the last row
+   rests above it, so a list that fits is never faded. */
 .shandu-activity ol {
   max-height: 420px;
   overflow: auto;
   scrollbar-color: var(--line-strong) transparent;
   scrollbar-width: thin;
   margin: 0;
-  padding: 0;
+  padding: 0 0 28px;
   list-style: none;
+  mask-image: linear-gradient(#000 calc(100% - 28px), transparent);
 }
 
 .shandu-activity li {

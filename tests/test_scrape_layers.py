@@ -208,18 +208,36 @@ def test_parse_pdf_reads_small_caps_titles_whole() -> None:
 
 
 @pytest.mark.parametrize(
-    ("first", "second", "title"),
+    ("first", "second", "body", "title"),
     [
-        ("Cache Compression by Pyra-", "midal Funneling", "Cache Compression by Pyramidal Funneling"),
-        ("Cache Compression: A Mini-", "Review of Methods", "Cache Compression: A Mini-Review of Methods"),
+        (
+            "Cache Compression by Pyra-",
+            "midal Funneling",
+            "Attention narrows in a pyramidal shape across layers.",
+            "Cache Compression by Pyramidal Funneling",
+        ),
+        (
+            "Retrieval-",
+            "augmented Generation at Scale",
+            "Retrieval-augmented generation grounds answers in documents.",
+            "Retrieval-augmented Generation at Scale",
+        ),
+        (
+            "Cache Compression: A Mini-",
+            "Review of Methods",
+            "This is the body text of the paper.",
+            "Cache Compression: A Mini-Review of Methods",
+        ),
     ],
 )
-def test_parse_pdf_joins_title_lines_broken_at_a_hyphen(first: str, second: str, title: str) -> None:
+def test_parse_pdf_joins_title_lines_broken_at_a_hyphen(
+    first: str, second: str, body: str, title: str
+) -> None:
     doc = fitz.open()
     page = doc.new_page()
     page.insert_text((72, 100), first, fontsize=18)
     page.insert_text((72, 121), second, fontsize=18)
-    page.insert_text((72, 160), "This is the body text of the paper.")
+    page.insert_text((72, 160), body)
     assert _parse_pdf(doc.tobytes()).title == title
 
 

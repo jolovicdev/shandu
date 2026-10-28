@@ -299,15 +299,20 @@ def _horizontal_lines(block: dict[str, Any]) -> list[list[dict[str, Any]]]:
     ]
 
 
-def _title_text(lines: list[list[dict[str, Any]]]) -> str:
+def _title_text(lines: list[list[dict[str, Any]]], page_text: str) -> str:
     # Word spaces can be spans of their own, so spans join with nothing between.
     text = "\n".join("".join(span.get("text", "") for span in spans) for spans in lines)
-    # A word split at a line end goes on in lower case and loses its hyphen. A
-    # lower-case compound broken at its own hyphen loses it too, which titles
-    # seldom do. Any other line-end hyphen keeps no space after it.
-    text = re.sub(r"(?<=\w)-[ \t]*\n[ \t]*(?=[a-z])", "", text)
-    text = re.sub(r"(?<=\w)-[ \t]*\n[ \t]*", "-", text)
-    title = " ".join(text.split())
+
+    # A hyphen at a title's line end is usually the compound's own, as in
+    # "Retrieval-augmented". It splits one word only when the page spells
+    # that word whole, as an abstract does with "pyramidal".
+    def join(match: re.Match[str]) -> str:
+        whole = match[1] + match[2]
+        if re.search(rf"\b{re.escape(whole)}\b", page_text, re.IGNORECASE):
+            return whole
+        return f"{match[1]}-{match[2]}"
+
+    title = " ".join(re.sub(r"(\w+)-[ \t]*\n[ \t]*(\w+)", join, text).split())
     return title if 10 < len(title) < 300 else ""
 
 
@@ -329,7 +334,9 @@ def _pdf_layout_title(page: Any) -> str:
             best_size = size
             best_lines = lines
     top = max((_inked_size(spans) for spans in best_lines), default=0.0)
-    return _title_text([spans for spans in best_lines if _inked_size(spans) >= 0.9 * top])
+    return _title_text(
+        [spans for spans in best_lines if _inked_size(spans) >= 0.9 * top], page.get_text()
+    )
 
 
 def _pdf_bold_title(page: Any) -> str:
@@ -345,7 +352,7 @@ def _pdf_bold_title(page: Any) -> str:
         inked = [span for spans in lines for span in spans if span.get("text", "").strip()]
         bold = sum(len(span["text"]) for span in inked if span.get("flags", 0) & _FITZ_BOLD_FLAG)
         if 2 * bold > sum(len(span["text"]) for span in inked):
-            title = _title_text(lines)
+            title = _title_text(lines, page.get_text())
             if title:
                 return title
     return ""

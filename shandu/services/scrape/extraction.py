@@ -29,8 +29,9 @@ from .constants import (
 from .models import ContentBlock, PageLink, _ExtractionResult, _ParseError
 
 # Feeds and other XML sent as text/xml take the HTML path, which reads their
-# title and text; bs4 would warn about each one.
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+# title and text; bs4 would warn about each one. The filter covers only the
+# parses here, so an application's own bs4 calls keep the warning.
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning, module=__name__)
 
 
 def _cap_text(text: str) -> str:

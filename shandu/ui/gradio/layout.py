@@ -683,7 +683,7 @@ def _run_action(
     if isinstance(result, ResearchRunResult):
         state.apply_result(result)
         state.stage = "complete"
-        gr.Info("The report is ready below.", title="Report ready")
+        gr.Info("The report is ready below.")
         yield _outputs(
             state=state,
             running=False,

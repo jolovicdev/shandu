@@ -278,11 +278,13 @@ def test_a_page_title_in_capitals_takes_the_search_hits_casing() -> None:
     hit_titles = {
         "https://arxiv.org/abs/2309.17453": "Efficient Streaming Language Models with Attention Sinks",
         "https://arxiv.org/abs/2407.21118": "[2407.21118v2] Palu: Compressing KV-Cache with Low-Rank Projection",
+        "https://arxiv.org/abs/2304.13755": "No Tension: JWST Galaxies at z > 10 Consistent with Simulations",
         "https://example.org/b": "Another page",
     }
     page_titles = {
         "https://arxiv.org/abs/2309.17453": "EFFICIENT STREAMING LANGUAGE MODELS WITH ATTENTION SINKS",
         "https://arxiv.org/abs/2407.21118": "PALU: KV-CACHE COMPRESSION WITH LOW-RANK PROJECTION",
+        "https://arxiv.org/abs/2304.13755": "NO TENSION: JWST GALAXIES AT z > 10 CONSISTENT WITH SIMULATIONS",
         "https://example.org/b": "A DIFFERENT TITLE",
     }
 
@@ -300,11 +302,12 @@ def test_a_page_title_in_capitals_takes_the_search_hits_casing() -> None:
                 for url in urls
             ], 0
 
-    request = ResearchRequest(query="q", max_pages_per_task=3, max_results_per_query=3)
+    request = ResearchRequest(query="q", max_pages_per_task=4, max_results_per_query=4)
     evidence = asyncio.run(_subagent(Search(), Scrape()).execute_task("run:1", _task(), request))
 
     assert {record.requested_url: record.title for record in evidence} == {
         "https://arxiv.org/abs/2309.17453": "Efficient Streaming Language Models with Attention Sinks",
         "https://arxiv.org/abs/2407.21118": "Palu: Compressing KV-Cache with Low-Rank Projection",
+        "https://arxiv.org/abs/2304.13755": "No Tension: JWST Galaxies at z > 10 Consistent with Simulations",
         "https://example.org/b": "A DIFFERENT TITLE",
     }

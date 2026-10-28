@@ -271,8 +271,9 @@ def _extract_html(html: str) -> _ExtractionResult:
 def _latexml_title(html: str) -> str:
     """The title of a LaTeXML page (arXiv HTML) from its heading.
 
-    The heading carries the author footnotes, which go, and line breaks that
-    the page's <title> drops without a space, as in "ChangesKV-Cache".
+    The heading carries the author footnotes and each formula's TeX source,
+    which go, and line breaks that the page's <title> drops without a space,
+    as in "ChangesKV-Cache".
     """
     try:
         headings = lxml.html.fromstring(html).find_class("ltx_title_document")
@@ -281,11 +282,12 @@ def _latexml_title(html: str) -> str:
     for heading in headings:
         for note in heading.xpath(
             './/*[contains(@class, "ltx_note") or contains(@class, "ltx_pubnotes")]'
+            " | .//annotation | .//annotation-xml"
         ):
             note.drop_tree()
         for line_break in heading.iter("br"):
             line_break.tail = " " + (line_break.tail or "")
-        title = " ".join(heading.text_content().split())
+        title = " ".join(heading.text_content().replace("\N{ZERO WIDTH SPACE}", "").split())
         if title:
             return title
     page_title = _TITLE_TAG.search(html)

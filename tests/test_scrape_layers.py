@@ -159,11 +159,15 @@ def test_extract_html_keeps_the_spaces_where_a_latexml_title_breaks_lines() -> N
         "<html><head><title>How Query Visibility ChangesKV-Cache Rankings:A Matched Audit"
         '</title></head><body><article class="ltx_document">'
         '<h1 class="ltx_title ltx_title_document">How Query Visibility Changes\n'
-        '<br class="ltx_break">KV-Cache Rankings:<br class="ltx_break">A Matched Audit'
-        '<span class="ltx_note ltx_role_thanks"><sup>1</sup>Work done at a lab.</span></h1>'
+        '<br class="ltx_break">KV-Cache Rankings:<br class="ltx_break">A Matched\N{ZERO WIDTH SPACE} Audit'
+        '<span class="ltx_note ltx_role_thanks"><sup>1</sup>Work done at a lab.</span>'
+        ' at <math alttext="z=10"><semantics><mi>z</mi><mo>=</mo><mn>10</mn>'
+        '<annotation encoding="application/x-tex">z=10</annotation></semantics></math></h1>'
         f"<p>{body}</p></article></body></html>"
     )
-    assert _extract_html(html).title == "How Query Visibility Changes KV-Cache Rankings: A Matched Audit"
+    assert _extract_html(html).title == (
+        "How Query Visibility Changes KV-Cache Rankings: A Matched Audit at z=10"
+    )
 
 
 def test_parse_pdf_extracts_title_and_text() -> None:

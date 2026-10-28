@@ -63,8 +63,12 @@ def _cased_title(page_title: str, hit_title: str) -> str:
     def words(title: str) -> set[str]:
         return set(re.sub(r"[\W_]+", " ", title.casefold()).split())
 
+    def mostly_capitals(title: str) -> bool:
+        letters = [char for char in title if char.isalpha()]
+        return bool(letters) and sum(char.isupper() for char in letters) >= 0.8 * len(letters)
+
     hit = _ARXIV_ID_PREFIX.sub("", hit_title).strip()
-    if page_title.isupper() and hit and not hit.isupper():
+    if mostly_capitals(page_title) and hit and not mostly_capitals(hit):
         page_words, hit_words = words(page_title), words(hit)
         if len(page_words & hit_words) >= 0.6 * len(page_words | hit_words):
             return hit

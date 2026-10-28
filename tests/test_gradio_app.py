@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import threading
 from datetime import date
 from types import SimpleNamespace
@@ -228,7 +229,7 @@ def test_run_options_reach_the_request(monkeypatch) -> None:
         monkeypatch,
         "low",
         "agentic",
-        "0.5",
+        "$0.5",
         False,
         "nature.com, https://www.who.int/news",
         "example.com",
@@ -238,6 +239,7 @@ def test_run_options_reach_the_request(monkeypatch) -> None:
     assert (request.max_iterations, request.parallelism, request.max_pages_per_task) == (1, 2, 3)
     assert (request.max_results_per_query, request.max_searches_per_task) == (6, 3)
     assert (request.researcher, request.audit, request.max_cost_usd) == ("agentic", False, 0.5)
+    assert request.effort == "low"
     assert request.include_domains == ["nature.com", "who.int"]
     assert request.exclude_domains == ["example.com"]
     assert request.since == date(2025, 1, 31)
@@ -396,6 +398,7 @@ def test_recent_report_click_opens_the_report_the_page_shows(monkeypatch, tmp_pa
 
     assert [sample[-1] for sample in shown] == ["b", "a"]
     assert outputs[-1] == "second question"
+    assert re.fullmatch(r"\d{2} \w{3} \d{4}, \d{2}:\d{2}", shown[0][2])
 
 
 def test_gui_needs_no_heartbeat_connection() -> None:

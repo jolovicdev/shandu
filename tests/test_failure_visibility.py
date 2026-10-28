@@ -156,7 +156,7 @@ def test_reporter_falls_back_when_every_call_times_out(monkeypatch) -> None:
     assert agent.last_fallback_reason == "reporter timed out"
 
 
-_REFUSAL ="The request was rejected because it was considered high risk"
+_REFUSAL = "The request was rejected because it was considered high risk"
 
 
 def test_reporter_retries_a_refusal_returned_in_place_of_the_report() -> None:

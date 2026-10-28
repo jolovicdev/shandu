@@ -233,6 +233,9 @@ _ARXIV_STAMP = re.compile(
 )
 
 
+_TITLE_TAG = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
 def _arxiv_stamp_date(html: str) -> str | None:
     # arXiv HTML papers carry no date metadata, only the version stamp
     # "arXiv:2309.17453v4 [cs.CL] 07 Apr 2024"; without it the date falls to
@@ -257,7 +260,7 @@ def _extract_html(html: str) -> _ExtractionResult:
     # LaTeXML pages (arXiv HTML) set the author footnote inside the h1 the
     # extractors take the title from; their <title> holds the title alone.
     if "ltx_title_document" in html:
-        page_title = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        page_title = _TITLE_TAG.search(html)
         if page_title:
             result.title = " ".join(unescape(page_title.group(1)).split()) or result.title
     return result
@@ -278,7 +281,7 @@ def _body_size(spans: list[dict[str, Any]]) -> float:
     """
     inked = [(span["size"], len(span["text"].strip())) for span in spans if span.get("text", "").strip()]
     chars = sum(length for _, length in inked)
-    return sum(size * length for size, length in inked) / chars if chars else 0.0
+    return sum(size * length for size, length in inked) / chars
 
 
 def _horizontal_lines(block: dict[str, Any]) -> list[list[dict[str, Any]]]:
@@ -602,7 +605,7 @@ def _detect_fetch_error(html: str | None, text: str) -> str | None:
             if any(p.search(html_lower) for p in _PAYWALL_PATTERNS):
                 return "paywall"
 
-        title = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        title = _TITLE_TAG.search(html)
         if (
             title
             and len(text.split()) < _ERROR_PAGE_MAX_WORDS

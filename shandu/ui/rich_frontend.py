@@ -141,8 +141,8 @@ class ShanduUI:
         )
 
     def run_list(self, runs: list[RunSummary]) -> RenderableType:
-        # Only the trailing question column shrinks. Show, report, and resume
-        # accept the first eight characters of an id.
+        # Only the trailing question column shrinks. Commands that take a run
+        # id accept its first eight characters.
         table = Table.grid(padding=(0, 2), expand=True)
         table.add_column(style="muted", no_wrap=True, min_width=8)
         table.add_column(style="label", no_wrap=True, min_width=10)

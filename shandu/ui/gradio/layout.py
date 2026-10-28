@@ -54,24 +54,19 @@ _ERROR_HINTS = (
     ("APIConnectionError", "Shandu could not reach the model provider. Check your connection."),
 )
 
-EMPTY_QUESTION = "<p class='shandu-hint'>Type a research question first.</p>"
 
-EFFORT_CHOICES = [
-    ("From settings", "settings"),
-    ("Low", "low"),
-    ("Medium", "medium"),
-    ("High", "high"),
-    ("Max", "max"),
-]
+def _hint(message: str) -> str:
+    return f"<p class='shandu-hint'>{escape(message)}</p>"
+
+
+EMPTY_QUESTION = _hint("Type a research question first.")
+
+EFFORT_CHOICES = [("From settings", "settings"), *((name.capitalize(), name) for name in EFFORT_PRESETS)]
 RESEARCHER_CHOICES = [("Pipeline", "pipeline"), ("Agentic", "agentic")]
 OPTIONS_NOTE = (
     "An effort preset replaces the budget in Settings for this run. The agentic "
     "researcher also follows links to primary sources, so it takes longer and costs more."
 )
-
-
-def _hint(message: str) -> str:
-    return f"<p class='shandu-hint'>{escape(message)}</p>"
 
 
 def _masthead(model: str) -> str:
@@ -445,7 +440,7 @@ def _run_action(
         max_cost_usd = float(cost_text) if cost_text else None
     except ValueError:
         max_cost_usd = -1.0
-    if max_cost_usd is not None and max_cost_usd <= 0:
+    if max_cost_usd is not None and not max_cost_usd > 0:
         yield (
             _hint("Max cost takes an amount above zero, like 0.50. Leave it blank for no limit."),
             *(gr.skip(),) * 12,

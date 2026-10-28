@@ -160,6 +160,39 @@ def test_researcher_stopped_without_a_memo_reports_why_and_keeps_its_evidence() 
     assert failed == {"task_id": "t1", "reason": "Max iterations exceeded"}
 
 
+class _LoopHangsDesk(_ModelDesk):
+    """Plays a tool loop whose next model call never returns."""
+
+    async def arun(self, worker, job):
+        if worker.name == "SubagentExtractor":
+            return await super().arun(worker, job)
+        tools = {item.name: item.callable for item in worker.tools()}
+        await self.script(tools, self.replies)
+        await asyncio.sleep(3600)
+
+
+def test_researcher_loop_past_its_time_limit_keeps_its_evidence(monkeypatch) -> None:
+    monkeypatch.setattr("shandu.runtime.calls.RESEARCHER_LOOP_SECONDS", 0.5)
+
+    async def script(tools, replies):
+        replies.append(await tools["read_page"](url=_BLOG))
+
+    traces: list[tuple[str, dict]] = []
+
+    async def on_trace(kind, payload) -> None:
+        traces.append((kind, payload))
+
+    evidence = asyncio.run(
+        _researcher(_LoopHangsDesk(script)).execute_task(
+            "run:r", _task(), ResearchRequest(query="q"), progress_callback=on_trace
+        )
+    )
+
+    assert [record.requested_url for record in evidence] == [_BLOG]
+    failed = next(payload for kind, payload in traces if kind == "researcher_failed")
+    assert failed == {"task_id": "t1", "reason": "researcher loop timed out"}
+
+
 def test_researcher_reads_within_budget_and_repeats_are_free() -> None:
     async def script(tools, replies):
         replies.append(await tools["read_page"](url=_BLOG))

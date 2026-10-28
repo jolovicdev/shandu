@@ -12,6 +12,7 @@ from blackgeorge.tools import Tool, tool
 from ..contracts import EvidenceRecord, ResearchBrief, ResearchRequest, SubagentTask
 from ..interfaces import SearchServiceLike, SearchSubagentLike
 from ..prompts import researcher_instructions, researcher_job
+from ..runtime.calls import researcher_call
 from ..runtime.costing import collect_llm_usage
 from ..runtime.roles import role_model
 from .search_subagent import (
@@ -214,7 +215,7 @@ class ResearcherAgent(SearchSubagent):
         failure: str | None = None
         llm_usage: dict[str, Any] | None = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await researcher_call(self._runtime, worker, job)
             llm_usage = collect_llm_usage(report)
             content = getattr(report, "content", None)
             if report.status == "completed" and isinstance(content, str) and content.strip():
@@ -222,6 +223,9 @@ class ResearcherAgent(SearchSubagent):
             else:
                 failure = _report_reason(report)
                 logger.warning("Researcher did not finish %s: %s", task.task_id, failure)
+        except TimeoutError:
+            failure = "researcher loop timed out"
+            logger.warning("Researcher loop timed out on %s", task.task_id)
         except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"[:300]
             logger.warning("Researcher failed on %s", task.task_id, exc_info=True)

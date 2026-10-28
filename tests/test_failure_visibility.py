@@ -119,7 +119,44 @@ def test_planner_falls_back_when_the_model_call_never_returns(monkeypatch) -> No
     assert plan.subagent_tasks
 
 
-_REFUSAL = "The request was rejected because it was considered high risk"
+class _HangOnceDesk:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def arun(self, worker, job):
+        del worker, job
+        self.calls += 1
+        if self.calls == 1:
+            await asyncio.sleep(3600)
+        return SimpleNamespace(
+            status="completed",
+            content="# Title\n\nBody [1].",
+            metrics={"usage": {"total_tokens": 10}, "cost_usd": 0.01},
+        )
+
+
+def test_reporter_retries_a_call_that_never_returns(monkeypatch) -> None:
+    monkeypatch.setattr("shandu.runtime.calls.WRITER_CALL_SECONDS", 0.01)
+    desk = _HangOnceDesk()
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert draft.markdown == "# Title\n\nBody [1]."
+    assert desk.calls == 2
+
+
+def test_reporter_falls_back_when_every_call_times_out(monkeypatch) -> None:
+    monkeypatch.setattr("shandu.runtime.calls.WRITER_CALL_SECONDS", 0.01)
+    agent = LeadAgent(runtime=_ModelRuntime(_HangingDesk()))
+
+    draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert draft.markdown is None
+    assert agent.last_fallback_reason == "reporter timed out"
+
+
+_REFUSAL ="The request was rejected because it was considered high risk"
 
 
 def test_reporter_retries_a_refusal_returned_in_place_of_the_report() -> None:

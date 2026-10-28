@@ -33,7 +33,7 @@ from ..prompts import (
     synthesizer_instructions,
     synthesizer_job,
 )
-from ..runtime.calls import structured_call
+from ..runtime.calls import structured_call, writer_call
 from ..runtime.costing import add_usage, collect_llm_usage
 from ..runtime.roles import role_model
 
@@ -398,7 +398,12 @@ class LeadAgent:
             for _ in range(_REPORTER_ATTEMPTS):
                 job = Job(input=job_input, expected_output=reporter_expected_output())
                 self.last_call_count += 1
-                report = await self._runtime.desk.arun(worker, job)
+                try:
+                    report = await writer_call(self._runtime, worker, job)
+                except TimeoutError:
+                    logger.warning("%s call timed out", name)
+                    reason = f"{label} timed out"
+                    continue
                 self.last_llm_usage = add_usage(
                     self.last_llm_usage, collect_llm_usage(report)
                 )

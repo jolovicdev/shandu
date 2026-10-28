@@ -301,9 +301,13 @@ def _horizontal_lines(block: dict[str, Any]) -> list[list[dict[str, Any]]]:
 
 def _title_text(lines: list[list[dict[str, Any]]]) -> str:
     # Word spaces can be spans of their own, so spans join with nothing between.
-    title = " ".join(
-        " ".join("".join(span.get("text", "") for span in spans) for spans in lines).split()
-    )
+    text = "\n".join("".join(span.get("text", "") for span in spans) for spans in lines)
+    # A word split at a line end goes on in lower case and loses its hyphen. A
+    # lower-case compound broken at its own hyphen loses it too, which titles
+    # seldom do. Any other line-end hyphen keeps no space after it.
+    text = re.sub(r"(?<=\w)-[ \t]*\n[ \t]*(?=[a-z])", "", text)
+    text = re.sub(r"(?<=\w)-[ \t]*\n[ \t]*", "-", text)
+    title = " ".join(text.split())
     return title if 10 < len(title) < 300 else ""
 
 

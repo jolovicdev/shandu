@@ -207,6 +207,22 @@ def test_parse_pdf_reads_small_caps_titles_whole() -> None:
     assert result.title == "SCBENCH: KV CACHE LONG-CONTEXT"
 
 
+@pytest.mark.parametrize(
+    ("first", "second", "title"),
+    [
+        ("Cache Compression by Pyra-", "midal Funneling", "Cache Compression by Pyramidal Funneling"),
+        ("Cache Compression: A Mini-", "Review of Methods", "Cache Compression: A Mini-Review of Methods"),
+    ],
+)
+def test_parse_pdf_joins_title_lines_broken_at_a_hyphen(first: str, second: str, title: str) -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), first, fontsize=18)
+    page.insert_text((72, 121), second, fontsize=18)
+    page.insert_text((72, 160), "This is the body text of the paper.")
+    assert _parse_pdf(doc.tobytes()).title == title
+
+
 def test_parse_pdf_skips_a_small_caps_heading_whose_capitals_outsize_the_title() -> None:
     doc = fitz.open()
     page = doc.new_page()

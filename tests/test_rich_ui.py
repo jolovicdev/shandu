@@ -24,8 +24,9 @@ def test_recap_renders_run_detail_and_events() -> None:
     assert "evidence" in output
 
 
-def test_event_line_renders_stage_and_task() -> None:
+def test_event_line_renders_stage_and_subagent() -> None:
     ui = ShanduUI(console=Console(record=True, width=160))
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
     event = RunEvent(
         stage="search",
         message="Task iter_1_task_1 started",
@@ -33,25 +34,15 @@ def test_event_line_renders_stage_and_task() -> None:
         metrics={"task_index": 1, "task_total": 4},
         payload={"task_id": "iter_1_task_1"},
     )
-    line = ui.event_line(event)
+    line = ui.event_line(event, snapshot)
     assert "search" in line.plain
-    assert "iter_1_task_1" in line.plain
-    assert "started" in line.plain
+    assert "Subagent 1 started" in line.plain
+    assert "iter_1_task_1" not in line.plain
 
 
-def test_event_line_keeps_the_message_column_for_long_task_ids() -> None:
+def test_event_line_renders_query_and_url_without_the_raw_trace_name() -> None:
     ui = ShanduUI(console=Console(record=True, width=160))
-    starts = [
-        ui.event_line(
-            RunEvent(stage="search", message=f"Task {task_id} started", payload={"task_id": task_id})
-        ).plain.index("started")
-        for task_id in ["iter_1_task_1", "cold_climate_field_performance"]
-    ]
-    assert starts[0] == starts[1]
-
-
-def test_event_line_renders_trace_query_and_url() -> None:
-    ui = ShanduUI(console=Console(record=True, width=160))
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
     event = RunEvent(
         stage="search",
         message="Task iter_1_task_1 query completed",
@@ -64,8 +55,8 @@ def test_event_line_renders_trace_query_and_url() -> None:
             "urls": ["https://example.com/article"],
         },
     )
-    line = ui.event_line(event)
-    assert "query_completed" in line.plain
+    line = ui.event_line(event, snapshot)
+    assert "query_completed" not in line.plain
     assert "future of multimodal agents" in line.plain
     assert "https://example.com/article" in line.plain
 
@@ -73,8 +64,9 @@ def test_event_line_renders_trace_query_and_url() -> None:
 def test_header_question_aligns_with_event_stage_column() -> None:
     console = Console(record=True, width=100)
     ui = ShanduUI(console=console)
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
     console.print(ui.header("Why is the sky blue?", ["deepseek/deepseek-flash"]))
-    console.print(ui.event_line(RunEvent(stage="plan", message="Iteration 1 plan ready")))
+    console.print(ui.event_line(RunEvent(stage="plan", message="Iteration 1 plan ready"), snapshot))
 
     lines = console.export_text().splitlines()
     question = next(line for line in lines if "Why is the sky blue?" in line)

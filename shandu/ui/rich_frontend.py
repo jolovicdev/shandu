@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from textwrap import shorten
 from typing import Any
 
 from rich.console import Console, Group, RenderableType
@@ -26,7 +25,24 @@ _STAGE_WIDTH = 11
 # Width of the "HH:MM:SS " event timestamp, so the header's question starts in
 # the same column as the stage words below it.
 _GUTTER_WIDTH = 9
-_TASK_WIDTH = 15
+
+# The metrics an event line shows, worded as the GUI's event feed words them.
+# Every other metric shows only with --verbose.
+_METRIC_LABELS = {
+    "sub_questions": "sub-questions",
+    "tasks": "subagents",
+    "hits": "results",
+    "candidates": "candidates",
+    "url_count": "pages to read",
+    "scraped": "pages read",
+    "evidence": "evidence",
+    "citations": "sources",
+    "report_words": "words",
+}
+
+# Trace events that announce a query, scrape or page read. The completion line
+# carries the same query or URL and the result, so only --verbose shows both.
+_START_TRACES = frozenset({"query_started", "scrape_started", "extract_started"})
 
 # Metrics that describe a single trace event, not the run so far.
 _EVENT_ONLY_METRICS = frozenset(
@@ -48,6 +64,12 @@ _EVENT_ONLY_METRICS = frozenset(
 
 
 _STATUS_STYLES = {"completed": "ok", "cancelled": "warn", "failed": "danger"}
+
+
+def _metric_text(metrics: dict[str, Any]) -> str:
+    return " · ".join(
+        f"{label} {metrics[key]}" for key, label in _METRIC_LABELS.items() if key in metrics
+    )
 
 
 def _local_time(stamp: str) -> str:
@@ -84,6 +106,7 @@ class RunSnapshot:
     iteration: int = 0
     metrics: dict[str, Any] = field(default_factory=dict)
     events: list[RunEvent] = field(default_factory=list)
+    subagents: dict[str, str] = field(default_factory=dict)
 
     def apply(self, event: RunEvent) -> None:
         self.events.append(event)
@@ -91,8 +114,17 @@ class RunSnapshot:
         self.iteration = event.iteration or self.iteration
         if event.metrics:
             self.metrics.update(event.metrics)
-        if event.payload.get("run_id"):
-            self.run_id = str(event.payload["run_id"])
+        # The first event carries the id in its metrics; the last, in its payload.
+        run_id = event.payload.get("run_id") or event.metrics.get("run_id")
+        if run_id:
+            self.run_id = str(run_id)
+        task_id = str(event.payload.get("task_id", "")).strip()
+        if task_id:
+            self.subagent(task_id)
+
+    def subagent(self, task_id: str) -> str:
+        """The label for a task, numbered by arrival across the whole run."""
+        return self.subagents.setdefault(task_id, f"Subagent {len(self.subagents) + 1}")
 
 
 class ShanduUI:
@@ -172,51 +204,55 @@ class ShanduUI:
             )
         return Group(Text("Runs", style="title"), Padding(table, (0, 0, 1, 2)))
 
-    def event_line(self, event: RunEvent) -> Text:
-        # One event, one line: a wrapped stream loses the column alignment.
-        line = Text(no_wrap=True, overflow="ellipsis")
+    def event_line(self, event: RunEvent, snapshot: RunSnapshot, verbose: bool = False) -> Text:
+        message = event.message
+        task_id = str(event.payload.get("task_id", "")).strip()
+        if task_id:
+            label = snapshot.subagent(task_id)
+            message = message.replace(f"Task {task_id}", label).replace(task_id, label)
+        line = Text()
         line.append(datetime.now().strftime("%H:%M:%S "), style="muted")
         line.append(event.stage.ljust(_STAGE_WIDTH), style="label")
-        task_id = str(event.payload.get("task_id", "")).strip()
-        line.append(task_id[: _TASK_WIDTH - 1].ljust(_TASK_WIDTH), style="muted")
-        message = event.message
-        prefix = f"Task {task_id} "
-        if task_id and message.startswith(prefix):
-            message = message[len(prefix) :]
         line.append(message, style="accent")
 
-        details: list[str] = []
-        if event.iteration is not None:
-            details.append(f"iter {event.iteration + 1}")
-        trace_type = str(event.metrics.get("trace_type", "")).strip()
-        if trace_type:
-            details.append(trace_type)
         query = str(
             event.payload.get("query", "") or event.metrics.get("query", "")
         ).strip()
-        if query:
-            details.append(f'"{shorten(query, width=48, placeholder="...")}"')
-        url = str(event.payload.get("url", "")).strip()
-        if url:
-            details.append(shorten(url, width=68, placeholder="..."))
-        urls = event.payload.get("urls")
-        if isinstance(urls, list) and urls:
-            details.append(f"urls={len(urls)}")
-        metrics = " ".join(
-            f"{key}={value}"
-            for key, value in sorted(event.metrics.items())
-            if key not in ("trace_type", "query")
-        )
-        if metrics:
-            details.append(metrics)
-        if details:
-            line.append("  " + " · ".join(details), style="muted")
+        if verbose:
+            details = [
+                f"iteration {event.iteration + 1}" if event.iteration is not None else "",
+                str(event.metrics.get("trace_type", "")).strip(),
+                " ".join(
+                    f"{key}={value}"
+                    for key, value in sorted(event.metrics.items())
+                    if key not in ("trace_type", "query")
+                ),
+            ]
+        else:
+            details = [_metric_text(event.metrics)]
+        details += [f'"{query}"' if query else "", str(event.payload.get("url", "")).strip()]
+        text = " · ".join(part for part in details if part)
+        if text:
+            line.append("  " + text, style="muted")
         return line
 
-    def print_event(self, event: RunEvent, target: Console | None = None) -> None:
-        (target or self.console).print(
-            self.event_line(event), no_wrap=True, overflow="ellipsis", crop=True
-        )
+    def print_event(
+        self,
+        event: RunEvent,
+        snapshot: RunSnapshot,
+        target: Console | None = None,
+        verbose: bool = False,
+    ) -> None:
+        if not verbose and event.metrics.get("trace_type") in _START_TRACES:
+            return
+        target = target or self.console
+        line = self.event_line(event, snapshot, verbose)
+        if target.is_terminal:
+            # One event, one line: a wrapped stream loses the column alignment.
+            target.print(line, no_wrap=True, overflow="ellipsis", crop=True)
+        else:
+            # A log keeps the whole query and URL.
+            target.print(line, soft_wrap=True)
 
     def recap(self, snapshot: RunSnapshot) -> RenderableType:
         rows = [

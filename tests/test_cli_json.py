@@ -154,6 +154,73 @@ def test_run_ctrl_c_cancels_and_exits_130(monkeypatch) -> None:
 
     assert result.exit_code == 130, result.output
     assert future.cancel_calls == 1
+    assert "Run cancelled." in result.stdout
+    assert "shandu resume" not in result.stdout
+
+
+def test_run_ctrl_c_names_the_saved_run_and_how_to_continue(monkeypatch) -> None:
+    import asyncio
+    import concurrent.futures
+
+    class InterruptedFuture:
+        interrupted = False
+
+        def cancel(self) -> bool:
+            return True
+
+        def result(self, timeout=None):
+            del timeout
+            if not InterruptedFuture.interrupted:
+                InterruptedFuture.interrupted = True
+                raise KeyboardInterrupt
+            raise concurrent.futures.CancelledError
+
+    async def fake_run(request, progress_callback=None):
+        del request
+        progress_callback(
+            RunEvent(
+                stage="bootstrap",
+                message="Initializing run",
+                metrics={"run_id": "e319d654da6f4c029776307114316e05"},
+            )
+        )
+
+    def fake_submit(coro):
+        asyncio.run(coro)
+        return InterruptedFuture()
+
+    engine = _fake_engine(fake_run)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+    monkeypatch.setattr("shandu.cli.get_async_runner", lambda: SimpleNamespace(submit=fake_submit))
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
+
+    assert result.exit_code == 130, result.output
+    assert "Run cancelled. Progress is saved as run e319d654." in result.stdout
+    assert "Continue with: shandu resume e319d654" in result.stdout
+
+
+def test_run_verbose_adds_raw_metrics_to_the_stream(monkeypatch) -> None:
+    async def fake_run(request, progress_callback=None):
+        progress_callback(
+            RunEvent(
+                stage="search",
+                message="Task t1 query completed",
+                payload={"task_id": "t1"},
+                metrics={"agent_model_calls": 2, "hits": 3},
+            )
+        )
+        return ResearchRunResult(run_id="run-1", request=request, report_markdown="# Report")
+
+    engine = _fake_engine(fake_run)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    plain = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
+    verbose = CliRunner(mix_stderr=False).invoke(cli, ["run", "q", "--verbose"])
+
+    assert "Subagent 1 query completed  results 3" in plain.stdout
+    assert "agent_model_calls" not in plain.stdout
+    assert "agent_model_calls=2 hits=3" in verbose.stdout
 
 
 def test_info_reports_provider_managed_credentials() -> None:

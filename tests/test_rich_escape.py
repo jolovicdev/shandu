@@ -25,6 +25,7 @@ def _ui(width: int = 160) -> tuple[ShanduUI, Console]:
 
 def test_event_line_escapes_markup_in_external_fields() -> None:
     ui, _ = _ui()
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
     event = RunEvent(
         stage="search",
         message=POISON,
@@ -33,7 +34,7 @@ def test_event_line_escapes_markup_in_external_fields() -> None:
         payload={"task_id": POISON, "query": POISON, "url": POISON},
     )
 
-    line = ui.event_line(event)
+    line = ui.event_line(event, snapshot, verbose=True)
 
     assert isinstance(line, Text)
     assert "[/notopen]" in line.plain

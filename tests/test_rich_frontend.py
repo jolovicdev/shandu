@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 from rich.console import Console
 
-from shandu.contracts import CitationEntry, ResearchRequest, ResearchRunResult
+from shandu.contracts import CitationEntry, ResearchRequest, ResearchRunResult, RunEvent
 from shandu.services.run_store import RunSummary
 from shandu.ui.rich_frontend import ShanduUI
 
@@ -242,6 +242,137 @@ def test_run_list_styles_each_status() -> None:
     assert styles["failed"].color == console.get_style("danger").color
     assert styles["cancelled"].color == console.get_style("warn").color
     assert styles["running"].color == console.get_style("label").color
+
+
+def _event(message: str, task: str = "", **fields) -> RunEvent:
+    payload = {"task_id": task, **fields.pop("payload", {})} if task else fields.pop("payload", {})
+    return RunEvent(stage="search", message=message, payload=payload, **fields)
+
+
+def test_subagents_are_numbered_by_arrival_across_iterations() -> None:
+    ui = ShanduUI(console=Console(record=True, width=160))
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
+    events = [
+        _event("Task iter_1_alpha started", "iter_1_alpha"),
+        _event("Task iter_1_beta started", "iter_1_beta"),
+        _event("Task iter_1_alpha completed", "iter_1_alpha"),
+        _event("Task iter_2_gamma started", "iter_2_gamma"),
+    ]
+    lines = []
+    for event in events:
+        snapshot.apply(event)
+        lines.append(ui.event_line(event, snapshot).plain)
+
+    assert [line.split(maxsplit=2)[2] for line in lines] == [
+        "Subagent 1 started",
+        "Subagent 2 started",
+        "Subagent 1 completed",
+        "Subagent 3 started",
+    ]
+    assert not any("iter_" in line for line in lines)
+
+
+def test_event_line_words_metrics_as_the_gui_feed_does() -> None:
+    ui = ShanduUI(console=Console(record=True, width=160))
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
+    event = _event(
+        "Iteration 1 subagents completed",
+        metrics={
+            "tasks": 3,
+            "evidence": 12,
+            "scraped": 5,
+            "url_count": 6,
+            "hits": 8,
+            "citations": 4,
+            "agent_model_calls": 9,
+            "llm_usage": {"total_tokens": 10},
+            "parallelism": 3,
+        },
+    )
+
+    text = ui.event_line(event, snapshot).plain
+
+    assert text.endswith(
+        "subagents 3 · results 8 · pages to read 6 · pages read 5 · evidence 12 · sources 4"
+    )
+    assert "agent_model_calls" not in text
+    assert "llm_usage" not in text
+
+
+def test_event_line_shows_raw_metrics_and_trace_type_when_verbose() -> None:
+    ui = ShanduUI(console=Console(record=True, width=160))
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
+    event = _event(
+        "Task t1 searching query",
+        "t1",
+        iteration=1,
+        metrics={"trace_type": "query_started", "query": "tides", "agent_model_calls": 2},
+        payload={"query": "tides"},
+    )
+
+    text = ui.event_line(event, snapshot, verbose=True).plain
+
+    assert text.endswith('Subagent 1 searching query  iteration 2 · query_started · agent_model_calls=2 · "tides"')
+
+
+def _printed(events: list[RunEvent], verbose: bool = False, **console_options) -> str:
+    console = Console(record=True, width=60, **console_options)
+    ui = ShanduUI(console=console)
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
+    for event in events:
+        snapshot.apply(event)
+        ui.print_event(event, snapshot, console, verbose)
+    return console.export_text()
+
+
+def test_print_event_skips_announcements_that_a_completion_line_repeats() -> None:
+    events = [
+        _event("Task t1 searching query", "t1", metrics={"trace_type": "query_started"}),
+        _event("Task t1 query completed", "t1", metrics={"trace_type": "query_completed", "hits": 6}),
+        _event("Task t1 scraping pages", "t1", metrics={"trace_type": "scrape_started", "url_count": 3}),
+        _event("Task t1 extracting page", "t1", metrics={"trace_type": "extract_started"}),
+        _event("Task t1 extracted page", "t1", metrics={"trace_type": "extract_completed"}),
+    ]
+
+    quiet = _printed(events)
+    verbose = _printed(events, verbose=True)
+
+    assert [line.split(maxsplit=2)[2].split("  ")[0] for line in quiet.splitlines()] == [
+        "Subagent 1 query completed",
+        "Subagent 1 extracted page",
+    ]
+    assert len(verbose.splitlines()) == 5
+
+
+def test_print_event_keeps_the_whole_line_when_the_output_is_not_a_terminal() -> None:
+    url = "https://example.com/" + "a-long-path/" * 8
+    event = _event("Task t1 extracted page", "t1", payload={"url": url, "query": "q" * 40})
+
+    text = _printed([event], force_terminal=False)
+
+    assert len(text.splitlines()) == 1
+    assert url in text and "q" * 40 in text
+
+
+def test_print_event_crops_to_one_line_on_a_terminal() -> None:
+    url = "https://example.com/" + "a-long-path/" * 8
+    event = _event("Task t1 extracted page", "t1", payload={"url": url})
+
+    text = _printed([event], force_terminal=True)
+
+    assert len(text.splitlines()) == 1
+    assert len(text.splitlines()[0]) == 60 and text.splitlines()[0].endswith("…")
+
+
+def test_snapshot_takes_the_run_id_from_the_first_event_and_the_last() -> None:
+    ui = ShanduUI(console=Console(record=True, width=160))
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
+
+    assert snapshot.run_id == "pending"
+    snapshot.apply(RunEvent(stage="bootstrap", message="Initializing run", metrics={"run_id": "abc123"}))
+    assert snapshot.run_id == "abc123"
+    snapshot.apply(RunEvent(stage="complete", message="Run completed", payload={"run_id": "abc124"}))
+    assert snapshot.run_id == "abc124"
 
 
 def test_a_long_publisher_name_leaves_titles_on_one_line() -> None:

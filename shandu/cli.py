@@ -287,7 +287,11 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     help="Save the report, or with --json-output the full result, to this file.",
 )
 @click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
-@click.option("--verbose", is_flag=True, help="Print a recap of every stage when the run ends.")
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Show every event with its raw metrics, and a recap of every stage when the run ends.",
+)
 @click.option(
     "--clarify", is_flag=True, help="Answer up to three clarifying questions first."
 )
@@ -442,7 +446,7 @@ def _run_to_completion(
 
     def on_event(event: RunEvent) -> None:
         snapshot.apply(event)
-        ui.print_event(event, diag)
+        ui.print_event(event, snapshot, diag, verbose)
 
     future = get_async_runner().submit(start(on_event))
     try:
@@ -453,7 +457,7 @@ def _run_to_completion(
             future.result()
         except Exception:
             pass
-        diag.print("Run cancelled.")
+        _print_cancelled(diag, snapshot.run_id)
         raise SystemExit(130) from None
     except RunNotFoundError as exc:
         raise click.ClickException(f"Run {exc} not found.") from None
@@ -523,6 +527,15 @@ def _resume_hint(run_id: str) -> str:
     return f"Continue with: shandu resume {run_id[:8]}"
 
 
+def _print_cancelled(diag: Console, run_id: str) -> None:
+    # "pending" is a snapshot that has seen no event, so no run exists to resume.
+    if run_id == "pending":
+        diag.print("Run cancelled.")
+        return
+    diag.print(f"Run cancelled. Progress is saved as run {run_id[:8]}.")
+    diag.print(_resume_hint(run_id))
+
+
 def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
     try:
         return engine.load_run(run_id).request
@@ -540,7 +553,11 @@ def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
     help="Save the report, or with --json-output the full result, to this file.",
 )
 @click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
-@click.option("--verbose", is_flag=True, help="Print a recap of every stage when the run ends.")
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Show every event with its raw metrics, and a recap of every stage when the run ends.",
+)
 def resume_command(
     run_id: str, output: str | None, json_output: bool, verbose: bool
 ) -> None:

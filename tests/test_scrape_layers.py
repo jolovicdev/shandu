@@ -248,6 +248,8 @@ def test_parse_pdf_never_takes_a_lower_bold_heading_for_the_title() -> None:
         "Title (Use “Title” style here)",
         "Acknowledgement Title (Trebuchet MS Bold 15 pt)",
         "July 7, 2020",
+        "Microsoft PowerPoint - EASD25 CVOT Symposium_Lilly Deck_FINAL_18SEP2025",
+        "Microsoft Word - field_trial_v2.docx",
     ],
 )
 def test_parse_pdf_ignores_template_placeholder_titles(placeholder: str) -> None:

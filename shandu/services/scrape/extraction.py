@@ -348,9 +348,11 @@ def _pdf_bold_title(page: Any) -> str:
 
 
 # Document templates leave their placeholders in the PDF title field: the bare
-# word "Title", a style hint, a font note, or only the document date.
+# word "Title", a style hint, a font note, or only the document date. Office's
+# print to PDF writes the app name and the file name instead.
 _PDF_PLACEHOLDER_TITLE = re.compile(
-    r"^title$|style here\W*\)$|\(\s*[\w ]+\d+(?:\.\d+)?\s*pt\s*\)$|^[a-z]+ \d{1,2}, \d{4}$",
+    r"^title$|style here\W*\)$|\(\s*[\w ]+\d+(?:\.\d+)?\s*pt\s*\)$|^[a-z]+ \d{1,2}, \d{4}$"
+    r"|^microsoft (?:word|powerpoint|excel) - ",
     re.IGNORECASE,
 )
 

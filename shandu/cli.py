@@ -13,8 +13,8 @@ from rich.console import Console
 from rich.markup import escape
 
 from . import __version__
-from .config import EFFORT_PRESETS, config, infer_api_key_env_name
-from .contracts import ResearchRequest, ResearchRunResult, RunEvent
+from .config import config, infer_api_key_env_name
+from .contracts import EFFORT_PRESETS, ResearchRequest, ResearchRunResult, RunEvent
 from .engine import ShanduEngine
 from .interfaces import DepthPolicy, DetailLevel
 from .runtime import get_async_runner, reset_bootstrap

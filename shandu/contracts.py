@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 SourceClass = Literal[
     "primary",
@@ -38,6 +38,39 @@ QualityFlag = Literal[
 ]
 
 
+# Research budget presets. A request that names an effort takes the
+# preset's value for every budget it does not set itself.
+EFFORT_PRESETS: dict[str, dict[str, int]] = {
+    "low": {
+        "max_iterations": 1,
+        "parallelism": 2,
+        "max_pages_per_task": 3,
+        "max_results_per_query": 6,
+        "max_searches_per_task": 3,
+    },
+    "medium": {
+        "max_iterations": 2,
+        "parallelism": 3,
+        "max_pages_per_task": 6,
+        "max_results_per_query": 8,
+        "max_searches_per_task": 6,
+    },
+    "high": {
+        "max_iterations": 3,
+        "parallelism": 4,
+        "max_pages_per_task": 6,
+        "max_results_per_query": 8,
+        "max_searches_per_task": 8,
+    },
+    "max": {
+        "max_iterations": 4,
+        "parallelism": 6,
+        "max_pages_per_task": 8,
+        "max_results_per_query": 10,
+        "max_searches_per_task": 10,
+    },
+}
+
 class ResearchRequest(BaseModel):
     query: str
     max_iterations: int = Field(default=2, ge=1, le=8)
@@ -65,6 +98,13 @@ class ResearchRequest(BaseModel):
     max_cost_usd: float | None = Field(default=None, gt=0)
     max_searches_per_task: int = Field(default=6, ge=1, le=12)
     effort: Literal["low", "medium", "high", "max"] = "medium"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _effort_fills_the_budget(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("effort") in EFFORT_PRESETS:
+            return {**EFFORT_PRESETS[data["effort"]], **data}
+        return data
 
     @field_validator("include_domains", "exclude_domains")
     @classmethod

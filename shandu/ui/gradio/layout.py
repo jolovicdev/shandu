@@ -12,8 +12,8 @@ from typing import Any
 import gradio as gr
 from pydantic import ValidationError
 
-from ...contracts import ResearchRequest, ResearchRunResult, RunEvent
-from ...config import EFFORT_PRESETS, infer_api_key_env_name
+from ...contracts import EFFORT_PRESETS, ResearchRequest, ResearchRunResult, RunEvent
+from ...config import infer_api_key_env_name
 from ...engine import ShanduEngine
 from ...runtime import get_async_runner
 from ...services.report import RecentReport, list_recent_reports

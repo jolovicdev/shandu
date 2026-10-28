@@ -234,3 +234,10 @@ def test_domain_filters_ignore_ports_and_schemes() -> None:
 
     assert request.include_domains == ["docs.example.com", "b.org"]
     assert request.exclude_domains == ["bad.org"]
+
+
+def test_a_named_effort_fills_the_budgets_a_request_leaves_unset() -> None:
+    request = ResearchRequest(query="q", effort="high", max_iterations=1)
+
+    assert (request.max_iterations, request.parallelism, request.max_pages_per_task) == (1, 4, 6)
+    assert request.max_searches_per_task == 8

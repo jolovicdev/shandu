@@ -128,6 +128,28 @@ def test_ledger_sanitizes_titles() -> None:
     assert by_url["https://example.com/b"].title == "example.com"
 
 
+def test_ledger_strips_markup_and_merges_variants_that_differ_only_by_it() -> None:
+    agent = CitationAgent()
+    evidence = [
+        _record("e1", "https://journal.example/doi/full/1", "Efficacy of <fc>GLP</fc>\u2010 1 agonists in trials"),
+        _record("e2", "https://journal.example/doi/pdf/1", "Efficacy of GLP-1 agonists in trials"),
+    ]
+
+    citations = asyncio.run(agent.build_citations("q", evidence))
+
+    assert [entry.title for entry in citations] == ["Efficacy of GLP\u2010 1 agonists in trials"]
+    assert set(citations[0].evidence_ids) == {"e1", "e2"}
+
+
+def test_ledger_names_an_untitled_document_after_its_file() -> None:
+    agent = CitationAgent()
+    url = "https://gov.example/Documents/2025/Informe-no-confidencial-Comite-28A.pdf"
+
+    citations = asyncio.run(agent.build_citations("q", [_record("e1", url, "gov.example")]))
+
+    assert citations[0].title == "Informe no confidencial Comite 28A"
+
+
 def test_ledger_caps_lede_length_titles() -> None:
     agent = CitationAgent()
     lede = "A british tokamak just came apart after many plasma pulses " * 6

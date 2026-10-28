@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 from datetime import date
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from ..contracts import CitationEntry, EvidenceRecord
 
@@ -18,6 +19,7 @@ _MIN_CITABLE_CONFIDENCE = 0.35
 # Same-work dedup only trusts titles long enough to be distinctive; short
 # titles ("10-K", "FAQ") collide across unrelated pages on the same site.
 _MIN_MERGE_TITLE_LEN = 12
+_MARKUP = re.compile(r"<[^>]+>")
 
 
 class CitationAgent:
@@ -42,7 +44,8 @@ class CitationAgent:
 
     @staticmethod
     def _sanitize_title(title: str, fallback: str) -> str:
-        cleaned = " ".join(title.split())
+        # Publisher pages leave markup and soft hyphens inside titles.
+        cleaned = " ".join(_MARKUP.sub("", title).replace("\u00ad", "").split())
         if len(cleaned) < 3 or cleaned.lower().startswith(
             ("http://", "https://", "www.")
         ):
@@ -56,10 +59,17 @@ class CitationAgent:
     @staticmethod
     def _merge_key(url: str, title: str) -> tuple[str, str] | None:
         host = urlparse(url).netloc.lower().removeprefix("www.")
-        normalized = " ".join(title.split()).casefold()
+        normalized = " ".join(re.sub(r"[\W_]+", " ", title.casefold()).split())
         if not host or len(normalized) < _MIN_MERGE_TITLE_LEN:
             return None
         return host, normalized
+
+    @staticmethod
+    def _title_from_url(url: str) -> str:
+        """A document served without a title is named after its file."""
+        stem = unquote(urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]).rsplit(".", 1)[0]
+        words = " ".join(re.sub(r"[-_+]+", " ", stem).split())
+        return words if sum(char.isalpha() for char in words) >= 8 else ""
 
     def _build_ledger(self, evidence: list[EvidenceRecord]) -> list[CitationEntry]:
         grouped: dict[str, list[EvidenceRecord]] = {}
@@ -73,7 +83,9 @@ class CitationAgent:
             first = items[0]
             host = urlparse(url).netloc.removeprefix("www.")
             publisher = first.site_name or host or "unknown"
-            title = self._sanitize_title(first.title, publisher)
+            title = self._sanitize_title(first.title, "")
+            if not title or title.casefold() == host.casefold():
+                title = self._title_from_url(url) or publisher
             evidence_ids = sorted({entry.evidence_id for entry in items})
             # Fallback titles equal the publisher; merging on them would fuse
             # unrelated pages from the same site.

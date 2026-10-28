@@ -27,7 +27,7 @@ _HEADING_ANCHOR = re.compile(r"(?:\s*\u00b6|(?<=[a-z])#)$")
 # beside its HTML page with ".pdf" added.
 _DOI = re.compile(r"10\.\d{4,9}/[^\s?#]+", re.IGNORECASE)
 _DOI_VIEW_SUFFIX = re.compile(r"(?:\.pdf|/(?:full|pdf|epdf|abstract|fulltext))+$")
-_ARXIV_ID = re.compile(r"(\d{4}\.\d{4,5})(?:v\d+)?")
+_ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}")
 # The same long title on two sites names one work, such as a paper on its
 # journal's site and on PubMed Central.
 _MIN_CROSS_SITE_TITLE_LEN = 40
@@ -71,14 +71,7 @@ class CitationAgent:
         return cleaned
 
     @staticmethod
-    def _merge_key(url: str, title: str) -> tuple[str, str] | None:
-        host = urlparse(url).netloc.lower().removeprefix("www.")
-        normalized = " ".join(re.sub(r"[\W_]+", " ", title.casefold()).split())
-        if not host or len(normalized) < _MIN_MERGE_TITLE_LEN:
-            return None
-        return host, normalized
-
-    def _same_work_keys(self, url: str, title: str, publisher: str) -> list[tuple[str, str]]:
+    def _same_work_keys(url: str, title: str, publisher: str) -> list[tuple[str, str]]:
         parsed = urlparse(url)
         host = parsed.netloc.lower().removeprefix("www.")
         path = unquote(parsed.path).rstrip("/")
@@ -92,16 +85,16 @@ class CitationAgent:
             else:
                 keys.append(("doi", value))
         elif arxiv:
-            keys.append(("arxiv", arxiv.group(1)))
+            keys.append(("arxiv", arxiv.group()))
         elif not parsed.query:
             keys.append(("page", host + path.removesuffix(".pdf")))
+        normalized = " ".join(re.sub(r"[\W_]+", " ", title.casefold()).split())
         # Fallback titles equal the publisher; merging on them would fuse
         # unrelated pages from the same site.
-        same_site = self._merge_key(url, title) if title != publisher else None
-        if same_site is not None:
-            keys.append(same_site)
-            if len(same_site[1]) >= _MIN_CROSS_SITE_TITLE_LEN:
-                keys.append(("title", same_site[1]))
+        if host and title != publisher and len(normalized) >= _MIN_MERGE_TITLE_LEN:
+            keys.append((host, normalized))
+            if len(normalized) >= _MIN_CROSS_SITE_TITLE_LEN:
+                keys.append(("title", normalized))
         return keys
 
     @staticmethod
@@ -153,21 +146,19 @@ class CitationAgent:
             title = self._without_site_suffix(title, publisher, host)
             evidence_ids = sorted({entry.evidence_id for entry in items})
             keys = self._same_work_keys(url, title, publisher)
-            known = next((merged[key] for key in keys if key in merged), None)
-            if known is not None:
-                known.evidence_ids = sorted(set(known.evidence_ids) | set(evidence_ids))
-                for key in keys:
-                    merged.setdefault(key, known)
-                continue
-            entry = CitationEntry(
-                citation_id=len(citations) + 1,
-                evidence_ids=evidence_ids,
-                url=url,
-                title=title,
-                publisher=publisher,
-                accessed_at=accessed,
-            )
+            entry = next((merged[key] for key in keys if key in merged), None)
+            if entry is None:
+                entry = CitationEntry(
+                    citation_id=len(citations) + 1,
+                    evidence_ids=evidence_ids,
+                    url=url,
+                    title=title,
+                    publisher=publisher,
+                    accessed_at=accessed,
+                )
+                citations.append(entry)
+            else:
+                entry.evidence_ids = sorted(set(entry.evidence_ids) | set(evidence_ids))
             for key in keys:
-                merged[key] = entry
-            citations.append(entry)
+                merged.setdefault(key, entry)
         return citations

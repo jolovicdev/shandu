@@ -153,11 +153,25 @@ def test_ledger_merges_copies_of_one_paper() -> None:
         _record("e4", "https://doi.org/10.1126/science.adk1234", "Science article"),
         _record("e5", "https://arxiv.org/abs/2401.01234v2", "Paper A abstract page"),
         _record("e6", "https://arxiv.org/pdf/2401.01234", "Paper A full text"),
+        _record("e7", "https://journal.example/doi/10.1126/science.adk1234/full", "Full text view"),
+        _record("e8", "https://doi.org/10.48550/arXiv.2401.01234", "Paper A record"),
+        _record("e9", "https://data.example/report?id=1", "First data table"),
+        _record("e10", "https://data.example/report?id=2", "Second data table"),
+        _record("e11", "https://docs.vllm.ai/quantized_kvcache", "Quantized KV Cache"),
+        _record("e12", "https://docs.sglang.io/quantized_kv_cache", "Quantized KV Cache"),
     ]
 
     citations = asyncio.run(CitationAgent().build_citations("q", evidence))
 
-    assert [entry.evidence_ids for entry in citations] == [["e1", "e2"], ["e3", "e4"], ["e5", "e6"]]
+    assert [entry.evidence_ids for entry in citations] == [
+        ["e1", "e2"],
+        ["e3", "e4", "e7"],
+        ["e5", "e6", "e8"],
+        ["e9"],
+        ["e10"],
+        ["e11"],
+        ["e12"],
+    ]
 
 
 def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:

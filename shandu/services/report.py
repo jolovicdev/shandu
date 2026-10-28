@@ -56,7 +56,8 @@ def list_recent_reports() -> list[RecentReport]:
             RecentReport(
                 run_id=run.run_id,
                 title=run.query or run.run_id,
-                saved_at=saved.strftime("%d %b %Y"),
+                # The time tells apart runs of one question saved the same day.
+                saved_at=saved.strftime("%d %b %Y, %H:%M"),
                 citations=run.citation_count,
                 usd_spent=run.usd_spent,
                 path=str(run.report_path),

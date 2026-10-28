@@ -23,7 +23,8 @@ def launch_gui(
         theme=build_theme(),
         css=CSS,
         head=HEAD,
-        footer_links=["gradio", "settings"],
+        # Gradio's own settings link would sit beside Shandu's Settings panel.
+        footer_links=["gradio"],
         auth=auth,
         allowed_paths=[runs_dir],
     )

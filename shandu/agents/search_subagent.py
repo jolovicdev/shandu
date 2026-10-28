@@ -51,14 +51,23 @@ _EXTRACTION_CONCURRENCY = 8
 _SCRAPE_ROUNDS = 3
 
 
-def _cased_title(page_title: str, hit_title: str) -> str:
-    """Some PDFs set the title in capitals; the search hit that led to the
-    page names the same title in its own casing, which reads better."""
-    def words(title: str) -> list[str]:
-        return re.sub(r"[\W_]+", " ", title.casefold()).split()
+# Search engines list an arXiv page under its <title>, "[2406.02069] PyramidKV: ...".
+_ARXIV_ID_PREFIX = re.compile(r"^\[\d{4}\.\d{4,5}(?:v\d+)?\]\s*")
 
-    if page_title.isupper() and hit_title and words(hit_title) == words(page_title):
-        return hit_title
+
+def _cased_title(page_title: str, hit_title: str) -> str:
+    """Some PDFs set the title in capitals, which also hides words the title
+    breaks across lines. The search hit that led to the page names the paper
+    in its own casing and reads better when it names mostly the same words; a
+    preprint's hit can word the title a little differently from its PDF."""
+    def words(title: str) -> set[str]:
+        return set(re.sub(r"[\W_]+", " ", title.casefold()).split())
+
+    hit = _ARXIV_ID_PREFIX.sub("", hit_title).strip()
+    if page_title.isupper() and hit and not hit.isupper():
+        page_words, hit_words = words(page_title), words(hit)
+        if len(page_words & hit_words) >= 0.6 * len(page_words | hit_words):
+            return hit
     return page_title
 
 

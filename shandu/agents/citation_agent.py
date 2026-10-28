@@ -23,7 +23,7 @@ _MIN_MERGE_TITLE_LEN = 12
 _MARKUP = re.compile(r"<[^>]+>")
 # Documentation themes end a heading with its anchor ("Quantized KV Cache¶").
 # A "#" after a capital is part of a name such as C#.
-_HEADING_ANCHOR = re.compile(r"(?:\s*\u00b6|(?<=[a-z])#)$")
+_HEADING_ANCHOR = re.compile(r"(?:\s*\u00b6|(?<=\w\w)#)$")
 # Copies of one paper share a DOI or an arXiv id, and a publisher's PDF sits
 # beside its HTML page with ".pdf" added.
 _DOI = re.compile(r"10\.\d{4,9}/[^\s?#]+", re.IGNORECASE)

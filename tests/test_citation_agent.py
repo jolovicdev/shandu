@@ -310,6 +310,7 @@ def test_ledger_drops_a_documentation_heading_anchor_from_titles() -> None:
         _record("e1", "https://docs.vllm.ai/quantized-kv", "Quantized KV Cache¶"),
         _record("e2", "https://nvidia.github.io/attention", "Multi-Head, Multi-Query, and Group-Query Attention#"),
         _record("e3", "https://learn.example/csharp", "Getting started with C#"),
+        _record("e4", "https://nvidia.github.io/blog", "Speed up inference with quantization in TRT-LLM#"),
     ]
 
     citations = asyncio.run(CitationAgent().build_citations("q", evidence))
@@ -318,4 +319,5 @@ def test_ledger_drops_a_documentation_heading_anchor_from_titles() -> None:
         "Quantized KV Cache",
         "Multi-Head, Multi-Query, and Group-Query Attention",
         "Getting started with C#",
+        "Speed up inference with quantization in TRT-LLM",
     ]

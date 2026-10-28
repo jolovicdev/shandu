@@ -171,6 +171,16 @@ def test_info_reports_provider_managed_credentials() -> None:
     assert "provider-managed" in result.output
 
 
+def test_info_labels_are_lowercase_words() -> None:
+    result = CliRunner().invoke(cli, ["info"])
+
+    assert result.exit_code == 0
+    for label in ("max tokens", "storage dir", "default iterations", "default subagents"):
+        assert label in result.output
+    for title_case in ("Max Tokens", "Storage Dir", "Default Iterations", "Default Parallelism"):
+        assert title_case not in result.output
+
+
 def test_cli_loads_dotenv_from_working_directory(tmp_path) -> None:
     (tmp_path / ".env").write_text("SHANDU_MODEL=probe/x\n", encoding="utf-8")
     runner = tmp_path / "runner.py"

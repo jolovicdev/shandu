@@ -120,26 +120,26 @@ def info() -> None:
     key_in_config = bool(str(config.get("api", "api_key", "")).strip())
     if api_key_env:
         key_rows = [
-            ("API Key Env", api_key_env),
-            ("API Key", "set" if (key_in_env or key_in_config) else "not set"),
+            ("API key env", api_key_env),
+            ("API key", "set" if (key_in_env or key_in_config) else "not set"),
         ]
     else:
         key_rows = [
-            ("API Key Env", "provider-managed"),
-            ("API Key", "provider-managed"),
+            ("API key env", "provider-managed"),
+            ("API key", "provider-managed"),
         ]
     role_models = dict(config.get("api", "models", {}) or {})
     rows = [
-        ("Version", __version__),
-        ("Model", config.get("api", "model")),
-        *((f"Model ({role})", model) for role, model in sorted(role_models.items())),
-        ("Temperature", config.get("api", "temperature")),
-        ("Max Tokens", config.get("api", "max_tokens")),
+        ("version", __version__),
+        ("model", config.get("api", "model")),
+        *((f"model ({role})", model) for role, model in sorted(role_models.items())),
+        ("temperature", config.get("api", "temperature")),
+        ("max tokens", config.get("api", "max_tokens")),
         *key_rows,
-        ("Search Backend", config.get("search", "backend")),
-        ("Storage Dir", config.get("runtime", "storage_dir")),
-        ("Default Iterations", config.get("orchestration", "max_iterations")),
-        ("Default Parallelism", config.get("orchestration", "parallelism")),
+        ("search backend", config.get("search", "backend")),
+        ("storage dir", config.get("runtime", "storage_dir")),
+        ("default iterations", config.get("orchestration", "max_iterations")),
+        ("default subagents", config.get("orchestration", "parallelism")),
     ]
     console.print(ui.key_values("Configuration", [(label, str(value)) for label, value in rows]))
 
@@ -178,7 +178,7 @@ def configure() -> None:
         type=int,
     )
     parallelism = click.prompt(
-        "Default parallelism",
+        "Default subagents",
         default=int(config.get("orchestration", "parallelism", 3)),
         type=int,
     )
@@ -519,6 +519,10 @@ def _no_such_run(run_id: str) -> click.ClickException:
     return click.ClickException(f"No run starts with {run_id}. See `shandu list`.")
 
 
+def _resume_hint(run_id: str) -> str:
+    return f"Continue with: shandu resume {run_id[:8]}"
+
+
 def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
     try:
         return engine.load_run(run_id).request
@@ -613,7 +617,13 @@ def report_command(
 
 
 @cli.command("list")
-@click.option("--limit", default=20, type=int, show_default=True, help="How many runs to show, newest first.")
+@click.option(
+    "--limit",
+    default=20,
+    type=click.IntRange(min=1),
+    show_default=True,
+    help="How many runs to show, newest first.",
+)
 def list_command(limit: int) -> None:
     """List stored research runs, newest first."""
     engine = ShanduEngine.from_config()
@@ -635,15 +645,19 @@ def show_command(run_id: str) -> None:
     run_id = _resolve_run_id(engine, run_id)
     try:
         result = engine.load_run(run_id)
+        status = next((run.status for run in engine.list_runs() if run.run_id == run_id), "unknown")
     except RunNotFoundError:
         raise _no_such_run(run_id) from None
     finally:
         engine.close()
-    console.print(ui.result_summary(result))
     if result.report_markdown:
+        console.print(ui.result_summary(result))
         console.print(ui.document("Final Report", result.report_markdown))
-    else:
-        console.print(ui.warning("This run has no report yet."))
+        return
+    console.print(ui.key_values("Run summary", [("run", run_id[:8]), ("status", status)]))
+    console.print(ui.warning("This run has no report yet."))
+    if status in ("cancelled", "failed"):
+        console.print(_resume_hint(run_id))
 
 
 @cli.command("aisearch")

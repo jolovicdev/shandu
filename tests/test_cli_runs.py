@@ -93,11 +93,11 @@ def test_list_prints_stored_runs(monkeypatch) -> None:
     assert "How much memory do KV cache" in result.stdout
 
 
-def _stored_run(run_id: str) -> RunSummary:
+def _stored_run(run_id: str, status: str = "completed") -> RunSummary:
     return RunSummary(
         run_id=run_id,
         query="q",
-        status="completed",
+        status=status,
         created_at="2026-09-29T10:00:00+00:00",
         citation_count=1,
         usd_spent=None,
@@ -120,6 +120,42 @@ def test_show_finds_a_run_by_the_start_of_its_id(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert loaded == ["473677ec1d73484f919f35932bbdeddd"]
+
+
+@pytest.mark.parametrize(
+    "status,resume_hint",
+    [("cancelled", True), ("failed", True), ("running", False), ("completed", False)],
+)
+def test_show_names_the_status_of_a_run_without_a_report(monkeypatch, status, resume_hint) -> None:
+    run_id = "847436363ebb4bc6b549712011aa89cf"
+    engine = SimpleNamespace(
+        list_runs=lambda: [_stored_run(run_id, status)],
+        load_run=lambda run_id: ResearchRunResult(
+            run_id=run_id, request=ResearchRequest(query="q"), report_markdown=""
+        ),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["show", "84743636"])
+
+    lines = [line.split() for line in result.stdout.splitlines()]
+    assert result.exit_code == 0, result.output
+    assert ["status", status] in lines
+    assert "This run has no report yet." in result.stdout
+    assert "iterations" not in result.stdout
+    assert ("Continue with: shandu resume 84743636" in result.stdout) is resume_hint
+
+
+@pytest.mark.parametrize("limit", ["0", "-1"])
+def test_list_refuses_a_limit_below_one(monkeypatch, limit) -> None:
+    engine = SimpleNamespace(list_runs=lambda: [_stored_run("473677ec" + "0" * 24)], close=lambda: None)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["list", "--limit", limit])
+
+    assert result.exit_code == 2
+    assert "Invalid value for '--limit'" in result.stderr
 
 
 def test_a_run_id_prefix_shared_by_two_runs_asks_for_more(monkeypatch) -> None:

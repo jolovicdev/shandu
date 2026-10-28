@@ -121,4 +121,4 @@ def test_result_summary_shows_citation_audit_counts() -> None:
 
     console.print(ui.result_summary(result))
 
-    assert "36 supported · 3 partial · 2 removed · 4 unchecked" in console.export_text()
+    assert "36 supported · 3 partly supported · 2 removed · 4 unchecked" in console.export_text()

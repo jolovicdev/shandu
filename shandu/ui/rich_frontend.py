@@ -47,6 +47,16 @@ _EVENT_ONLY_METRICS = frozenset(
 )
 
 
+_STATUS_STYLES = {"completed": "ok", "cancelled": "warn", "failed": "danger"}
+
+
+def _local_time(stamp: str) -> str:
+    try:
+        return datetime.fromisoformat(stamp).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return stamp
+
+
 def _inspect_result_summary(output: object) -> list[tuple[str, str]]:
     if not isinstance(output, dict):
         return []
@@ -57,7 +67,7 @@ def _inspect_result_summary(output: object) -> list[tuple[str, str]]:
     for key, label in (
         ("iterations", "iterations"),
         ("evidence_count", "evidence"),
-        ("citation_count", "citations"),
+        ("citation_count", "sources"),
     ):
         value = stats.get(key)
         if value is not None:
@@ -141,19 +151,22 @@ class ShanduUI:
         )
 
     def run_list(self, runs: list[RunSummary]) -> RenderableType:
-        # Only the trailing question column shrinks. Commands that take a run
-        # id accept its first eight characters.
+        # Only the trailing question column shrinks, and it wraps so that no
+        # question is cut. Commands that take a run id accept its first eight
+        # characters.
         table = Table.grid(padding=(0, 2), expand=True)
-        table.add_column(style="muted", no_wrap=True, min_width=8)
-        table.add_column(style="label", no_wrap=True, min_width=10)
-        table.add_column(style="label", no_wrap=True, min_width=9)
-        table.add_column(style="muted", no_wrap=True, justify="right", min_width=7)
-        table.add_column(style="accent", overflow="ellipsis", no_wrap=True, ratio=1)
+        table.show_header = True
+        table.header_style = "label"
+        table.add_column("run", style="muted", no_wrap=True, min_width=8)
+        table.add_column("started", style="label", no_wrap=True, min_width=16)
+        table.add_column("status", no_wrap=True, min_width=9)
+        table.add_column("cost", style="muted", no_wrap=True, justify="right", min_width=7)
+        table.add_column("question", style="accent", overflow="fold", ratio=1)
         for run in runs:
             table.add_row(
                 escape(run.run_id[:8]),
-                escape(run.created_at[:10]),
-                escape(run.status),
+                escape(_local_time(run.created_at)),
+                Text(run.status, style=_STATUS_STYLES.get(run.status, "label")),
                 f"${run.usd_spent:.3f}" if run.usd_spent else "",
                 escape(run.query),
             )
@@ -213,7 +226,7 @@ class ShanduUI:
             ("iteration", str(snapshot.iteration + 1)),
             ("query", snapshot.request.query),
             ("detail", snapshot.request.detail_level),
-            ("parallelism", str(snapshot.request.parallelism)),
+            ("subagents", str(snapshot.request.parallelism)),
         ]
         rows.extend(
             (str(key), str(value))
@@ -244,10 +257,10 @@ class ShanduUI:
     def result_summary(self, result: ResearchRunResult) -> RenderableType:
         stats = result.run_stats
         rows = [
-            ("run", result.run_id),
+            ("run", result.run_id[:8]),
             ("iterations", str(stats.get("iterations", 0))),
             ("evidence", str(stats.get("evidence_count", 0))),
-            ("citations", str(stats.get("citation_count", 0))),
+            ("sources", str(stats.get("citation_count", 0))),
             ("elapsed", f"{stats.get('elapsed_seconds', 0)}s"),
         ]
         sub_question_coverage = stats.get("sub_question_coverage")
@@ -267,7 +280,7 @@ class ShanduUI:
             rows.append(("findings", str(findings)))
         checked = audit_summary(stats.get("citation_audit"))
         if checked:
-            rows.append(("citations checked", checked))
+            rows.append(("citation checks", checked.replace(" partial", " partly supported")))
         model_calls = stats.get("agent_model_calls")
         if isinstance(model_calls, int) and model_calls > 0:
             rows.append(("model calls", str(model_calls)))
@@ -277,9 +290,6 @@ class ShanduUI:
             if isinstance(model_calls, int) and model_calls > 0:
                 if coverage not in ("partial", "full"):
                     coverage = "partial" if metered_calls < model_calls else "full"
-                rows.append(
-                    ("cost coverage", f"{coverage} ({metered_calls}/{model_calls})")
-                )
             else:
                 rows.append(("metered calls", str(metered_calls)))
         llm_tokens = stats.get("llm_tokens")
@@ -287,8 +297,10 @@ class ShanduUI:
             rows.append(("LLM tokens", f"{llm_tokens:,}"))
         usd_spent = stats.get("usd_spent")
         if isinstance(usd_spent, (int, float)) and float(usd_spent) > 0:
-            label = "metered cost" if coverage == "partial" else "USD spent"
-            rows.append((label, f"${float(usd_spent):.6f}"))
+            cost = f"${float(usd_spent):.6f}"
+            if coverage == "partial":
+                cost = f"at least {cost} · {metered_calls} of {model_calls} model calls metered"
+            rows.append(("USD spent", cost))
 
         sources = Table.grid(padding=(0, 2))
         sources.add_column(style="muted", no_wrap=True, justify="right")
@@ -304,7 +316,7 @@ class ShanduUI:
         if remainder > 0:
             sources.add_row("", "", f"and {remainder} more")
         if sources.row_count == 0:
-            sources.add_row("", "", "No citations")
+            sources.add_row("", "", "No sources")
 
         return Group(
             Rule(style="panel"),
@@ -322,10 +334,12 @@ class ShanduUI:
     def inspect_summary(self, payload: dict[str, object]) -> RenderableType:
         events = payload.get("events", [])
         rows = [
-            (key, str(payload.get(key, "")))
-            for key in ("run_id", "status", "created_at", "updated_at")
+            ("run", str(payload.get("run_id", ""))),
+            ("status", str(payload.get("status", ""))),
+            ("started", _local_time(str(payload.get("created_at", "")))),
+            ("updated", _local_time(str(payload.get("updated_at", "")))),
+            ("events", str(len(events) if isinstance(events, list) else 0)),
         ]
-        rows.append(("events", str(len(events) if isinstance(events, list) else 0)))
         rows.extend(_inspect_result_summary(payload.get("output_json")))
         return self.key_values("Run inspection", rows)
 

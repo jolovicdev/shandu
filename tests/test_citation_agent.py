@@ -257,7 +257,7 @@ def test_ledger_names_an_untitled_document_after_its_file() -> None:
 
 def test_ledger_caps_lede_length_titles() -> None:
     agent = CitationAgent()
-    lede = "A british tokamak just came apart after many plasma pulses " * 6
+    lede = "Grid operators estimate inertia across interconnected regions in real time " * 6
     evidence = [_record("e1", "https://example.com/a", lede)]
 
     citations = asyncio.run(agent.build_citations("q", evidence))
@@ -265,6 +265,8 @@ def test_ledger_caps_lede_length_titles() -> None:
     title = citations[0].title
     assert len(title) <= 160
     assert title.endswith("...")
+    kept = title.removesuffix("...").split()
+    assert lede.split()[: len(kept)] == kept
 
 
 def test_ledger_prefers_site_name_for_publisher() -> None:

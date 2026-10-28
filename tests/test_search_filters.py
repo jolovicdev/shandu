@@ -272,3 +272,36 @@ def test_a_named_effort_fills_the_budgets_a_request_leaves_unset() -> None:
 def test_a_request_refuses_what_no_run_can_use(fields: dict) -> None:
     with pytest.raises(ValidationError):
         ResearchRequest(**fields)
+
+
+def test_a_page_title_in_capitals_takes_the_search_hits_casing() -> None:
+    hit_titles = {
+        "https://arxiv.org/abs/2309.17453": "Efficient Streaming Language Models with Attention Sinks",
+        "https://example.org/b": "Another page",
+    }
+    page_titles = {
+        "https://arxiv.org/abs/2309.17453": "EFFICIENT STREAMING LANGUAGE MODELS WITH ATTENTION SINKS",
+        "https://example.org/b": "A DIFFERENT TITLE",
+    }
+
+    class Search:
+        async def search(self, query: str, max_results: int) -> list[SearchHit]:
+            return [
+                SearchHit(query=query, url=url, title=title, snippet="s")
+                for url, title in hit_titles.items()
+            ]
+
+    class Scrape:
+        async def scrape_many(self, urls):
+            return [
+                ScrapedPage(requested_url=url, url=url, title=page_titles[url], text="page text", domain="x.org")
+                for url in urls
+            ], 0
+
+    request = ResearchRequest(query="q", max_pages_per_task=2, max_results_per_query=2)
+    evidence = asyncio.run(_subagent(Search(), Scrape()).execute_task("run:1", _task(), request))
+
+    assert {record.requested_url: record.title for record in evidence} == {
+        "https://arxiv.org/abs/2309.17453": "Efficient Streaming Language Models with Attention Sinks",
+        "https://example.org/b": "A DIFFERENT TITLE",
+    }

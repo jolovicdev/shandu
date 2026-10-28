@@ -51,6 +51,17 @@ _EXTRACTION_CONCURRENCY = 8
 _SCRAPE_ROUNDS = 3
 
 
+def _cased_title(page_title: str, hit_title: str) -> str:
+    """Some PDFs set the title in capitals; the search hit that led to the
+    page names the same title in its own casing, which reads better."""
+    def words(title: str) -> list[str]:
+        return re.sub(r"[\W_]+", " ", title.casefold()).split()
+
+    if page_title.isupper() and hit_title and words(hit_title) == words(page_title):
+        return hit_title
+    return page_title
+
+
 def _host_matches(url: str, domains: Collection[str]) -> bool:
     host = (urlparse(url).hostname or "").lower().removeprefix("www.")
     return any(host == domain or host.endswith(f".{domain}") for domain in domains)
@@ -513,7 +524,7 @@ class SearchSubagent:
             requested_url=page.requested_url,
             final_url=page.url,
             domain=page.domain,
-            title=page.title,
+            title=_cased_title(page.title, hit_payload.get("title", "") if hit_payload else ""),
             site_name=page.site_name,
             snippet=extraction.snippet,
             extracted_text=extraction.extracted_text,

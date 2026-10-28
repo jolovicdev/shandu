@@ -153,6 +153,19 @@ def test_extract_html_takes_a_latexml_title_without_its_author_footnote() -> Non
     assert _extract_html(html).title == "Channel File 291: An Engineering Analysis"
 
 
+def test_extract_html_keeps_the_spaces_where_a_latexml_title_breaks_lines() -> None:
+    body = " ".join(["Query visibility changes how compression methods rank."] * 12)
+    html = (
+        "<html><head><title>How Query Visibility ChangesKV-Cache Rankings:A Matched Audit"
+        '</title></head><body><article class="ltx_document">'
+        '<h1 class="ltx_title ltx_title_document">How Query Visibility Changes\n'
+        '<br class="ltx_break">KV-Cache Rankings:<br class="ltx_break">A Matched Audit'
+        '<span class="ltx_note ltx_role_thanks"><sup>1</sup>Work done at a lab.</span></h1>'
+        f"<p>{body}</p></article></body></html>"
+    )
+    assert _extract_html(html).title == "How Query Visibility Changes KV-Cache Rankings: A Matched Audit"
+
+
 def test_parse_pdf_extracts_title_and_text() -> None:
     doc = fitz.open()
     page = doc.new_page()

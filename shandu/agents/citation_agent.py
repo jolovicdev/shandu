@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import textwrap
 from datetime import date
 from urllib.parse import unquote, urlparse
 
@@ -88,9 +89,7 @@ class CitationAgent:
             return fallback
         # Some pages ship a whole lede as <title>; cap so the reference list
         # stays scannable.
-        if len(cleaned) > 160:
-            cleaned = cleaned[:157].rstrip() + "..."
-        return cleaned
+        return textwrap.shorten(cleaned, 160, placeholder="...")
 
     @staticmethod
     def _same_work_keys(url: str, title: str, publisher: str) -> list[tuple[str, str]]:

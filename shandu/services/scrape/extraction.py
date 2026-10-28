@@ -263,13 +263,33 @@ def _extract_html(html: str) -> _ExtractionResult:
         result = _extract_with_bs4(html)
     result.site_name = _extract_site_name(html)
     result.published_at = _arxiv_stamp_date(html) or result.published_at
-    # LaTeXML pages (arXiv HTML) set the author footnote inside the h1 the
-    # extractors take the title from; their <title> holds the title alone.
     if "ltx_title_document" in html:
-        page_title = _TITLE_TAG.search(html)
-        if page_title:
-            result.title = " ".join(unescape(page_title.group(1)).split()) or result.title
+        result.title = _latexml_title(html) or result.title
     return result
+
+
+def _latexml_title(html: str) -> str:
+    """The title of a LaTeXML page (arXiv HTML) from its heading.
+
+    The heading carries the author footnotes, which go, and line breaks that
+    the page's <title> drops without a space, as in "ChangesKV-Cache".
+    """
+    try:
+        headings = lxml.html.fromstring(html).find_class("ltx_title_document")
+    except (ValueError, lxml.etree.ParserError):
+        headings = []
+    for heading in headings:
+        for note in heading.xpath(
+            './/*[contains(@class, "ltx_note") or contains(@class, "ltx_pubnotes")]'
+        ):
+            note.drop_tree()
+        for line_break in heading.iter("br"):
+            line_break.tail = " " + (line_break.tail or "")
+        title = " ".join(heading.text_content().split())
+        if title:
+            return title
+    page_title = _TITLE_TAG.search(html)
+    return " ".join(unescape(page_title.group(1)).split()) if page_title else ""
 
 
 _FITZ_BOLD_FLAG = 16

@@ -141,17 +141,17 @@ class ShanduUI:
         )
 
     def run_list(self, runs: list[RunSummary]) -> RenderableType:
-        # Only the trailing question column shrinks: the run id must stay
-        # whole so it can be copied into show, report, or resume.
+        # Only the trailing question column shrinks. Show, report, and resume
+        # accept the first eight characters of an id.
         table = Table.grid(padding=(0, 2), expand=True)
-        table.add_column(style="muted", no_wrap=True, min_width=32)
+        table.add_column(style="muted", no_wrap=True, min_width=8)
         table.add_column(style="label", no_wrap=True, min_width=10)
         table.add_column(style="label", no_wrap=True, min_width=9)
         table.add_column(style="muted", no_wrap=True, justify="right", min_width=7)
         table.add_column(style="accent", overflow="ellipsis", no_wrap=True, ratio=1)
         for run in runs:
             table.add_row(
-                escape(run.run_id),
+                escape(run.run_id[:8]),
                 escape(run.created_at[:10]),
                 escape(run.status),
                 f"${run.usd_spent:.3f}" if run.usd_spent else "",
@@ -270,7 +270,7 @@ class ShanduUI:
             rows.append(("citations checked", checked))
         model_calls = stats.get("agent_model_calls")
         if isinstance(model_calls, int) and model_calls > 0:
-            rows.append(("Model Calls", str(model_calls)))
+            rows.append(("model calls", str(model_calls)))
         metered_calls = stats.get("metered_calls", stats.get("llm_calls"))
         coverage = str(stats.get("cost_coverage", "")).strip()
         if isinstance(metered_calls, int) and metered_calls > 0:
@@ -278,21 +278,23 @@ class ShanduUI:
                 if coverage not in ("partial", "full"):
                     coverage = "partial" if metered_calls < model_calls else "full"
                 rows.append(
-                    ("Cost Coverage", f"{coverage} ({metered_calls}/{model_calls})")
+                    ("cost coverage", f"{coverage} ({metered_calls}/{model_calls})")
                 )
             else:
-                rows.append(("Metered Calls", str(metered_calls)))
+                rows.append(("metered calls", str(metered_calls)))
         llm_tokens = stats.get("llm_tokens")
         if isinstance(llm_tokens, int) and llm_tokens > 0:
-            rows.append(("LLM Tokens", f"{llm_tokens:,}"))
+            rows.append(("LLM tokens", f"{llm_tokens:,}"))
         usd_spent = stats.get("usd_spent")
         if isinstance(usd_spent, (int, float)) and float(usd_spent) > 0:
-            label = "Metered Cost" if coverage == "partial" else "USD Spent"
+            label = "metered cost" if coverage == "partial" else "USD spent"
             rows.append((label, f"${float(usd_spent):.6f}"))
 
         sources = Table.grid(padding=(0, 2))
         sources.add_column(style="muted", no_wrap=True, justify="right")
-        sources.add_column(style="label", no_wrap=True)
+        # A long host name as publisher would squeeze every title into a narrow
+        # wrapped column.
+        sources.add_column(style="label", no_wrap=True, max_width=24, overflow="ellipsis")
         sources.add_column(style="accent", overflow="ellipsis")
         for item in result.citations[:8]:
             sources.add_row(

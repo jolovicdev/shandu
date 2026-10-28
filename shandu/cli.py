@@ -388,6 +388,19 @@ def _deliver(
             diag.print(ui.success(f"Report saved to {report_path}"), soft_wrap=True)
 
 
+def _resolve_run_id(engine: ShanduEngine, run_id: str) -> str:
+    """The run named by its full id or by the first characters `shandu list` shows.
+
+    An id that matches no run comes back unchanged, so the caller reports it
+    as not found.
+    """
+    matches = [run.run_id for run in engine.list_runs() if run.run_id.startswith(run_id)]
+    if len(matches) > 1 and run_id not in matches:
+        engine.close()
+        raise click.ClickException(f"Run id {run_id} matches {len(matches)} runs; give more of it.")
+    return matches[0] if len(matches) == 1 else run_id
+
+
 def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
     try:
         return engine.load_run(run_id).request
@@ -407,6 +420,7 @@ def resume_command(
     """Continue a stopped run after its last completed iteration."""
     diag = err_console if (json_output and not output) else console
     engine = ShanduEngine.from_config()
+    run_id = _resolve_run_id(engine, run_id)
     request = _load_request(engine, run_id)
     diag.print(
         ui.header(request.query, [f"resuming {run_id}", str(config.get("api", "model"))])
@@ -439,6 +453,7 @@ def report_command(
     """Rewrite a run's report from its stored evidence, without new searches."""
     diag = err_console if (json_output and not output) else console
     engine = ShanduEngine.from_config(writer_model=model)
+    run_id = _resolve_run_id(engine, run_id)
     request = _load_request(engine, run_id)
     overrides: dict[str, Any] = {}
     if detail_level is not None:
@@ -484,6 +499,7 @@ def list_command(limit: int) -> None:
 def show_command(run_id: str) -> None:
     """Print a stored run's summary and report."""
     engine = ShanduEngine.from_config()
+    run_id = _resolve_run_id(engine, run_id)
     try:
         result = engine.load_run(run_id)
     except RunNotFoundError:
@@ -552,6 +568,7 @@ def ai_search_command(
 @click.argument("run_id")
 def inspect(run_id: str) -> None:
     engine = ShanduEngine.from_config()
+    run_id = _resolve_run_id(engine, run_id)
     payload = engine.inspect_run(run_id)
     if not payload.get("exists"):
         console.print(ui.warning(f"Run {run_id} not found."))

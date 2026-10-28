@@ -33,6 +33,7 @@ def test_report_rewrites_with_writer_model_and_detail_level(monkeypatch, tmp_pat
         )
 
     engine = SimpleNamespace(
+        list_runs=lambda: [],
         load_run=lambda run_id: ResearchRunResult(
             run_id=run_id, request=ResearchRequest(query="q"), report_markdown="# Old"
         ),
@@ -86,9 +87,49 @@ def test_list_prints_stored_runs(monkeypatch) -> None:
     result = CliRunner(mix_stderr=False).invoke(cli, ["list"])
 
     assert result.exit_code == 0, result.output
-    assert "473677ec1d73484f919f35932bbdeddd" in result.stdout
+    assert "473677ec " in result.stdout
     assert "completed" in result.stdout
-    assert "How much" in result.stdout
+    assert "How much memory do KV cache" in result.stdout
+
+
+def _stored_run(run_id: str) -> RunSummary:
+    return RunSummary(
+        run_id=run_id,
+        query="q",
+        status="completed",
+        created_at="2026-09-29T10:00:00+00:00",
+        citation_count=1,
+        usd_spent=None,
+        report_path=None,
+    )
+
+
+def test_show_finds_a_run_by_the_start_of_its_id(monkeypatch) -> None:
+    loaded: list[str] = []
+
+    def load_run(run_id):
+        loaded.append(run_id)
+        return ResearchRunResult(run_id=run_id, request=ResearchRequest(query="q"), report_markdown="# R")
+
+    runs = [_stored_run("473677ec1d73484f919f35932bbdeddd"), _stored_run("9b2c0d1e5f6a4b7c8d9e0f1a2b3c4d5e")]
+    engine = SimpleNamespace(list_runs=lambda: runs, load_run=load_run, close=lambda: None)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["show", "473677ec"])
+
+    assert result.exit_code == 0, result.output
+    assert loaded == ["473677ec1d73484f919f35932bbdeddd"]
+
+
+def test_a_run_id_prefix_shared_by_two_runs_asks_for_more(monkeypatch) -> None:
+    runs = [_stored_run("473677ec1d73484f919f35932bbdeddd"), _stored_run("4736aaaa1d73484f919f35932bbdeddd")]
+    engine = SimpleNamespace(list_runs=lambda: runs, close=lambda: None)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["show", "4736"])
+
+    assert result.exit_code != 0
+    assert "matches 2 runs" in result.stderr
 
 
 def test_legacy_storage_in_cwd_prints_notice(monkeypatch, tmp_path) -> None:

@@ -30,13 +30,13 @@ def test_recap_renders_without_events() -> None:
                 "llm_calls": 6,
                 "llm_tokens": 1234,
             },
-            ["Cost Coverage", "Metered Cost", "Model Calls", "LLM Tokens"],
+            ["cost coverage", "metered cost", "model calls", "LLM tokens"],
             [],
         ),
         (
             {},
             [],
-            ["USD Spent", "Metered Cost"],
+            ["USD spent", "metered cost"],
         ),
     ],
 )
@@ -99,3 +99,27 @@ def test_inspect_summary_shows_run_id_and_stats() -> None:
 
     assert "run-abc-123" in text
     assert "iterations" in text
+
+
+def test_a_long_publisher_name_leaves_titles_on_one_line() -> None:
+    console = Console(record=True, width=100)
+    ui = ShanduUI(console=console)
+    result = ResearchRunResult(
+        run_id="run-1",
+        request=ResearchRequest(query="q"),
+        report_markdown="# R",
+        citations=[
+            CitationEntry(
+                citation_id=1,
+                evidence_ids=["e1"],
+                url="https://scholarlypublications.universiteitleiden.nl/download/1",
+                title="Challenges in studying microplastics in human brain",
+                publisher="scholarlypublications.universiteitleiden.nl",
+                accessed_at="2026-10-28",
+            )
+        ],
+    )
+
+    console.print(ui.result_summary(result))
+
+    assert "Challenges in studying microplastics in human brain" in console.export_text()

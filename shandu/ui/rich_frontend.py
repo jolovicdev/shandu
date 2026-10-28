@@ -230,7 +230,11 @@ class ShanduUI:
             ]
         else:
             details = [_metric_text(event.metrics)]
-        details += [f'"{query}"' if query else "", str(event.payload.get("url", "")).strip()]
+        details += [
+            f'"{query}"' if query else "",
+            str(event.payload.get("url", "")).strip(),
+            str(event.payload.get("error") or event.payload.get("reason") or "").strip(),
+        ]
         text = " · ".join(part for part in details if part)
         if text:
             line.append("  " + text, style="muted")
@@ -316,7 +320,7 @@ class ShanduUI:
             rows.append(("findings", str(findings)))
         checked = audit_summary(stats.get("citation_audit"))
         if checked:
-            rows.append(("citation checks", checked.replace(" partial", " partly supported")))
+            rows.append(("citation checks", checked))
         model_calls = stats.get("agent_model_calls")
         if isinstance(model_calls, int) and model_calls > 0:
             rows.append(("model calls", str(model_calls)))

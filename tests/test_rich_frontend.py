@@ -162,7 +162,7 @@ def test_result_summary_shows_the_short_run_id_and_calls_references_sources() ->
 def test_result_summary_words_the_citation_checks() -> None:
     text = _summary_text(citation_audit={"supported": 144, "partial": 23, "unsupported": 1})
 
-    assert "citation checks 144 supported · 23 partly supported · 1 removed" in " ".join(text.split())
+    assert "citation checks 144 supported · 23 partial · 1 removed" in " ".join(text.split())
 
 
 def test_result_summary_leaves_cost_coverage_out_when_every_call_is_metered() -> None:
@@ -397,3 +397,17 @@ def test_a_long_publisher_name_leaves_titles_on_one_line() -> None:
     console.print(ui.result_summary(result))
 
     assert "Challenges in studying microplastics in human brain" in console.export_text()
+
+
+def test_event_line_says_why_a_subagent_failed() -> None:
+    ui = ShanduUI(console=Console(record=True, width=160))
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
+    event = _event(
+        "Task t1 failed",
+        "t1",
+        payload={"task_id": "t1", "error": "researcher loop timed out"},
+    )
+
+    text = ui.event_line(event, snapshot).plain
+
+    assert text.endswith("Subagent 1 failed  researcher loop timed out")

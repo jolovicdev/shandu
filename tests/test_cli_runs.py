@@ -9,7 +9,8 @@ from click.testing import CliRunner
 
 from shandu.cli import ShanduEngine, cli
 from shandu.config import config
-from shandu.contracts import ResearchRequest, ResearchRunResult
+from shandu.contracts import ResearchRequest, ResearchRunResult, RunEvent
+from shandu.runtime.calls import ProviderRejectedError
 from shandu.services.run_store import RunNotFoundError, RunSummary
 
 
@@ -364,3 +365,45 @@ def test_run_passes_a_valid_cost_cap_and_start_day_to_the_request(monkeypatch) -
     assert result.exit_code == 0, result.output
     request = seen["request"]
     assert (request.max_cost_usd, request.since, request.max_iterations) == (0.5, date(2025, 1, 31), 8)
+
+
+def test_a_rejected_key_exits_1_with_the_fix_and_the_run_to_continue(monkeypatch) -> None:
+    async def run(request, progress_callback=None):
+        progress_callback(
+            RunEvent(stage="bootstrap", message="Starting", metrics={"run_id": "e319d654aa"})
+        )
+        raise ProviderRejectedError("key", "Authentication Fails, Your api key: ****0000 is invalid")
+
+    engine = SimpleNamespace(run=run, close=lambda: None)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
+
+    assert result.exit_code == 1
+    assert "The model provider rejected the API key: Authentication Fails" in result.stderr
+    assert "Set the key with `shandu configure`" in result.stderr
+    assert "Continue with: shandu resume e319d654" in result.stderr
+    assert "Traceback" not in result.output
+
+
+def test_aisearch_joins_words_refuses_a_blank_question_and_stops_on_a_rejection(
+    monkeypatch,
+) -> None:
+    asked: list[str] = []
+
+    def ai_search_sync(query, max_results, max_pages, detail_level):
+        asked.append(query)
+        raise ProviderRejectedError("model", "LLM Provider NOT provided")
+
+    engine = SimpleNamespace(ai_search_sync=ai_search_sync, close=lambda: None)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+    runner = CliRunner(mix_stderr=False)
+
+    blank = runner.invoke(cli, ["aisearch", "  "])
+    rejected = runner.invoke(cli, ["aisearch", "Which", "browsers", "support", "WebGPU?"])
+
+    assert blank.exit_code == 2 and "Give a question to answer" in blank.stderr
+    assert asked == ["Which browsers support WebGPU?"]
+    assert rejected.exit_code == 1
+    assert "does not know this model" in rejected.stderr
+    assert "`shandu configure` or SHANDU_MODEL changes it" in rejected.stderr

@@ -14,7 +14,9 @@ def _tiny_gui() -> gr.Blocks:
     return demo
 
 
-def test_gui_on_a_busy_port_exits_1_and_suggests_the_next_port(monkeypatch) -> None:
+def test_gui_on_a_busy_port_exits_1_and_suggests_the_next_port(monkeypatch, tmp_path) -> None:
+    # A legacy storage folder in the working directory adds a notice to stderr.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("shandu.ui.gradio.app.build_gui", _tiny_gui)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -38,5 +40,6 @@ def test_gui_reports_other_launch_failures_without_claiming_a_busy_port(monkeypa
 
     result = CliRunner(mix_stderr=False).invoke(cli, ["gui"])
 
-    assert "GUI runtime error: certificate file unreadable" in result.stdout
+    assert result.exit_code == 1
+    assert "Error: GUI runtime error: certificate file unreadable" in result.stderr
     assert "in use" not in result.stderr

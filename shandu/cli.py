@@ -19,6 +19,7 @@ from .contracts import EFFORT_PRESETS, ResearchRequest, ResearchRunResult, RunEv
 from .engine import ShanduEngine
 from .interfaces import DepthPolicy, DetailLevel
 from .runtime import get_async_runner, reset_bootstrap
+from .runtime.calls import ProviderRejectedError
 from .services.run_store import RunNotFoundError
 from .ui import ShanduUI
 
@@ -218,21 +219,20 @@ def gui_command(host: str, port: int, share: bool, auth: str | None, browser: bo
     try:
         from .ui.gradio_app import launch_gui
     except Exception as exc:
-        console.print(ui.error(f"Failed to initialize GUI: {exc}"))
-        return
+        raise click.ClickException(f"Failed to initialize GUI: {exc}") from None
 
     console.print(f"[brand]Launching Shandu GUI[/] [muted]http://{escape(host)}:{port}[/]")
     try:
         launch_gui(host=host, port=port, share=share, inbrowser=browser, auth=credentials)
     except RuntimeError as exc:
-        console.print(ui.error(str(exc)))
+        raise click.ClickException(str(exc)) from None
     except Exception as exc:
         if isinstance(exc, OSError) and "empty port" in str(exc):
             raise click.ClickException(
                 f"Port {port} is in use. Shandu may already be running at http://{host}:{port}. "
                 f"Use `shandu gui --port {port + 1}`."
             ) from None
-        console.print(ui.error(f"GUI runtime error: {exc}"))
+        raise click.ClickException(f"GUI runtime error: {exc}") from None
 
 
 def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
@@ -332,7 +332,8 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     type=click.FloatRange(min=_bound("max_cost_usd", "gt"), min_open=True),
     callback=_finite,
     default=None,
-    help="Stop researching once this many USD are spent, then write the report.",
+    help="Start no new iteration once this many USD are spent, then write the report. "
+    "Writing and the citation check come after, so the total can end higher.",
 )
 def run_command(
     query: tuple[str, ...],
@@ -446,6 +447,7 @@ def _run_to_completion(
     start: Callable[[Callable[[RunEvent], None]], Coroutine[Any, Any, ResearchRunResult]],
     diag: Console,
     verbose: bool = False,
+    again: str = "resume",
 ) -> ResearchRunResult:
     snapshot = ui.new_snapshot(request, str(config.get("api", "model")))
 
@@ -462,10 +464,15 @@ def _run_to_completion(
             future.result()
         except Exception:
             pass
-        _print_cancelled(diag, snapshot.run_id)
+        _print_cancelled(diag, snapshot.run_id, again)
         raise SystemExit(130) from None
     except RunNotFoundError as exc:
         raise click.ClickException(f"Run {exc} not found.") from None
+    except ProviderRejectedError as exc:
+        steps = [str(exc), _rejection_fix(exc)]
+        if snapshot.run_id != "pending":
+            steps.append(_resume_hint(snapshot.run_id, again))
+        raise click.ClickException("\n".join(steps)) from None
     finally:
         engine.close()
 
@@ -528,17 +535,26 @@ def _no_such_run(run_id: str) -> click.ClickException:
     return click.ClickException(f"No run starts with {run_id}. See `shandu list`.")
 
 
-def _resume_hint(run_id: str) -> str:
-    return f"Continue with: shandu resume {run_id[:8]}"
+def _resume_hint(run_id: str, again: str = "resume") -> str:
+    return f"Continue with: shandu {again} {run_id[:8]}"
 
 
-def _print_cancelled(diag: Console, run_id: str) -> None:
+def _rejection_fix(exc: ProviderRejectedError) -> str:
+    if exc.kind == "key":
+        variable = config.get_api_key_env_name() or "the provider's key variable"
+        return f"Set the key with `shandu configure` or in {variable}; `shandu info` shows what is in use."
+    if exc.kind == "model":
+        return "Check the model name with `shandu info`; `shandu configure` or SHANDU_MODEL changes it."
+    return "Add credit with the model provider."
+
+
+def _print_cancelled(diag: Console, run_id: str, again: str = "resume") -> None:
     # "pending" is a snapshot that has seen no event, so no run exists to resume.
     if run_id == "pending":
         diag.print("Run cancelled.")
         return
     diag.print(f"Run cancelled. Progress is saved as run {run_id[:8]}.")
-    diag.print(_resume_hint(run_id))
+    diag.print(_resume_hint(run_id, again))
 
 
 def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
@@ -572,7 +588,7 @@ def resume_command(
     run_id = _resolve_run_id(engine, run_id)
     request = _load_request(engine, run_id)
     diag.print(
-        ui.header(request.query, [f"resuming {run_id}", str(config.get("api", "model"))])
+        ui.header(request.query, [f"resuming {run_id[:8]}", str(config.get("api", "model"))])
     )
     result = _run_to_completion(
         engine,
@@ -623,7 +639,7 @@ def report_command(
         ui.header(
             request.query,
             [
-                f"rewriting report {run_id}",
+                f"rewriting report {run_id[:8]}",
                 model or str(config.get("api", "model")),
                 f"{detail_level or request.detail_level} detail",
             ],
@@ -634,6 +650,7 @@ def report_command(
         request,
         lambda on_event: engine.rewrite_report(run_id, overrides, progress_callback=on_event),
         diag,
+        again="report",
     )
     _deliver(engine, result, output, json_output, diag)
 
@@ -683,7 +700,7 @@ def show_command(run_id: str) -> None:
 
 
 @cli.command("aisearch")
-@click.argument("query")
+@click.argument("query", nargs=-1, metavar="QUERY...")
 @click.option("--max-results", default=8, type=int, show_default=True, help="Search results to choose pages from.")
 @click.option("--max-pages", default=3, type=int, show_default=True, help="Pages to read.")
 @click.option(
@@ -701,7 +718,7 @@ def show_command(run_id: str) -> None:
 )
 @click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
 def ai_search_command(
-    query: str,
+    query: tuple[str, ...],
     max_results: int,
     max_pages: int,
     detail_level: str,
@@ -709,21 +726,28 @@ def ai_search_command(
     json_output: bool,
 ) -> None:
     """Answer a question from one round of web search, with citations."""
+    question = " ".join(query).strip()
+    if not question:
+        raise click.UsageError(
+            'Give a question to answer, like: shandu aisearch "Which browsers support WebGPU?"'
+        )
     diag = err_console if (json_output and not output) else console
     diag.print(
         ui.header(
-            query,
+            question,
             [str(config.get("api", "model")), "quick answer", f"{max_pages} pages"],
         )
     )
     engine = ShanduEngine.from_config()
     try:
         result = engine.ai_search_sync(
-            query=query,
+            query=question,
             max_results=max_results,
             max_pages=max_pages,
             detail_level=_resolve_detail_level(detail_level, "standard"),
         )
+    except ProviderRejectedError as exc:
+        raise click.ClickException(f"{exc}\n{_rejection_fix(exc)}") from None
     finally:
         engine.close()
 

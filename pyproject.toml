@@ -70,6 +70,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["shandu"]
 
+[tool.hatch.build.targets.sdist]
+include = ["/shandu", "/tests", "/README.md", "/ARCH.md", "/LICENSE"]
+
 [dependency-groups]
 dev = [
   "pytest>=8.3.0",

@@ -171,6 +171,12 @@ def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
             site_name="The Official Microsoft Blog",
         ),
         _record("e3", "https://learn.microsoft.com/qmr", "Configure quick machine recovery - Windows Server"),
+        _record(
+            "e4",
+            "https://www.nature.com/articles/s41591-024-03453-1",
+            "Bioaccumulation of microplastics in decedent human brains - Nature Medicine",
+            site_name="Nature",
+        ),
     ]
 
     citations = asyncio.run(agent.build_citations("q", evidence))
@@ -179,6 +185,7 @@ def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
         "Falcon Content Update Preliminary Report",
         "Helping our customers through the outage",
         "Configure quick machine recovery - Windows Server",
+        "Bioaccumulation of microplastics in decedent human brains",
     ]
 
 

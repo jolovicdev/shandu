@@ -102,7 +102,11 @@ class CitationAgent:
 
     @staticmethod
     def _without_site_suffix(title: str, publisher: str, host: str) -> str:
-        """Drop a trailing site name that the reference already shows as its publisher."""
+        """Drop a trailing site or journal name that starts with the publisher's name.
+
+        "... - Nature Medicine" from nature.com loses its suffix, which also
+        lets it match the same paper's title on PubMed Central.
+        """
         match = _SITE_SUFFIX.match(title)
         if match is None or len(match.group("head").split()) < 3:
             return title
@@ -110,7 +114,8 @@ class CitationAgent:
         brand = labels[-2] if len(labels) >= 2 else host
         names = {re.sub(r"[\W_]+", "", name.casefold()) for name in (publisher, brand)}
         tail = re.sub(r"[\W_]+", "", match.group("tail").casefold())
-        return match.group("head") if tail in names else title
+        named = any(len(name) >= 3 and tail.startswith(name) for name in names)
+        return match.group("head") if named else title
 
     @staticmethod
     def _title_from_url(url: str) -> str:

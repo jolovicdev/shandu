@@ -490,7 +490,8 @@ body.dark,
 }
 
 .shandu-fault,
-.shandu-hint {
+.shandu-hint,
+.shandu-stop-note {
   margin: 16px 0 0;
   padding: 12px 14px;
   border-left: 2px solid var(--err);
@@ -498,6 +499,11 @@ body.dark,
   color: var(--ink-2);
   font-size: 0.9rem;
   line-height: 1.5;
+}
+
+/* A stopped run is not an error. */
+.shandu-stop-note {
+  border-left-color: var(--line-strong);
 }
 
 .shandu-fault-detail {
@@ -1040,6 +1046,24 @@ body.dark,
   line-height: 1.4;
   break-inside: avoid;
   counter-increment: contents;
+}
+
+.shandu-contents a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.shandu-contents a:hover {
+  text-decoration: underline;
+}
+
+/* Markers sit in every sentence; a rule under each would stripe the text. */
+.shandu-prose a[href^="#ref-"] {
+  border-bottom-color: transparent !important;
+}
+
+.shandu-prose a[href^="#ref-"]:hover {
+  border-bottom-color: var(--accent) !important;
 }
 
 .shandu-contents li::before {

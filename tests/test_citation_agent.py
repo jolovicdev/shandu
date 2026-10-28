@@ -191,6 +191,8 @@ def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
             "Bioaccumulation of microplastics in decedent human brains - Nature Medicine",
             site_name="Nature",
         ),
+        _record("e5", "https://www.crowdstrike.com/blog/", "Blog | CrowdStrike"),
+        _record("e6", "https://x.com/somebody/status/1", "Thread on chip export rules - Xavier Lee"),
     ]
 
     citations = asyncio.run(agent.build_citations("q", evidence))
@@ -200,6 +202,8 @@ def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
         "Helping our customers through the outage",
         "Configure quick machine recovery - Windows Server",
         "Bioaccumulation of microplastics in decedent human brains",
+        "Blog | CrowdStrike",
+        "Thread on chip export rules - Xavier Lee",
     ]
 
 

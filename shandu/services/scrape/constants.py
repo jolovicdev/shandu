@@ -39,7 +39,6 @@ _MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
 # Sized to hold a full conference paper (results tables and appendix included).
 _MAX_EXTRACTED_CHARS = 120_000
 _MAX_PAGE_LINKS = 40
-_MAX_PDF_PAGES = 200
 _MAX_XLSX_ROWS = 50000
 
 _PAYWALL_PATTERNS = [
@@ -56,8 +55,8 @@ _PAYWALL_PATTERNS = [
 # a missing page, or a region block. Only a short page is judged by its title,
 # so a long article about errors is never mistaken for one.
 _ERROR_PAGE_TITLE = re.compile(
-    r"unexpected error|error occurred|something went wrong|page not found|not found"
-    r"|\b404\b|access denied|temporarily unavailable|unavailable|indisponib",
+    r"unexpected error|error occurred|something went wrong|not found"
+    r"|\b404\b|access denied|unavailable|indisponib",
     re.IGNORECASE,
 )
 _ERROR_PAGE_MAX_WORDS = 300

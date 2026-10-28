@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import re
+import threading
 from collections.abc import Iterable
 from datetime import datetime
 from html import unescape
@@ -20,7 +21,6 @@ from .constants import (
     _ERROR_PAGE_TITLE,
     _MAX_EXTRACTED_CHARS,
     _MAX_PAGE_LINKS,
-    _MAX_PDF_PAGES,
     _MAX_XLSX_ROWS,
     _MIN_ARTICLE_WORDS,
     _PAYWALL_PATTERNS,
@@ -335,31 +335,42 @@ def _pdf_creation_date(metadata: dict[str, Any]) -> str | None:
     return "-".join(match.groups()) if match else None
 
 
+# MuPDF is not thread-safe and pages are parsed in worker threads, so one
+# document is read at a time. Reading several at once needs a process each.
+_PDF_LOCK = threading.Lock()
+
+
 def _parse_pdf(data: bytes) -> _ExtractionResult:
     try:
         import fitz
 
-        doc = fitz.open(stream=data, filetype="pdf")
-        try:
-            if doc.page_count > _MAX_PDF_PAGES:
-                raise _ParseError("non_text_content", f"PDF exceeds {_MAX_PDF_PAGES} pages")
-            metadata = doc.metadata or {}
-            title = (metadata.get("title") or "").strip()
-            if _PDF_PLACEHOLDER_TITLE.search(title):
-                title = ""
-            if not title and len(doc) > 0:
-                title = _pdf_layout_title(doc[0]) or _pdf_bold_title(doc[0])
-            full_text: list[str] = []
-            for page in doc:
-                full_text.append(page.get_text())
-            text = _cap_text("\n".join(full_text))
-            if not text:
-                raise _ParseError("pdf_parse_failed", "Empty PDF text")
-            return _ExtractionResult(
-                title=title, text=text, published_at=_pdf_creation_date(metadata)
-            )
-        finally:
-            doc.close()
+        with _PDF_LOCK:
+            doc = fitz.open(stream=data, filetype="pdf")
+            try:
+                metadata = doc.metadata or {}
+                title = (metadata.get("title") or "").strip()
+                if _PDF_PLACEHOLDER_TITLE.search(title):
+                    title = ""
+                if not title and len(doc) > 0:
+                    title = _pdf_layout_title(doc[0]) or _pdf_bold_title(doc[0])
+                # A long report is read from the front until the text cap is
+                # full, which keeps its summary and opening chapters.
+                full_text: list[str] = []
+                length = 0
+                for page in doc:
+                    page_text = page.get_text()
+                    full_text.append(page_text)
+                    length += len(page_text)
+                    if length >= _MAX_EXTRACTED_CHARS:
+                        break
+                text = _cap_text("\n".join(full_text))
+                if not text:
+                    raise _ParseError("pdf_parse_failed", "Empty PDF text")
+                return _ExtractionResult(
+                    title=title, text=text, published_at=_pdf_creation_date(metadata)
+                )
+            finally:
+                doc.close()
     except _ParseError:
         raise
     except Exception as exc:

@@ -151,6 +151,17 @@ def test_parse_pdf_extracts_title_and_text() -> None:
     assert "body text" in result.text
 
 
+def test_parse_pdf_reads_a_long_report_from_the_front() -> None:
+    doc = fitz.open()
+    for number in range(260):
+        doc.new_page().insert_text((72, 72), f"Chapter text on page {number}.")
+
+    result = _parse_pdf(doc.tobytes())
+
+    assert "Chapter text on page 0." in result.text
+    assert "Chapter text on page 259." in result.text
+
+
 def test_parse_pdf_prefers_largest_type_for_title_and_reads_creation_date() -> None:
     doc = fitz.open()
     page = doc.new_page()

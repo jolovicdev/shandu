@@ -24,8 +24,9 @@ The architecture is described in [`ARCH.md`](ARCH.md).
 1. The lead agent turns the question into a brief: scope, sub-questions, time
    window, and the kind of answer wanted.
 2. Each iteration plans tasks for the sub-questions that are still open.
-   Researchers run in parallel. They search the web and, when papers can answer
-   a task, arXiv, OpenAlex, and PubMed, then read the best pages whole.
+   Subagents run the tasks in parallel. They search the web and, when papers
+   can answer a task, arXiv, OpenAlex, and PubMed, then read the best pages
+   whole.
 3. Every page is classified (peer-reviewed, official, journalism, vendor, blog,
    and so on) and scored for credibility. Claims are extracted with verbatim
    quotes, and a claim whose quote is not on the page is dropped.
@@ -34,8 +35,9 @@ The architecture is described in [`ARCH.md`](ARCH.md).
 5. The writer drafts the report from the evidence. An auditor then checks every
    cited sentence against its sources and removes the citations they do not
    support.
-6. The run is saved as it happens, so it can be resumed, or its report rewritten
-   without searching again.
+6. The run is saved as it happens. `shandu resume <run_id>` continues a stopped
+   run, and `shandu report <run_id>` rewrites its report without searching
+   again.
 
 ## Install
 
@@ -80,14 +82,14 @@ with the run; `--output report.md` also writes it to a file.
 | `--detail-level concise\|standard\|high` | Report length: about 1,200, 2,200, or 3,600 words. |
 | `--include-domain`, `--exclude-domain` | Only use, or never use, a site. Repeatable. |
 | `--since YYYY-MM-DD` | Skip pages dated before this day. |
-| `--max-cost USD` | Stop researching once this much is spent, then write the report. |
+| `--max-cost USD` | Start no new iteration once this much is spent, then write the report. Writing and the citation check come after, so the total can end higher. |
 | `--clarify` | Answer up to three clarifying questions first. |
 | `--no-audit` | Skip checking citations against their sources. |
 | `--json-output` | Emit the full result as JSON. |
 
 `shandu run --help` lists every option, including the individual budget flags.
 
-| Effort | Iterations | Parallel tasks | Pages per task | Results per query | Searches per task |
+| Effort | Iterations | Parallel subagents | Pages per task | Results per query | Searches per task |
 |---|---|---|---|---|---|
 | `low` | 1 | 2 | 3 | 6 | 3 |
 | `medium` (default) | 2 | 3 | 6 | 8 | 6 |
@@ -116,10 +118,10 @@ Open <http://127.0.0.1:7860>, type a question, and press Research. The page
 shows the run's stages and each subagent's searches, then the report with its
 contents and references, and a markdown download.
 
-- The Options row under the question sets the effort, researcher, cost limit,
-  site filters, start date, and citation check for one run.
-- Settings, at the top right, holds the saved defaults: model, API key, and the
-  research budget.
+- Options, under the question, set the effort, researcher, report length,
+  research budget, site filters, start date, and citation check for one run.
+- Settings, at the top right, holds the saved defaults: the model, the API key,
+  and the research size. Runs use them once they are saved.
 - Recent reports are listed below the question and open with one click.
 
 ![A run in progress in the Shandu web GUI](assets/main.png)

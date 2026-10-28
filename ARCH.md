@@ -36,7 +36,7 @@ flowchart TD
 flowchart TD
     start([Request]) --> brief[Lead writes the research brief]
     brief --> plan[Lead plans tasks against open sub-questions]
-    plan --> tasks[Researchers run tasks in parallel]
+    plan --> tasks[Subagents run tasks in parallel]
     tasks --> synth[Lead synthesizes; code rates sub-question coverage]
     synth --> decision{Open sub-questions, budget left?}
     decision -->|Yes| plan
@@ -81,6 +81,8 @@ Each task runs through one of two researchers, chosen per run with
   recorded as an error event.
 
 Tasks the planner marks `scholarly` also search arXiv, OpenAlex, and PubMed.
+An index whose rate limit is spent sits out the wait it names, and the others
+continue; keyless OpenAlex allows about 100 searches a day.
 Pages an iteration's tasks start reading go into a shared set, so parallel tasks
 do not extract the same page twice.
 
@@ -117,8 +119,12 @@ flowchart TD
 - `--max-cost` stops research before the next iteration once metered spend
   reaches the budget; the report is still written. A model that reports no
   price cannot be budgeted, and the run emits an event saying so.
-- `--effort low|medium|high|max` sets iterations, parallel tasks, pages and
+- `--effort low|medium|high|max` sets iterations, parallel subagents, pages and
   searches per task, and results per query together.
+- A model call the provider refuses in a way no retry fixes (a rejected API
+  key, an unknown model, an account out of credit) stops the run, which is
+  marked failed with the provider's message. Any other failed call falls back
+  and the run goes on.
 
 ## 7) Writer
 
@@ -136,7 +142,8 @@ and after three attempts a deterministic report is built from the syntheses.
 - Evidence below the credibility bar stays out of the ledger unless nothing
   stronger exists. Copies of one work merge into one entry: an article's HTML
   and PDF, a DOI page and its publisher page, an arXiv abstract and full text,
-  and the same long title on two sites.
+  and the same long title on two sites. Two DOIs, or two arXiv ids, that differ
+  keep works apart whatever their titles.
 - Markers for citations the ledger does not hold, and placeholders a writer
   prints in place of a citation, are removed with the space before them.
 - Tables with a dedicated provenance column are rewritten at render time.

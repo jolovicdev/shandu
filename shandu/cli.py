@@ -57,6 +57,10 @@ def _count_range(field: str) -> click.IntRange:
     return click.IntRange(_bound(field, "ge"), _bound(field, "le"))
 
 
+def _count(number: int, noun: str) -> str:
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+
+
 def _finite(ctx: click.Context, param: click.Parameter, value: float | None) -> float | None:
     if value is not None and not math.isfinite(value):
         raise click.BadParameter("give an amount in USD, like 0.50.")
@@ -73,8 +77,30 @@ class _Day(click.ParamType):
             self.fail("Use YYYY-MM-DD, like 2025-01-31.", param, ctx)
 
 
-@click.group()
+_COMMAND_ORDER = (
+    "run", "aisearch", "resume", "report", "list", "show", "inspect", "gui", "info", "configure", "clean",
+)
+
+
+class _OrderedGroup(click.Group):
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        return sorted(
+            self.commands,
+            key=lambda name: _COMMAND_ORDER.index(name) if name in _COMMAND_ORDER else len(_COMMAND_ORDER),
+        )
+
+
+@click.group(
+    cls=_OrderedGroup,
+    context_settings={"help_option_names": ["-h", "--help"], "max_content_width": 100},
+)
+@click.version_option(__version__, prog_name="shandu")
 def cli() -> None:
+    """Deep research from the terminal.
+
+    Searches the web and papers, reads the pages, and writes a report with
+    citations. Start with: shandu run "your question"
+    """
     legacy = Path.cwd() / ".blackgeorge"
     storage = Path(str(config.get("runtime", "storage_dir")))
     if legacy.is_dir() and legacy.resolve() != storage:
@@ -214,7 +240,7 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 
 
 @cli.command("run")
-@click.argument("query", nargs=-1)
+@click.argument("query", nargs=-1, metavar="QUERY...")
 @click.option(
     "--max-iterations",
     default=None,
@@ -230,12 +256,14 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 @click.option(
     "--detail-level",
     default=None,
+    show_default=_resolve_detail_level(str(config.get("orchestration", "detail_level", "high")), "high"),
     type=click.Choice(["concise", "standard", "high"]),
     help="Report length: about 1,200, 2,200, or 3,600 words.",
 )
 @click.option(
     "--depth-policy",
     default=None,
+    show_default=_resolve_depth_policy(str(config.get("orchestration", "depth_policy", "adaptive")), "adaptive"),
     type=click.Choice(["adaptive", "fixed"]),
     help="adaptive keeps searching while a sub-question lacks two credible sources; "
     "fixed lets the lead agent decide.",
@@ -252,7 +280,12 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     type=_count_range("max_pages_per_task"),
     help="Pages each subagent reads.",
 )
-@click.option("--output", default=None, help="Save the report, or with --json-output the full result, to this file.")
+@click.option(
+    "--output",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Save the report, or with --json-output the full result, to this file.",
+)
 @click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
 @click.option("--verbose", is_flag=True, help="Print a recap of every stage when the run ends.")
 @click.option(
@@ -273,6 +306,7 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 @click.option(
     "--effort",
     default=None,
+    show_default="medium",
     type=click.Choice(list(EFFORT_PRESETS)),
     help="Research budget preset; explicit budget flags override it.",
 )
@@ -281,7 +315,7 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
     default="pipeline",
     show_default=True,
     type=click.Choice(["pipeline", "agentic"]),
-    help="How each task gathers evidence.",
+    help="How each subagent gathers evidence.",
 )
 @click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
 @click.option(
@@ -370,8 +404,8 @@ def run_command(
             request.query,
             [
                 str(config.get("api", "model")),
-                f"{request.max_iterations} iterations",
-                f"{request.parallelism} tasks",
+                _count(request.max_iterations, "iteration"),
+                _count(request.parallelism, "subagent"),
                 f"{request.researcher} researcher",
                 f"{request.detail_level} detail",
             ],
@@ -495,7 +529,12 @@ def _load_request(engine: ShanduEngine, run_id: str) -> ResearchRequest:
 
 @cli.command("resume")
 @click.argument("run_id")
-@click.option("--output", default=None, help="Save the report, or with --json-output the full result, to this file.")
+@click.option(
+    "--output",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Save the report, or with --json-output the full result, to this file.",
+)
 @click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
 @click.option("--verbose", is_flag=True, help="Print a recap of every stage when the run ends.")
 def resume_command(
@@ -521,10 +560,20 @@ def resume_command(
 
 @cli.command("report", short_help="Rewrite a stored run's report without searching.")
 @click.argument("run_id")
-@click.option("--detail-level", default=None, type=click.Choice(["concise", "standard", "high"]))
+@click.option(
+    "--detail-level",
+    default=None,
+    type=click.Choice(["concise", "standard", "high"]),
+    help="Report length: about 1,200, 2,200, or 3,600 words. Defaults to the run's own.",
+)
 @click.option("--model", default=None, help="Model for the report writer.")
 @click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
-@click.option("--output", default=None, help="Save the report, or with --json-output the full result, to this file.")
+@click.option(
+    "--output",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Save the report, or with --json-output the full result, to this file.",
+)
 @click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
 def report_command(
     run_id: str,
@@ -564,7 +613,7 @@ def report_command(
 
 
 @cli.command("list")
-@click.option("--limit", default=20, type=int, show_default=True)
+@click.option("--limit", default=20, type=int, show_default=True, help="How many runs to show, newest first.")
 def list_command(limit: int) -> None:
     """List stored research runs, newest first."""
     engine = ShanduEngine.from_config()
@@ -608,7 +657,12 @@ def show_command(run_id: str) -> None:
     type=click.Choice(["concise", "standard", "high"]),
     help="Answer length.",
 )
-@click.option("--output", default=None, help="Save the answer, or with --json-output the full result, to this file.")
+@click.option(
+    "--output",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Save the answer, or with --json-output the full result, to this file.",
+)
 @click.option("--json-output", is_flag=True, help="Emit the full result as JSON.")
 def ai_search_command(
     query: str,

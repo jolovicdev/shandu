@@ -303,6 +303,21 @@ def test_run_names_the_flag_when_a_value_is_out_of_range(monkeypatch, flag, valu
     assert seen["engines"] == 0
 
 
+@pytest.mark.parametrize(
+    "flags,expected",
+    [
+        ([], "2 iterations · 3 subagents"),
+        (["--max-iterations", "1", "--parallelism", "1"], "1 iteration · 1 subagent"),
+    ],
+)
+def test_run_header_counts_iterations_and_subagents(monkeypatch, flags, expected) -> None:
+    _stub_run_engine(monkeypatch)
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q", *flags])
+
+    assert expected in " ".join(result.stdout.split())
+
+
 def test_run_passes_a_valid_cost_cap_and_start_day_to_the_request(monkeypatch) -> None:
     seen = _stub_run_engine(monkeypatch)
 

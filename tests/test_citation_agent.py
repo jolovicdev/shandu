@@ -68,10 +68,9 @@ def test_ledger_merges_same_work_variants_and_unions_ids() -> None:
 
     citations = asyncio.run(agent.build_citations("q", evidence))
 
-    assert [entry.citation_id for entry in citations] == [1, 2]
+    assert [entry.citation_id for entry in citations] == [1]
     assert citations[0].url == "https://arxiv.org/abs/2509.09677"
-    assert set(citations[0].evidence_ids) == {"e1", "e2"}
-    assert citations[1].url == "https://mirror.example/paper"
+    assert set(citations[0].evidence_ids) == {"e1", "e2", "e3"}
 
 
 def test_ledger_short_titles_do_not_merge() -> None:
@@ -139,6 +138,26 @@ def test_ledger_strips_markup_and_merges_variants_that_differ_only_by_it() -> No
 
     assert [entry.title for entry in citations] == ["Efficacy of GLP\u2010 1 agonists in trials"]
     assert set(citations[0].evidence_ids) == {"e1", "e2"}
+
+
+def test_ledger_merges_copies_of_one_paper() -> None:
+    evidence = [
+        _record(
+            "e1",
+            "https://www.nature.com/articles/s41591-024-03453-1",
+            "Bioaccumulation of microplastics in decedent human brains - Nature Medicine",
+            site_name="Nature",
+        ),
+        _record("e2", "https://www.nature.com/articles/s41591-024-03453-1.pdf", "Bioaccumulation of microplastics"),
+        _record("e3", "https://www.science.org/doi/full/10.1126/science.adk1234", "Grid inertia in practice"),
+        _record("e4", "https://doi.org/10.1126/science.adk1234", "Science article"),
+        _record("e5", "https://arxiv.org/abs/2401.01234v2", "Paper A abstract page"),
+        _record("e6", "https://arxiv.org/pdf/2401.01234", "Paper A full text"),
+    ]
+
+    citations = asyncio.run(CitationAgent().build_citations("q", evidence))
+
+    assert [entry.evidence_ids for entry in citations] == [["e1", "e2"], ["e3", "e4"], ["e5", "e6"]]
 
 
 def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:

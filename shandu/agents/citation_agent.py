@@ -20,6 +20,14 @@ _MIN_CITABLE_CONFIDENCE = 0.35
 # titles ("10-K", "FAQ") collide across unrelated pages on the same site.
 _MIN_MERGE_TITLE_LEN = 12
 _MARKUP = re.compile(r"<[^>]+>")
+# Copies of one paper share a DOI or an arXiv id, and a publisher's PDF sits
+# beside its HTML page with ".pdf" added.
+_DOI = re.compile(r"10\.\d{4,9}/[^\s?#]+", re.IGNORECASE)
+_DOI_VIEW_SUFFIX = re.compile(r"(?:\.pdf|/(?:full|pdf|epdf|abstract|fulltext))+$")
+_ARXIV_ID = re.compile(r"(\d{4}\.\d{4,5})(?:v\d+)?")
+# The same long title on two sites names one work, such as a paper on its
+# journal's site and on PubMed Central.
+_MIN_CROSS_SITE_TITLE_LEN = 40
 # Page titles often end with their site's name: "Incident report | CrowdStrike".
 _SITE_SUFFIX = re.compile(r"^(?P<head>.*\S)\s+[|\-–—]\s+(?P<tail>[^|\-–—]+)$")
 
@@ -66,6 +74,32 @@ class CitationAgent:
             return None
         return host, normalized
 
+    def _same_work_keys(self, url: str, title: str, publisher: str) -> list[tuple[str, str]]:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower().removeprefix("www.")
+        path = unquote(parsed.path).rstrip("/")
+        keys: list[tuple[str, str]] = []
+        doi = _DOI.search(path)
+        arxiv = _ARXIV_ID.search(path) if host.endswith("arxiv.org") else None
+        if doi:
+            value = _DOI_VIEW_SUFFIX.sub("", doi.group(0).lower())
+            if value.startswith("10.48550/arxiv."):
+                keys.append(("arxiv", value.removeprefix("10.48550/arxiv.")))
+            else:
+                keys.append(("doi", value))
+        elif arxiv:
+            keys.append(("arxiv", arxiv.group(1)))
+        elif not parsed.query:
+            keys.append(("page", host + path.removesuffix(".pdf")))
+        # Fallback titles equal the publisher; merging on them would fuse
+        # unrelated pages from the same site.
+        same_site = self._merge_key(url, title) if title != publisher else None
+        if same_site is not None:
+            keys.append(same_site)
+            if len(same_site[1]) >= _MIN_CROSS_SITE_TITLE_LEN:
+                keys.append(("title", same_site[1]))
+        return keys
+
     @staticmethod
     def _without_site_suffix(title: str, publisher: str, host: str) -> str:
         """Drop a trailing site name that the reference already shows as its publisher."""
@@ -102,12 +136,12 @@ class CitationAgent:
                 title = self._title_from_url(url) or publisher
             title = self._without_site_suffix(title, publisher, host)
             evidence_ids = sorted({entry.evidence_id for entry in items})
-            # Fallback titles equal the publisher; merging on them would fuse
-            # unrelated pages from the same site.
-            key = self._merge_key(url, title) if title != publisher else None
-            if key is not None and key in merged:
-                entry = merged[key]
-                entry.evidence_ids = sorted(set(entry.evidence_ids) | set(evidence_ids))
+            keys = self._same_work_keys(url, title, publisher)
+            known = next((merged[key] for key in keys if key in merged), None)
+            if known is not None:
+                known.evidence_ids = sorted(set(known.evidence_ids) | set(evidence_ids))
+                for key in keys:
+                    merged.setdefault(key, known)
                 continue
             entry = CitationEntry(
                 citation_id=len(citations) + 1,
@@ -117,7 +151,7 @@ class CitationAgent:
                 publisher=publisher,
                 accessed_at=accessed,
             )
-            if key is not None:
+            for key in keys:
                 merged[key] = entry
             citations.append(entry)
         return citations

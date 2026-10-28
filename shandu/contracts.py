@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -71,6 +72,11 @@ EFFORT_PRESETS: dict[str, dict[str, int]] = {
     },
 }
 
+# Dot-separated labels that end in a top-level label of letters, as in
+# nature.com or xn--80ak6aa92e.com.
+_SITE_NAME = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]+)")
+
+
 class ResearchRequest(BaseModel):
     query: str
     max_iterations: int = Field(default=2, ge=1, le=8)
@@ -95,26 +101,39 @@ class ResearchRequest(BaseModel):
     audit: bool = True
     # Research stops before the next iteration once metered spend reaches
     # this; the report is still written, so a run can end slightly above it.
-    max_cost_usd: float | None = Field(default=None, gt=0)
+    max_cost_usd: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     max_searches_per_task: int = Field(default=6, ge=1, le=12)
     effort: Literal["low", "medium", "high", "max"] = "medium"
 
     @model_validator(mode="before")
     @classmethod
     def _effort_fills_the_budget(cls, data: Any) -> Any:
-        if isinstance(data, dict) and data.get("effort") in EFFORT_PRESETS:
-            return {**EFFORT_PRESETS[data["effort"]], **data}
+        if isinstance(data, dict) and isinstance(effort := data.get("effort"), str):
+            return {**EFFORT_PRESETS.get(effort, {}), **data}
         return data
+
+    @field_validator("query")
+    @classmethod
+    def _asks_something(cls, query: str) -> str:
+        if not query.strip():
+            raise ValueError("give a research question")
+        return query
 
     @field_validator("include_domains", "exclude_domains")
     @classmethod
     def _bare_hosts(cls, domains: list[str]) -> list[str]:
         hosts: list[str] = []
-        for domain in domains:
+        # A list typed into one field or flag arrives as one entry.
+        for domain in (part for entry in domains for part in re.split(r"[\s,;]+", entry)):
+            if not domain:
+                continue
             # Hosts are compared without a port, so one given here is dropped.
-            host = urlsplit("//" + domain.strip().split("://")[-1]).hostname or ""
-            host = host.removeprefix("www.")
-            if host and host not in hosts:
+            host = urlsplit("//" + domain.split("://")[-1]).hostname or ""
+            # A site's subdomains match it anyway, so a wildcard adds nothing.
+            host = host.removeprefix("*.").removeprefix("www.")
+            if not _SITE_NAME.fullmatch(host):
+                raise ValueError(f"{domain!r} is not a site name; give one like nature.com")
+            if host not in hosts:
                 hosts.append(host)
         return hosts
 

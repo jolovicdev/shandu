@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+from pydantic import ValidationError
+
 from shandu.agents.search_subagent import SearchSubagent, _ExtractionPayload
 from shandu.contracts import ResearchRequest, SubagentTask
 from shandu.services.scrape import ScrapedPage
@@ -236,8 +239,36 @@ def test_domain_filters_ignore_ports_and_schemes() -> None:
     assert request.exclude_domains == ["bad.org"]
 
 
+def test_domain_filters_split_typed_lists_and_drop_wildcards() -> None:
+    request = ResearchRequest(
+        query="q", include_domains=["*.nature.com", "who.int, cdc.gov; nih.gov  who.int"]
+    )
+
+    assert request.include_domains == ["nature.com", "who.int", "cdc.gov", "nih.gov"]
+
+
+@pytest.mark.parametrize("junk", ["nature", "nature..com", "-bad.org", "who.int/news site"])
+def test_domain_filters_refuse_what_is_not_a_site_name(junk: str) -> None:
+    with pytest.raises(ValidationError, match="is not a site name"):
+        ResearchRequest(query="q", exclude_domains=[junk])
+
+
 def test_a_named_effort_fills_the_budgets_a_request_leaves_unset() -> None:
     request = ResearchRequest(query="q", effort="high", max_iterations=1)
 
     assert (request.max_iterations, request.parallelism, request.max_pages_per_task) == (1, 4, 6)
     assert request.max_searches_per_task == 8
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"query": "  \n"},
+        {"query": "q", "max_cost_usd": float("inf")},
+        {"query": "q", "effort": ["low"]},
+    ],
+    ids=["blank question", "endless budget", "listed effort"],
+)
+def test_a_request_refuses_what_no_run_can_use(fields: dict) -> None:
+    with pytest.raises(ValidationError):
+        ResearchRequest(**fields)

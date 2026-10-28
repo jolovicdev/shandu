@@ -38,7 +38,7 @@ _BANNED_PROVENANCE_HEADERS = {
 
 # Writers sometimes print a placeholder where a citation would go.
 _PLACEHOLDER_MARKER = re.compile(
-    r"(?<![ \t])[ \t]*\[(?:no marker|citation needed)\]",
+    r"(?<![ \t])[ \t]*\[(?:no marker|no citation|citation needed|source needed|unsourced|uncited)\]",
     re.IGNORECASE,
 )
 
@@ -411,21 +411,26 @@ class ReportService:
                     evidence_to_number[evidence_id] = number
 
         # A dropped marker takes the spaces before it, so "size [99]." reads
-        # "size." rather than "size .". Matching starts only where a run of
-        # spaces starts, which keeps a long run linear.
-        marker_pattern = re.compile(r"(?<![ \t])([ \t]*)\[([A-Za-z0-9_-]{1,64})\]")
+        # "size." rather than "size .", except at a line start, where they are
+        # indentation. Matching starts only where a run of spaces starts, which
+        # keeps a long run linear.
+        marker_pattern = re.compile(
+            r"(?<![ \t\u00a0])([ \t\u00a0]*)\[([A-Za-z0-9_-]{1,64})\]"
+        )
 
         def replace(match: re.Match[str]) -> str:
             space, token = match.groups()
+            starts_line = match.start() == 0 or match.string[match.start() - 1] == "\n"
+            dropped = space if starts_line else ""
             if token.isdigit():
                 if token in valid_numbers:
                     return f"{space}[{int(token)}]"
-                return ""
+                return dropped
             mapped = evidence_to_number.get(token)
             if mapped:
                 return f"{space}[{mapped}]"
             if re.fullmatch(r"[0-9a-fA-F]{32}", token):
-                return ""
+                return dropped
             return match.group(0)
 
         text = marker_pattern.sub(replace, markdown)

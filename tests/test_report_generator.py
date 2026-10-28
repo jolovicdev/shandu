@@ -108,6 +108,8 @@ def test_dropped_markers_take_their_leading_space_with_them() -> None:
         markdown=(
             "# Report\n\n## Summary\n\n"
             "The reply could not be read [99]. Signal depends on size [1] and density [42], mostly.\n"
+            "Size grew\u00a0[99].\n\n"
+            "- An item\n    [99] continues here [1].\n"
         ),
     )
     citations = [
@@ -124,6 +126,8 @@ def test_dropped_markers_take_their_leading_space_with_them() -> None:
     rendered = ReportService().render(ResearchRequest(query="q"), draft, citations)
 
     assert "The reply could not be read. Signal depends on size [1] and density, mostly." in rendered
+    assert "Size grew." in rendered
+    assert "- An item\n     continues here [1]." in rendered
 
 
 def test_placeholder_markers_are_removed() -> None:
@@ -134,6 +138,7 @@ def test_placeholder_markers_are_removed() -> None:
         markdown=(
             "# Report\n\n## Summary\n\n"
             "Ratings put the median at 1.98 [no marker]. A lead [Citation needed], then a fact [1].\n"
+            "Rates rose [no citation], fell [source needed], held [unsourced] and dipped [uncited].\n"
         ),
     )
     citations = [
@@ -150,6 +155,7 @@ def test_placeholder_markers_are_removed() -> None:
     rendered = ReportService().render(ResearchRequest(query="q"), draft, citations)
 
     assert "Ratings put the median at 1.98. A lead, then a fact [1]." in rendered
+    assert "Rates rose, fell, held and dipped." in rendered
 
 
 def test_report_service_reindexes_citation_numbers_without_gaps() -> None:

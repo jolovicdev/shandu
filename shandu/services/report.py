@@ -38,7 +38,7 @@ _BANNED_PROVENANCE_HEADERS = {
 
 # Writers sometimes print a placeholder where a citation would go.
 _PLACEHOLDER_MARKER = re.compile(
-    r"[ \t]*\[(?:no marker|no citation|citation needed|source needed|unsourced|uncited)\]",
+    r"(?<![ \t])[ \t]*\[(?:no marker|citation needed)\]",
     re.IGNORECASE,
 )
 
@@ -411,13 +411,12 @@ class ReportService:
                     evidence_to_number[evidence_id] = number
 
         # A dropped marker takes the spaces before it, so "size [99]." reads
-        # "size." rather than "size .".
-        marker_pattern = re.compile(r"([ \t]*)\[([A-Za-z0-9_-]{1,64})\]")
+        # "size." rather than "size .". Matching starts only where a run of
+        # spaces starts, which keeps a long run linear.
+        marker_pattern = re.compile(r"(?<![ \t])([ \t]*)\[([A-Za-z0-9_-]{1,64})\]")
 
         def replace(match: re.Match[str]) -> str:
-            space, token = match.group(1), match.group(2).strip()
-            if not token:
-                return ""
+            space, token = match.groups()
             if token.isdigit():
                 if token in valid_numbers:
                     return f"{space}[{int(token)}]"
@@ -432,7 +431,7 @@ class ReportService:
         text = marker_pattern.sub(replace, markdown)
         text = re.sub(r"(\[(\d+)\])(?:\s*\[\2\])+", r"[\2]", text)
         text = _PLACEHOLDER_MARKER.sub("", text)
-        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"(?<![ \t])[ \t]+\n", "\n", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
@@ -491,14 +490,14 @@ class ReportService:
             id_map[old_id] = new_id
 
         def replace(match: re.Match[str]) -> str:
-            old_id = int(match.group(2))
+            old_id = int(match.group(1))
             mapped = id_map.get(old_id)
             if mapped is None:
                 return ""
-            return f"{match.group(1)}[{mapped}]"
+            return f"[{mapped}]"
 
-        normalized_body = re.sub(r"([ \t]*)\[(\d+)\]", replace, body)
+        normalized_body = marker_pattern.sub(replace, body)
         normalized_body = re.sub(r"(\[(\d+)\])(?:\s*\[\2\])+", r"[\2]", normalized_body)
-        normalized_body = re.sub(r"[ \t]+\n", "\n", normalized_body)
+        normalized_body = re.sub(r"(?<![ \t])[ \t]+\n", "\n", normalized_body)
         normalized_body = re.sub(r"\n{3,}", "\n\n", normalized_body).strip()
         return normalized_body, kept_entries

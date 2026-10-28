@@ -174,6 +174,21 @@ def test_ledger_merges_copies_of_one_paper() -> None:
     ]
 
 
+def test_ledger_keeps_works_apart_whose_identifiers_differ() -> None:
+    title = "Coordinated grid inertia estimation across interconnected regions"
+    evidence = [
+        _record("e1", "https://doi.org/10.1126/science.adk1111", title),
+        _record("e2", "https://doi.org/10.1126/science.adk2222", title),
+        _record("e3", "https://arxiv.org/abs/2401.01234v2", title),
+        _record("e4", "https://arxiv.org/abs/2402.04321", title),
+        _record("e5", "https://www.science.org/doi/full/10.1126/science.adk1111", title),
+    ]
+
+    citations = asyncio.run(CitationAgent().build_citations("q", evidence))
+
+    assert [entry.evidence_ids for entry in citations] == [["e1", "e3", "e5"], ["e2"], ["e4"]]
+
+
 def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
     agent = CitationAgent()
     evidence = [
@@ -193,6 +208,10 @@ def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
         ),
         _record("e5", "https://www.crowdstrike.com/blog/", "Blog | CrowdStrike"),
         _record("e6", "https://x.com/somebody/status/1", "Thread on chip export rules - Xavier Lee"),
+        _record("e7", "https://www.science.org/content/a", "Why grids lose inertia - Science and society explained"),
+        _record("e8", "https://www.who.int/news/b", "Vaccines reach rural clinics in time - Who benefits?"),
+        _record("e9", "https://www.bbc.co.uk/news/c", "Heatwave closes schools across the north - BBC"),
+        _record("e10", "https://www.biorxiv.org/content/d", "Single-cell maps of the ageing retina | bioRxiv"),
     ]
 
     citations = asyncio.run(agent.build_citations("q", evidence))
@@ -204,6 +223,10 @@ def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
         "Bioaccumulation of microplastics in decedent human brains",
         "Blog | CrowdStrike",
         "Thread on chip export rules - Xavier Lee",
+        "Why grids lose inertia - Science and society explained",
+        "Vaccines reach rural clinics in time - Who benefits?",
+        "Heatwave closes schools across the north",
+        "Single-cell maps of the ageing retina",
     ]
 
 
@@ -211,6 +234,7 @@ def test_ledger_prefers_the_address_over_a_one_word_section_title() -> None:
     evidence = [
         _record("e1", "https://www.eci.com/blog/crowdstrike-incident-what-happened-and-what-now", "Solutions"),
         _record("e2", "https://en.wikipedia.org/wiki/Microplastics", "Microplastics"),
+        _record("e3", "https://www3.nhk.or.jp/news/tokyo-subway-accident-update", "東京地下鉄事故について"),
     ]
 
     citations = asyncio.run(CitationAgent().build_citations("q", evidence))
@@ -218,6 +242,7 @@ def test_ledger_prefers_the_address_over_a_one_word_section_title() -> None:
     assert [entry.title for entry in citations] == [
         "Crowdstrike incident what happened and what now",
         "Microplastics",
+        "東京地下鉄事故について",
     ]
 
 

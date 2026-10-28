@@ -33,6 +33,28 @@ _ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}")
 _MIN_CROSS_SITE_TITLE_LEN = 40
 # Page titles often end with their site's name: "Incident report | CrowdStrike".
 _SITE_SUFFIX = re.compile(r"^(?P<head>.*\S)\s+[|\-–—]\s+(?P<tail>[^|\-–—]+)$")
+# Words a site or journal name may carry in lower case.
+_NAME_CONNECTORS = frozenset({"&", "a", "and", "at", "de", "du", "for", "in", "la", "of", "on", "the", "und"})
+# A country's second level, as in bbc.co.uk, which is not the site's brand.
+_SECOND_LEVELS = frozenset({"ac", "co", "com", "edu", "gov", "net", "org"})
+
+
+def _reads_as_a_name(text: str) -> bool:
+    """Whether every word is capitalized or carries a capital ("bioRxiv"), is a
+    domain, or is a connector, as in a site or journal name."""
+    return all(
+        any(char.isupper() or char.isdigit() for char in word)
+        or "." in word
+        or word in _NAME_CONNECTORS
+        for word in text.split()
+    )
+
+
+def _name_other_works(ids: set[tuple[str, str]], seen: set[tuple[str, str]]) -> bool:
+    """Whether two identifiers of one kind differ, which names two works
+    whatever their titles. A DOI and an arXiv id can be one paper's journal
+    and preprint versions."""
+    return any(key not in seen and any(kind == key[0] for kind, _ in seen) for key in ids)
 
 
 class CitationAgent:
@@ -108,10 +130,14 @@ class CitationAgent:
         if match is None or len(match.group("head").split()) < 3:
             return title
         labels = host.split(".")
+        if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _SECOND_LEVELS:
+            labels = labels[:-1]
         brand = labels[-2] if len(labels) >= 2 else host
         names = {re.sub(r"[\W_]+", "", name.casefold()) for name in (publisher, brand)}
         tail = re.sub(r"[\W_]+", "", match.group("tail").casefold())
-        named = any(len(name) >= 3 and tail.startswith(name) for name in names)
+        named = _reads_as_a_name(match.group("tail")) and any(
+            len(name) >= 3 and tail.startswith(name) for name in names
+        )
         return match.group("head") if named else title
 
     @staticmethod
@@ -128,6 +154,8 @@ class CitationAgent:
 
         citations: list[CitationEntry] = []
         merged: dict[tuple[str, str], CitationEntry] = {}
+        # The DOIs and arXiv ids each reference has been seen under.
+        work_ids: dict[int, set[tuple[str, str]]] = {}
         accessed = date.today().isoformat()
         for url, items in grouped.items():
             first = items[0]
@@ -136,17 +164,26 @@ class CitationAgent:
             title = self._sanitize_title(first.title, "")
             from_url = self._title_from_url(url)
             # A one-word title is usually the site's section ("Solutions")
-            # when the address names the article itself.
+            # when the address names the article itself. Scripts that set
+            # words without spaces, as Japanese does, put a whole title in one.
             if (
                 not title
                 or title.casefold() == host.casefold()
-                or (len(title.split()) == 1 and len(from_url.split()) >= 3)
+                or (len(title.split()) == 1 and title.isascii() and len(from_url.split()) >= 3)
             ):
                 title = from_url or publisher
             title = self._without_site_suffix(title, publisher, host)
             evidence_ids = sorted({entry.evidence_id for entry in items})
             keys = self._same_work_keys(url, title, publisher)
-            entry = next((merged[key] for key in keys if key in merged), None)
+            ids = {key for key in keys if key[0] in ("doi", "arxiv")}
+            entry = next(
+                (
+                    merged[key]
+                    for key in keys
+                    if key in merged and not _name_other_works(ids, work_ids[merged[key].citation_id])
+                ),
+                None,
+            )
             if entry is None:
                 entry = CitationEntry(
                     citation_id=len(citations) + 1,
@@ -159,6 +196,7 @@ class CitationAgent:
                 citations.append(entry)
             else:
                 entry.evidence_ids = sorted(set(entry.evidence_ids) | set(evidence_ids))
+            work_ids.setdefault(entry.citation_id, set()).update(ids)
             for key in keys:
                 merged.setdefault(key, entry)
         return citations

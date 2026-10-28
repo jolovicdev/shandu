@@ -227,6 +227,11 @@ def gui_command(host: str, port: int, share: bool, auth: str | None, browser: bo
     except RuntimeError as exc:
         console.print(ui.error(str(exc)))
     except Exception as exc:
+        if isinstance(exc, OSError) and "empty port" in str(exc):
+            raise click.ClickException(
+                f"Port {port} is in use. Shandu may already be running at http://{host}:{port}. "
+                f"Use `shandu gui --port {port + 1}`."
+            ) from None
         console.print(ui.error(f"GUI runtime error: {exc}"))
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import cast
 
@@ -89,6 +90,11 @@ def save_configuration(
     env_text = str(api_key_env or "").strip()
     key_text = str(api_key_value or "").strip()
 
+    # A variable that only named the previous model's usual key would carry
+    # that key over to a new model's provider.
+    previous_model = str(config.get("api", "model", ""))
+    if model_text != previous_model and env_text == infer_api_key_env_name(previous_model):
+        env_text = ""
     resolved_env = env_text or infer_api_key_env_name(model_text)
     runtime_before = _runtime_snapshot()
     config.set("api", "model", model_text)
@@ -127,7 +133,13 @@ def save_configuration(
     if _runtime_snapshot() != runtime_before:
         reset_bootstrap()
     config.apply_provider_api_key()
-    return f"Saved configuration: model {model_text}, env key {resolved_env}."
+    if not resolved_env:
+        return f"Saved. Model {model_text}; its provider manages the key."
+    if os.getenv(resolved_env, "").strip():
+        return f"Saved. Model {model_text}; the API key is in {resolved_env}."
+    return (
+        f"Saved. Model {model_text}; no API key yet. Paste one above or set {resolved_env}."
+    )
 
 
 _resolved_detail_level = resolved_detail_level

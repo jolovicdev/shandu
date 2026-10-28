@@ -17,6 +17,7 @@ from shandu.runtime.calls import ProviderRejectedError
 from shandu.ui.gradio import layout as layout_module
 from shandu.ui.gradio_app import GuiRunState
 from shandu.ui.gradio.layout import _outputs, build_gui
+from shandu.ui.gradio.settings import GuiDefaults
 
 
 def test_gradio_task_status_not_completed_on_trace_completed_message() -> None:
@@ -106,14 +107,9 @@ def test_run_generator_close_stops_worker(monkeypatch) -> None:
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(
-        layout_module, "save_configuration", lambda **kwargs: "saved"
-    )
     monkeypatch.setattr(layout_module, "ShanduEngine", BlockingEngine)
 
-    gen = layout_module._run_action(
-        "q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3
-    )
+    gen = layout_module._run_action("q")
     next(gen)
     next(gen)
     assert started.is_set()
@@ -164,14 +160,11 @@ def test_gui_stop_button_calls_the_stop_handler() -> None:
 
 
 def test_stop_ends_the_sessions_run_as_stopped(monkeypatch) -> None:
-    monkeypatch.setattr(layout_module, "save_configuration", lambda **kwargs: "saved")
     monkeypatch.setattr(layout_module, "ShanduEngine", _BlockingEngine)
     _BlockingEngine.cancelled.clear()
     page = SimpleNamespace(session_hash="s1")
 
-    gen = layout_module._run_action(
-        "q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3, http_request=page
-    )
+    gen = layout_module._run_action("q", http_request=page)
     next(gen)
     next(gen)
     layout_module._stop_action(page)
@@ -187,14 +180,11 @@ def test_rejected_api_key_reads_as_a_settings_problem(monkeypatch) -> None:
         async def run(self, request, progress_callback=None) -> None:
             raise ProviderRejectedError("key", "Your api key: ****3f9a is invalid")
 
-    monkeypatch.setattr(layout_module, "save_configuration", lambda **kwargs: "saved")
     monkeypatch.setattr(layout_module, "ShanduEngine", RejectingEngine)
 
-    final = list(
-        layout_module._run_action("q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3)
-    )[-1]
+    final = list(layout_module._run_action("q"))[-1]
 
-    assert "rejected the API key. Check Key env var and Key value in Settings." in final[0]
+    assert "rejected the API key. Check API key and Key variable in Settings." in final[0]
     assert "ProviderRejectedError: The model provider rejected the API key" in final[0]
 
 
@@ -203,12 +193,24 @@ def test_error_hints_leave_other_errors_as_they_are() -> None:
 
 
 def test_empty_question_asks_for_one_without_a_failed_run() -> None:
-    outputs = next(
-        layout_module._run_action("  ", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3)
-    )
+    outputs = next(layout_module._run_action("  "))
 
-    assert outputs[0] == layout_module.EMPTY_QUESTION
+    assert "Type a research question first." in outputs[0]
     assert len(outputs) == 13
+
+
+_SAVED = GuiDefaults(
+    model="m",
+    api_key_env="",
+    temperature=0.2,
+    max_tokens=100,
+    max_iterations=2,
+    parallelism=3,
+    detail_level="standard",
+    depth_policy="adaptive",
+    max_results_per_query=8,
+    max_pages_per_task=6,
+)
 
 
 def _capture_request(monkeypatch, *args) -> object:
@@ -219,9 +221,13 @@ def _capture_request(monkeypatch, *args) -> object:
             captured["request"] = request
             raise RuntimeError("captured")
 
-    monkeypatch.setattr(layout_module, "save_configuration", lambda **kwargs: "saved")
+    def refuse_to_save(**kwargs):
+        raise AssertionError("a run must not save the settings")
+
+    monkeypatch.setattr(layout_module, "save_configuration", refuse_to_save)
+    monkeypatch.setattr(layout_module, "load_defaults", lambda: _SAVED)
     monkeypatch.setattr(layout_module, "ShanduEngine", CapturingEngine)
-    list(layout_module._run_action("q", "m", "", "", 0.2, 100, 2, 3, "high", "adaptive", 8, 6, *args))
+    list(layout_module._run_action("q", *args))
     return captured["request"]
 
 
@@ -230,6 +236,7 @@ def test_run_options_reach_the_request(monkeypatch) -> None:
         monkeypatch,
         "low",
         "agentic",
+        "concise",
         "$0.5",
         False,
         "nature.com, https://www.who.int/news",
@@ -240,25 +247,22 @@ def test_run_options_reach_the_request(monkeypatch) -> None:
     assert (request.max_iterations, request.parallelism, request.max_pages_per_task) == (1, 2, 3)
     assert (request.max_results_per_query, request.max_searches_per_task) == (6, 3)
     assert (request.researcher, request.audit, request.max_cost_usd) == ("agentic", False, 0.5)
-    assert request.effort == "low"
+    assert (request.effort, request.detail_level) == ("low", "concise")
     assert request.include_domains == ["nature.com", "who.int"]
     assert request.exclude_domains == ["example.com"]
     assert request.since == date(2025, 1, 31)
 
 
-def test_effort_from_settings_keeps_the_settings_budget(monkeypatch) -> None:
-    request = _capture_request(monkeypatch, "settings", "pipeline", "", True, "", "", "")
+def test_effort_from_settings_keeps_the_saved_settings(monkeypatch) -> None:
+    request = _capture_request(monkeypatch, "settings", "pipeline", "settings", "", True, "", "", "")
 
     assert (request.max_iterations, request.parallelism, request.max_pages_per_task) == (2, 3, 6)
+    assert (request.max_results_per_query, request.detail_level) == (8, "standard")
     assert (request.researcher, request.audit, request.max_cost_usd) == ("pipeline", True, None)
 
 
 def test_a_malformed_since_date_asks_for_a_date() -> None:
-    outputs = next(
-        layout_module._run_action(
-            "q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3, since_value="31/01/2025"
-        )
-    )
+    outputs = next(layout_module._run_action("q", since_value="31/01/2025"))
 
     assert "takes a date like 2025-01-31" in outputs[0]
     assert len(outputs) == 13
@@ -266,13 +270,22 @@ def test_a_malformed_since_date_asks_for_a_date() -> None:
 
 @pytest.mark.parametrize("amount", ["abc", "0"])
 def test_a_max_cost_that_is_not_a_positive_amount_is_refused(amount: str) -> None:
-    outputs = next(
-        layout_module._run_action(
-            "q", "m", "", "", 0.2, 100, 1, 1, "high", "adaptive", 5, 3, max_cost_value=amount
-        )
-    )
+    outputs = next(layout_module._run_action("q", max_cost_value=amount))
 
-    assert "Max cost takes an amount above zero" in outputs[0]
+    assert "Research budget takes an amount above zero" in outputs[0]
+
+
+def test_a_site_that_is_not_a_site_name_is_named_by_its_label() -> None:
+    outputs = next(layout_module._run_action("q", include_value="nature"))
+
+    assert "Check Only these sites: &#x27;nature&#x27; is not a site name" in outputs[0]
+
+
+def test_the_check_before_a_run_stops_only_a_run_it_would_refuse() -> None:
+    with pytest.raises(gr.Error, match="Type a research question first."):
+        layout_module._check_options(" ", "settings", "pipeline", "settings", "", True, "", "", "")
+
+    layout_module._check_options("q", "settings", "pipeline", "settings", "", True, "", "", "")
 
 
 def test_run_button_sends_every_run_option() -> None:
@@ -398,9 +411,59 @@ def test_recent_report_click_opens_the_report_the_page_shows(monkeypatch, tmp_pa
     outputs = layout_module._open_report(shown[0])
 
     assert [sample[-1] for sample in shown] == ["b", "a"]
-    assert outputs[-1] == "second question"
+    assert "second question" in outputs[1]
+    # The question box keeps whatever the user is typing.
+    assert len(outputs) == 13
     assert re.fullmatch(r"\d{2} \w{3} \d{4}, \d{2}:\d{2}", shown[0][2])
+
+
+def test_library_rows_show_the_start_and_cut_long_titles_at_a_word(monkeypatch, tmp_path) -> None:
+    import json
+    from datetime import datetime, timezone
+
+    from shandu.contracts import ResearchRequest
+    from shandu.services.run_store import RunStore
+
+    monkeypatch.setitem(config._config["runtime"], "storage_dir", str(tmp_path))
+    store = RunStore(tmp_path / "runs")
+    question = "How do grid operators estimate inertia across interconnected regions in real time?"
+    store.create("a", ResearchRequest(query=question), None)
+    store.save_report("a", "# a", [], {})
+    status_path = tmp_path / "runs" / "a" / "status.json"
+    status = json.loads(status_path.read_text())
+    status["created_at"] = "2026-01-02T03:04:00+00:00"
+    status_path.write_text(json.dumps(status))
+
+    (title, _, started, _) = layout_module._library_samples(layout_module.list_recent_reports())[0]
+
+    assert started == datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc).astimezone().strftime(
+        "%d %b %Y, %H:%M"
+    )
+    assert len(title) <= 60 and title.endswith(" …")
+    assert question.startswith(title.removesuffix(" …"))
+
+
+def test_a_report_gone_from_disk_says_so() -> None:
+    outputs = layout_module._open_report(["t", "", "", "gone"])
+
+    assert "Saved report gone is no longer on disk." in outputs[0]
+
+
+def test_each_visit_reads_the_saved_settings(monkeypatch) -> None:
+    monkeypatch.setattr(layout_module, "load_defaults", lambda: _SAVED)
+
+    loaded = layout_module._load_settings()
+
+    assert loaded[4:6] == (2, 3)
+    assert "<code>m</code>" in loaded[-1]
 
 
 def test_gui_needs_no_heartbeat_connection() -> None:
     assert build_gui().config["connect_heartbeat"] is False
+
+
+def test_each_visit_loads_settings_and_each_run_is_checked_first() -> None:
+    demo = build_gui()
+    handlers = {getattr(dep.fn, "__name__", "") for dep in demo.fns.values()}
+
+    assert {"_load_settings", "_check_options", "_run_action"} <= handlers

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import re
+import textwrap
 import threading
 from concurrent import futures
 from datetime import date
@@ -46,7 +47,7 @@ EXAMPLES = [
 _ACTIVE_RUNS: dict[str, threading.Event] = {}
 
 _REJECTION_HINTS = {
-    "key": "The model provider rejected the API key. Check Key env var and Key value in Settings.",
+    "key": "The model provider rejected the API key. Check API key and Key variable in Settings.",
     "model": "The model provider does not know this model. Check Model in Settings.",
     "credit": "The model provider account is out of credit. Add credit with the provider, then run again.",
 }
@@ -60,14 +61,73 @@ def _hint(message: str) -> str:
     return f"<p class='shandu-hint'>{escape(message)}</p>"
 
 
-EMPTY_QUESTION = _hint("Type a research question first.")
-
-EFFORT_CHOICES = [("From settings", "settings"), *((name.capitalize(), name) for name in EFFORT_PRESETS)]
-RESEARCHER_CHOICES = [("Pipeline", "pipeline"), ("Agentic", "agentic")]
+EFFORT_CHOICES = [
+    ("Saved settings", "settings"),
+    *(
+        (
+            f"{name.capitalize()}: {preset['max_iterations']} "
+            f"iteration{'' if preset['max_iterations'] == 1 else 's'}",
+            name,
+        )
+        for name, preset in EFFORT_PRESETS.items()
+    ),
+]
+RESEARCHER_CHOICES = [
+    ("Pipeline: faster, cheaper", "pipeline"),
+    ("Agentic: follows links, slower", "agentic"),
+]
+LENGTH_CHOICES = [
+    ("Saved settings", "settings"),
+    ("Concise (1,200 words)", "concise"),
+    ("Standard (2,200 words)", "standard"),
+    ("Long (3,600 words)", "high"),
+]
 OPTIONS_NOTE = (
-    "An effort preset replaces the budget in Settings for this run. The agentic "
-    "researcher also follows links to primary sources, so it takes longer and costs more."
+    "Low to Max replace Iterations, Parallel subagents, Results per query and Pages per "
+    "task from Settings for this run. Research stops starting iterations once the budget "
+    "is spent; the report and its citation check come after, so the total can end higher. "
+    "The agentic researcher follows links to primary sources, so it takes longer and costs more."
 )
+# The labels a request field has on this page, for validation messages.
+_OPTION_LABELS = {
+    "include_domains": "Only these sites",
+    "exclude_domains": "Skip these sites",
+    "max_cost_usd": "Research budget",
+    "since": "Pages dated since",
+}
+# A run stops when its page goes away, so leaving mid-run asks first.
+_WARN_ON_LEAVE_JS = """
+() => {
+  window.addEventListener("beforeunload", (event) => {
+    if (document.querySelector(".shandu-strip.is-running")) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
+}
+"""
+# Runs in the browser before the run starts and hands the inputs on. A
+# Gradio update cannot close an accordion the user opened, so Options fold
+# with a click.
+_START_RUN_JS = """
+(...values) => {
+  document.querySelector(".shandu-options button.label-wrap.open")?.click();
+  document.title = "Researching · Shandu";
+  setTimeout(() => {
+    document.getElementById("shandu-run")?.scrollIntoView({behavior: "smooth", block: "start"});
+  }, 100);
+  return values;
+}
+"""
+_SHOW_REPORT_JS = """
+() => {
+  const title = document.querySelector(".shandu-strip.is-complete")
+    ? document.querySelector(".shandu-doc-title")
+    : null;
+  document.title = title ? `Done: ${title.textContent} · Shandu` : "Shandu";
+  title?.scrollIntoView({behavior: "smooth", block: "start"});
+}
+"""
 
 
 def _masthead(model: str) -> str:
@@ -105,13 +165,15 @@ def _library_samples(reports: list[RecentReport]) -> list[list[str]]:
             facts.append(f"{report.citations} sources")
         if report.usd_spent:
             facts.append(format_cost(report.usd_spent))
-        samples.append([report.title, " · ".join(facts), report.saved_at, report.run_id])
+        # The list's cell cuts text at 60 characters, mid-word.
+        title = textwrap.shorten(report.title, 60, placeholder=" …")
+        samples.append([title, " · ".join(facts), report.started_at, report.run_id])
     return samples
 
 
 def _archive_strip(report: RecentReport) -> str:
     fields = [
-        _field("from", report.saved_at),
+        _field("from", report.started_at),
         _field("sources", report.citations or ""),
         _field("cost", format_cost(report.usd_spent) if report.usd_spent else ""),
         _field("run", report.run_id[:8], extra_class="run"),
@@ -141,17 +203,18 @@ def build_gui() -> gr.Blocks:
             elem_classes=["shandu-settings"],
         ):
             gr.HTML("<h3>Settings</h3>", elem_classes=["shandu-plain"])
+            gr.Markdown("Runs use these once they are saved.", elem_classes=["shandu-note"])
             model = gr.Textbox(label="Model", value=defaults.model)
+            api_key_value = gr.Textbox(
+                label="API key",
+                type="password",
+                info="Saved in ~/.shandu/config.json on this computer. Blank keeps the saved key.",
+            )
             api_key_env = gr.Textbox(
-                label="Key env var",
+                label="Key variable",
                 value=defaults.api_key_env,
                 placeholder=infer_api_key_env_name(defaults.model),
-                info="Environment variable that holds the API key. Blank uses the provider's usual name.",
-            )
-            api_key_value = gr.Textbox(
-                label="Key value",
-                type="password",
-                info="Saved to your local config. Blank keeps the current key.",
+                info="The environment variable the key goes in. Blank uses the provider's usual one.",
             )
             temperature = gr.Slider(
                 0.0, 1.0, value=defaults.temperature, step=0.05, label="Temperature"
@@ -191,7 +254,7 @@ def build_gui() -> gr.Blocks:
             save_button = gr.Button("Save", variant="secondary")
             save_message = gr.Markdown("", elem_classes=["shandu-note"])
 
-        gr.HTML(_masthead(defaults.model), elem_classes=["shandu-plain"])
+        masthead = gr.HTML(_masthead(defaults.model), elem_classes=["shandu-plain"])
 
         with gr.Column(elem_classes=["shandu-composer"]):
             query = gr.Textbox(
@@ -217,7 +280,10 @@ def build_gui() -> gr.Blocks:
                     researcher = gr.Dropdown(
                         choices=RESEARCHER_CHOICES, value="pipeline", label="Researcher"
                     )
-                    max_cost = gr.Textbox(label="Max cost (USD)", placeholder="No limit")
+                    length = gr.Dropdown(
+                        choices=LENGTH_CHOICES, value="settings", label="Report length"
+                    )
+                    max_cost = gr.Textbox(label="Research budget (USD)", placeholder="No limit")
                 with gr.Row(elem_classes=["shandu-option-row"]):
                     include_sites = gr.Textbox(
                         label="Only these sites", placeholder="nature.com, who.int"
@@ -230,7 +296,9 @@ def build_gui() -> gr.Blocks:
                 gr.Markdown(OPTIONS_NOTE, elem_classes=["shandu-note"])
 
         strip = gr.HTML(
-            initial_state.strip_html(running=False), elem_classes=["shandu-plain"]
+            initial_state.strip_html(running=False),
+            elem_id="shandu-run",
+            elem_classes=["shandu-plain"],
         )
 
         with gr.Column(elem_classes=["shandu-report"]):
@@ -307,14 +375,34 @@ def build_gui() -> gr.Blocks:
         save_button.click(
             fn=_save_action,
             inputs=config_inputs,
-            outputs=[save_message],
+            outputs=[save_message, masthead],
             concurrency_id="shandu_runtime",
             concurrency_limit=1,
         )
+        # The page is built once per process, so each visit reads the
+        # settings saved since.
+        demo.load(
+            fn=_load_settings,
+            outputs=[
+                model,
+                api_key_env,
+                temperature,
+                max_tokens,
+                max_iterations,
+                parallelism,
+                detail_level,
+                depth_policy,
+                max_results_per_query,
+                max_pages_per_task,
+                masthead,
+            ],
+        )
+        demo.load(fn=None, js=_WARN_ON_LEAVE_JS)
 
         option_inputs: list[Any] = [
             effort,
             researcher,
+            length,
             max_cost,
             audit,
             include_sites,
@@ -322,10 +410,17 @@ def build_gui() -> gr.Blocks:
             since,
         ]
 
-        run_event = gr.on(
+        # Checking the options first shows a mistake as a message, where it
+        # is seen wherever the page is scrolled, without starting a run.
+        checked = gr.on(
             triggers=[run_button.click, query.submit],
+            fn=_check_options,
+            inputs=[query] + option_inputs,
+        )
+        run_event = checked.success(
             fn=_run_action,
-            inputs=[query] + config_inputs + option_inputs,
+            js=_START_RUN_JS,
+            inputs=[query] + option_inputs,
             outputs=[
                 strip,
                 doc_title,
@@ -344,7 +439,9 @@ def build_gui() -> gr.Blocks:
             concurrency_id="shandu_runtime",
             concurrency_limit=1,
         )
-        run_event.then(fn=_refresh_library, outputs=[library, first_run])
+        run_event.then(fn=_refresh_library, outputs=[library, first_run]).then(
+            fn=None, js=_SHOW_REPORT_JS
+        )
         demo.load(fn=_refresh_library, outputs=[library, first_run])
         stop_button.click(fn=_stop_action, queue=False)
         library.click(
@@ -364,11 +461,10 @@ def build_gui() -> gr.Blocks:
                 stop_button,
                 examples.dataset,
                 run_button,
-                query,
             ],
             concurrency_id="shandu_runtime",
             concurrency_limit=1,
-        )
+        ).then(fn=_refresh_library, outputs=[library, first_run])
 
     demo.queue(default_concurrency_limit=1, max_size=12)
     return demo
@@ -386,8 +482,8 @@ def _save_action(
     depth_value: str,
     results_value: float,
     pages_value: float,
-) -> str:
-    return save_configuration(
+) -> tuple[str, str]:
+    message = save_configuration(
         model=model_value,
         api_key_env=api_env_value,
         api_key_value=api_value,
@@ -400,41 +496,50 @@ def _save_action(
         max_results_per_query=int(results_value),
         max_pages_per_task=int(pages_value),
     )
+    return message, _masthead(load_defaults().model)
 
 
-def _run_action(
+def _load_settings() -> tuple[Any, ...]:
+    defaults = load_defaults()
+    return (
+        defaults.model,
+        gr.update(
+            value=defaults.api_key_env, placeholder=infer_api_key_env_name(defaults.model)
+        ),
+        defaults.temperature,
+        defaults.max_tokens,
+        defaults.max_iterations,
+        defaults.parallelism,
+        resolved_detail_level(defaults.detail_level),
+        resolved_depth_policy(defaults.depth_policy),
+        defaults.max_results_per_query,
+        defaults.max_pages_per_task,
+        _masthead(defaults.model),
+    )
+
+
+def _request_from_options(
     query_value: str,
-    model_value: str,
-    api_env_value: str,
-    api_value: str,
-    temp_value: float,
-    token_value: float,
-    iter_value: float,
-    par_value: float,
-    detail_value: str,
-    depth_value: str,
-    results_value: float,
-    pages_value: float,
-    effort_value: str = "settings",
-    researcher_value: str = "pipeline",
-    max_cost_value: str = "",
-    audit_value: bool = True,
-    include_value: str = "",
-    exclude_value: str = "",
-    since_value: str = "",
-    http_request: gr.Request | None = None,
-):
-    text = query_value.strip()
+    effort_value: str,
+    researcher_value: str,
+    length_value: str,
+    max_cost_value: str,
+    audit_value: bool,
+    include_value: str,
+    exclude_value: str,
+    since_value: str,
+) -> ResearchRequest:
+    """The request a run would make, on the saved settings and this run's
+    options. A ValueError carries the message that names what to fix."""
+    text = (query_value or "").strip()
     if not text:
-        yield (EMPTY_QUESTION, *(gr.skip(),) * 12)
-        return
+        raise ValueError("Type a research question first.")
 
     since_text = (since_value or "").strip()
     try:
         since_day = date.fromisoformat(since_text) if since_text else None
     except ValueError:
-        yield (_hint("Pages dated since takes a date like 2025-01-31."), *(gr.skip(),) * 12)
-        return
+        raise ValueError("Pages dated since takes a date like 2025-01-31.") from None
 
     cost_text = (max_cost_value or "").strip().removeprefix("$")
     try:
@@ -442,22 +547,25 @@ def _run_action(
     except ValueError:
         max_cost_usd = -1.0
     if max_cost_usd is not None and not max_cost_usd > 0:
-        yield (
-            _hint("Max cost takes an amount above zero, like 0.50. Leave it blank for no limit."),
-            *(gr.skip(),) * 12,
+        raise ValueError(
+            "Research budget takes an amount above zero, like 0.50. Leave it blank for no limit."
         )
-        return
 
+    saved = load_defaults()
     preset = EFFORT_PRESETS.get(effort_value or "", {})
     try:
-        request = ResearchRequest(
+        return ResearchRequest(
             query=text,
-            max_iterations=preset.get("max_iterations", int(iter_value)),
-            parallelism=preset.get("parallelism", int(par_value)),
-            detail_level=resolved_detail_level(detail_value),
-            depth_policy=resolved_depth_policy(depth_value),
-            max_results_per_query=preset.get("max_results_per_query", int(results_value)),
-            max_pages_per_task=preset.get("max_pages_per_task", int(pages_value)),
+            max_iterations=preset.get("max_iterations", saved.max_iterations),
+            parallelism=preset.get("parallelism", saved.parallelism),
+            detail_level=resolved_detail_level(
+                saved.detail_level if length_value == "settings" else length_value
+            ),
+            depth_policy=resolved_depth_policy(saved.depth_policy),
+            max_results_per_query=preset.get(
+                "max_results_per_query", saved.max_results_per_query
+            ),
+            max_pages_per_task=preset.get("max_pages_per_task", saved.max_pages_per_task),
             max_searches_per_task=preset.get("max_searches_per_task", 6),
             effort=effort_value if effort_value in EFFORT_PRESETS else "medium",
             researcher="agentic" if researcher_value == "agentic" else "pipeline",
@@ -469,23 +577,46 @@ def _run_action(
         )
     except ValidationError as exc:
         problem = exc.errors()[0]
-        field = str(problem["loc"][0]).replace("_", " ") if problem["loc"] else "options"
-        yield (_hint(f"Check {field}: {problem['msg']}."), *(gr.skip(),) * 12)
-        return
+        name = str(problem["loc"][0]) if problem["loc"] else "options"
+        label = _OPTION_LABELS.get(name, name.replace("_", " "))
+        message = str(problem["msg"]).removeprefix("Value error, ")
+        raise ValueError(f"Check {label}: {message}.") from None
 
-    save_configuration(
-        model=model_value,
-        api_key_env=api_env_value,
-        api_key_value=api_value,
-        temperature=float(temp_value),
-        max_tokens=token_value,
-        max_iterations=int(iter_value),
-        parallelism=int(par_value),
-        detail_level=detail_value,
-        depth_policy=depth_value,
-        max_results_per_query=int(results_value),
-        max_pages_per_task=int(pages_value),
-    )
+
+def _check_options(*values: Any) -> None:
+    try:
+        _request_from_options(*values)
+    except ValueError as exc:
+        raise gr.Error(str(exc), print_exception=False) from None
+
+
+def _run_action(
+    query_value: str,
+    effort_value: str = "settings",
+    researcher_value: str = "pipeline",
+    length_value: str = "settings",
+    max_cost_value: str = "",
+    audit_value: bool = True,
+    include_value: str = "",
+    exclude_value: str = "",
+    since_value: str = "",
+    http_request: gr.Request | None = None,
+):
+    try:
+        request = _request_from_options(
+            query_value,
+            effort_value,
+            researcher_value,
+            length_value,
+            max_cost_value,
+            audit_value,
+            include_value,
+            exclude_value,
+            since_value,
+        )
+    except ValueError as exc:
+        yield (_hint(str(exc)), *(gr.skip(),) * 12)
+        return
 
     state = GuiRunState(max_iterations=request.max_iterations)
     state.stage = "bootstrap"
@@ -554,6 +685,7 @@ def _run_action(
     if isinstance(result, ResearchRunResult):
         state.apply_result(result)
         state.stage = "complete"
+        gr.Info("The report is ready below.", title="Report ready")
         yield _outputs(
             state=state,
             running=False,
@@ -595,13 +727,14 @@ def _refresh_library() -> tuple[Any, Any]:
 def _open_report(sample: list[str]) -> tuple[Any, ...]:
     reports = {report.run_id: report for report in list_recent_reports()}
     report = reports.get(sample[-1]) if sample else None
-    if report is None:
-        return (gr.skip(),) * 14
     archived = GuiRunState()
     try:
+        if report is None:
+            raise FileNotFoundError(sample[-1] if sample else "")
         markdown = Path(report.path).read_text(encoding="utf-8")
     except OSError:
-        archived.apply_error(f"Saved report {report.run_id} is no longer on disk.")
+        run_id = report.run_id if report else (sample[-1][:8] if sample else "")
+        archived.apply_error(f"Saved report {run_id} is no longer on disk.")
         return (
             archived.strip_html(running=False),
             "",
@@ -616,7 +749,6 @@ def _open_report(sample: list[str]) -> tuple[Any, ...]:
             gr.update(visible=False),
             gr.update(visible=True),
             gr.update(visible=True),
-            gr.skip(),
         )
     archived.report_markdown = markdown
     return (
@@ -633,7 +765,6 @@ def _open_report(sample: list[str]) -> tuple[Any, ...]:
         gr.update(visible=False),
         gr.update(visible=True),
         gr.update(visible=True),
-        report.title,
     )
 
 

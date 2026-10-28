@@ -47,7 +47,7 @@ _PLACEHOLDER_MARKER = re.compile(
 class RecentReport:
     run_id: str
     title: str
-    saved_at: str
+    started_at: str
     citations: int | None
     usd_spent: float | None
     path: str
@@ -58,13 +58,17 @@ def list_recent_reports() -> list[RecentReport]:
     for run in default_run_store().list_runs():
         if run.report_path is None:
             continue
-        saved = datetime.fromtimestamp(run.report_path.stat().st_mtime)
+        # Runs are listed by start, so the start is the time shown; it also
+        # tells apart runs of one question on the same day.
+        try:
+            started = datetime.fromisoformat(run.created_at).astimezone()
+        except ValueError:
+            started = datetime.fromtimestamp(run.report_path.stat().st_mtime)
         reports.append(
             RecentReport(
                 run_id=run.run_id,
                 title=run.query or run.run_id,
-                # The time tells apart runs of one question saved the same day.
-                saved_at=saved.strftime("%d %b %Y, %H:%M"),
+                started_at=started.strftime("%d %b %Y, %H:%M"),
                 citations=run.citation_count,
                 usd_spent=run.usd_spent,
                 path=str(run.report_path),

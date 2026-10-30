@@ -1,146 +1,98 @@
-# Microplastics in Human Brain Tissue: What the Evidence Shows and How Much to Trust It
+# Microplastics in Human Brain Tissue: What Has Been Reported and How Much of It Holds Up
 
-## Executive Summary
+**The short answer:** Three independent research groups have reported plastic particles or polymer mass in human brain tissue, using three different analytical methods, and none of those detections has been retracted. That makes the *presence* of microplastics in brain tissue a well-supported finding. The *magnitudes* are a different matter. The most publicised result — a median of roughly 4,900 µg of plastic per gram of frontal cortex, rising to 26,076 µg/g in a small dementia cohort — rests on a single pyrolysis GC-MS study whose polyethylene-dominated signal is contested in a peer-reviewed *Nature Medicine* correspondence on the grounds of limited contamination controls and missing validation steps [1][2]. No independent, non-collaborator replication of those mass concentrations was found. Confidence should be **high that plastics are present, low in the reported concentrations, and very low in any claim that they cause neurological harm.**
 
-Synthetic polymer particles have been reported in human brain tissue by at least four independent research groups using different analytical methods, different geographies and different brain regions [1][2][3][4]. That presence finding is now reasonably well supported. The quantitative claims built on top of it — the absolute concentrations, the reported rise between 2016 and 2024, and the dementia association — are contested and should be treated as low-confidence.
+## The three detection studies
 
-The single most influential study, Nihart et al. in *Nature Medicine* (2025), reported median frontal-cortex plastic of **3,345 µg/g in 2016 and 4,917 µg/g in 2024**, roughly 7–30 times liver and kidney levels, with polyethylene about 75% of brain polymer mass [1]. Germany's Federal Institute for Risk Assessment (BfR) concluded in December 2025 that these amounts "appear implausibly high" and that false or misinterpreted signals "cannot be ruled out" [5]. A peer-reviewed *Nature Medicine* correspondence by Monikh, Materić, Valsami-Jones and colleagues directly challenges the work [6], and a "Matters arising" letter reported in the press cites limited contamination controls and missing validation [7][8].
-
-**Overall confidence rating: moderate for presence, low for quantities and trends.** The detection of polymers in brain tissue is replicated across methods and labs; the µg/g magnitudes, the temporal trend and the dementia signal rest on one lab's pyrolysis method with only partial, same-method replication and no certified reference material for lipid-rich tissue anywhere in the field [1][9][5].
-
-## Key Findings
-
-1. **Four peer-reviewed studies report polymers in brain tissue**, spanning autopsy frontal cortex, olfactory bulb, whole-brain regions and brain tumours, using pyrolysis GC-MS, µFTIR, LDIR and O-PTIR [1][2][3][4].
-
-2. **The headline concentrations come from one lab.** Nihart et al. measured median 3,345 µg/g (IQR 1,267–5,213) in 2016 and 4,917 µg/g (IQR 4,026–5,608) in 2024 frontal cortex, with brain 7–30× liver and kidney (two-way ANOVA P<0.0001) [1].
-
-3. **Polyethylene dominates the brain signal** at roughly 75% of polymer mass versus 44–57% in liver and kidney (P<0.0001), confirmed by ATR-FTIR in five brain samples [1]. That same dominance is the crux of the critique: PE is the polymer most prone to false positives from lipids [5][7].
-
-4. **Replication is partial and intra-method.** Five 2016 brain samples re-run at Oklahoma State University by Py-GC/MS were consistent (P=0.49), but both labs saw ~25% within-sample coefficient of variation and only one sample per organ per donor was taken [1].
-
-5. **A second, methodologically distinct cohort found near-universal detection.** Li et al. (*Nature Health*, 2026) detected microplastics/nanoplastics in 100% of 35 healthy post-mortem samples from five donors and 99.4% of 156 tumour samples from 113 patients, using LDIR, Py-GC/MS, nanoscale Py-GC/MS, SEM and O-PTIR [3].
-
-6. **The magnitudes are not comparable across studies.** Py-GC/MS yields polymer mass (µg/g); µFTIR, LDIR and O-PTIR yield particle counts (particles/g), and size cutoffs differ from nanoscale to ~3 µm to 5 µm [1][2][10]. The apparent gap between 24.4 particles/g and 4,917 µg/g reflects method, not necessarily tissue burden.
-
-7. **Formal criticism is now on the record.** BfR Communication 056/2025 (3 December 2025) names specific weaknesses: plastic contact throughout autopsy processing, inadequately described blank controls, and no stated pyrolysis fragment ions or ion ratios [5].
-
-8. **No certified reference material exists for microplastics in lipid-rich tissue**, and interlaboratory studies in water matrices show between-lab relative standard deviations of 58–64% and recoveries of 59–63% [9][11][12].
-
-9. **No published negative replication was found** — no study reporting no polymers above blank in brain tissue with stated detection limits.
-
-## Detailed Analysis
-
-### 1. The Detection Studies: Scope, Samples and Regions
-
-The evidence base rests on four primary studies plus one pilot, each examining a different slice of the brain with a different technique.
-
-Nihart et al. analysed de-identified autopsy tissue from the University of New Mexico Office of the Medical Investigator, comparing 2016 and 2024 cohorts of liver, kidney and **frontal cortex only**, with 20–28 participants per timepoint per organ [1]. The same paper added 28 brain samples from East Coast repositories spanning 1997–2013 (Duke n=13, Harvard n=9, NICHD Maryland n=5) and 12 dementia cases from 2019–2024 [1]. Tissue was stored in 10% formalin in 3–5 cm³ pieces [1].
-
-The São Paulo olfactory-bulb case series examined 15 adult decedents (median age 69.5, range 33–100) undergoing routine coroner autopsy, collecting bilateral olfactory bulbs averaging 0.187 g [2]. This is the only study to target a region with direct nasal exposure, and the authors note they cannot exclude systemic, blood-brain-barrier or trigeminal routes [2].
-
-Li et al. is the largest by sample count: 156 diseased samples from 113 brain-tumour patients plus 35 healthy samples from five post-mortem donors held at the China National Human Brain Bank, collected within six hours of death [3]. Healthy-brain sampling covered frontal, temporal, parietal and occipital lobes, cerebellum, cervical spinal cord and dura mater, at 5–10 g per site [3].
-
-A single-donor Polish autopsy study (24-year-old male, samples taken 24 hours after death) examined brain white matter alongside thyroid, kidney, liver, heart, lung and chest muscle [4]. A 2026 *Environmental Pollution* pilot used synchronous plasma, cerebrospinal fluid and post-mortem brains from healthy subjects, but its abstract gives no sample size or brain regions [13].
-
-### 2. Reported Concentrations and Polymer Profiles
-
-| Study | Tissue / region | Method | Reported level | Dominant polymers |
+| Study | Region | Donors | Method | Result |
 |---|---|---|---|---|
-| Nihart 2025 [1] | Frontal cortex, autopsy | Py-GC/MS | 3,345 µg/g (2016); 4,917 µg/g (2024) | PE ~75% |
-| Nihart 2025, dementia subset [1] | Frontal cortex | Py-GC/MS | 26,076 µg/g median | PE-dominant |
-| São Paulo series [2] | Olfactory bulb | µFTIR | 8/15 positive; 16 particles total | PP 43.8% |
-| Li 2026 [3] | Multiple regions, tumours + healthy | LDIR, Py-GC/MS, O-PTIR | 100% healthy, 99.4% tumour detection | Not stated in preview |
-| Polish single donor [4] | White matter | O-PTIR | 24.4 particles/g | PET, cellulose, PI, PLA |
-| Environmental Pollution pilot [13] | Post-mortem brain | Py-GC/MS + LDIR | Brain > plasma and CSF | PE, PVC |
+| Nihart et al., *Nat Med* 2025 [1] | Frontal cortex | 20–28 per organ per timepoint (2016, 2024); 28 East Coast bank samples; 12 dementia cases | Py-GC/MS + ATR-FTIR, SEM/EDS, TEM | Median 3,345 µg/g (2016), 4,917 µg/g (2024) |
+| Amato-Lourenço et al., *JAMA Netw Open* 2024 [3] | Olfactory bulb | 15 coroner decedents, São Paulo | µFTIR | 8/15 positive; 16 particles, 5.5–26.4 µm |
+| *Environ Pollut* pilot, 2025 [4] | Postmortem brain (region not stated in abstract) | Not stated in abstract | Py-GC-MS + LDIR | PE and PVC dominant; brain > plasma and CSF |
 
-The Nihart numbers are the load-bearing ones. Brain medians of 3,345 µg/g (2016) and 4,917 µg/g (2024) compare with 2024 liver at 433 µg/g and kidney at 404 µg/g [1]. The paper situates these against published values for placenta (median 63.4 µg/g) and testes (median 299 µg/g), and notes brain is comparable to carotid plaque [1]. East Coast repository brains (1997–2013) came in lower at a median 1,254 µg/g, and dementia brains at 26,076 µg/g were higher than any normal cohort (P<0.0001) [1].
+The Nihart study is the load-bearing one and the most detailed. Samples came from autopsies conducted by the University of New Mexico Office of the Medical Investigator, with a forensic pathologist selecting consistent regions; roughly 500 mg of tissue was digested in 10% KOH, ultracentrifuged, and the pellet run single-shot against a 12-polymer standard [1]. Brain concentrations exceeded liver (median 433 µg/g) and kidney (404 µg/g) by 7–30 fold, and polyethylene made up about 75% of the brain polymer mass versus 44–57% in liver and kidney [1]. A separate set of 28 brain samples from East Coast tissue banks, collected 1997–2013, gave a median of 1,254 µg/g [1].
 
-Polymer composition is consistent across studies in one respect: polyethylene dominates where mass is measured. In Nihart, PE, PP and PVC together account for roughly 90% of sample mass, and PE, PP, PVC and SBR all rose from 2016 to 2024 in liver and brain [1]. The olfactory-bulb study, measuring particles rather than mass, found polypropylene most common at 43.8%, with polyamide, nylon and polyethylene vinyl acetate each at 12.5% [2]. The Polish donor's brain fibers were PET, cellulose, polyisoprene and PLA [4].
+The olfactory bulb study is methodologically the cleanest of the three. It used a plastic-free protocol, pre-filtered solutions, an ISO class 5 laminar flow cabinet, procedural blank filters, and — unusually — olfactory bulb tissue from stillbirths as a negative control; the blanks contained cotton fibres and mineral fragments but no polymers, and the one analysable stillborn control showed no microplastics [3]. Its µFTIR resolution of 3 µm meant nanoplastics could not be detected at all [3].
 
-The temporal claim deserves separate scrutiny. Nihart reports brain plastic mass rising about 50% over eight years (P=0.01), with a linear regression across all normal brains significant at P<0.0001 (R²=0.3982) and no correlation with age (P=0.87) [1]. BfR summarises the cohort means as 3,420 µg/g (2016) and 4,763 µg/g (2024) and states the increase "could indicate increasing environmental pollution... but there may also be other reasons," without endorsing the magnitude [5].
+The 2025 *Environmental Pollution* pilot is the weakest link in the detection chain. Only its abstract was retrievable: sample size, brain regions, contamination controls, and the derivation of its reported blood–brain-barrier transmission efficiencies (~84% for polystyrene, ~101% for PVC, ~63% for polyethylene) are all unverified [4]. Treat those percentages as unconfirmed.
 
-### 3. Analytical Methods, Detection Limits and Contamination Risk
+## Concentrations, polymers, and how they compare
 
-The methods split into two families with incompatible outputs.
+The reported numbers are not commensurable, because the methods measure different things. Py-GC/MS returns **mass per gram of tissue**; µFTIR and Raman return **particle counts**. A study of nucleus pulposus (spinal disc) tissue using Raman mosaic imaging found polymer particles in 6 of 51 patients, a whole-cohort frequency of 0.903 particles/g [5]. That figure and Nihart's 4,917 µg/g cannot be placed on the same axis, and reading one as "more" or "less" than the other is a category error.
 
-**Mass-based thermal analysis (Py-GC/MS)** heats a digested tissue pellet and identifies polymers from their pyrolysis fragments against a standard library. Nihart digested ~500 mg tissue in 10% KOH for at least three days at 40 °C, ultracentrifuged at 100,000g for four hours, and analysed a 1–2 mg pellet against a 12-polymer standard, normalising to original sample weight [1]. The method detects polymer mass including nanoscale particles, but it cannot count particles or report size distributions, and it is vulnerable to fragment overlap with biological molecules.
+Within the mass-based literature, the brain values sit at the top of the range but not absurdly so on their face. Nihart et al. cite placenta at a median 63.4 µg/g and testes at 299 µg/g, with carotid plaques comparable to brain [1]. A Brazilian placental study using micro-Raman reported 13.75 ± 1.44 particles per 50 g of placental tissue and 26.67 ± 7.4 per 50 g of umbilical cord, with polyethylene the dominant polymer in both [6] — again a particle count, not a mass.
 
-**Particle-based spectroscopy** (µFTIR, LDIR, O-PTIR) images individual particles and matches spectra to libraries. The olfactory-bulb study used single-point µFTIR at 16 cm⁻¹ resolution with a Hit Quality Index threshold above 75%, and states plainly that its maximum spatial resolution of ~3 µm makes nanoplastics undetectable [2]. The saphenous-vein pilot used µFTIR with a stated 5 µm size limitation and analysed only one quarter of each filter, multiplying by four [10].
+The polymer profile is where the scepticism concentrates. Polyethylene dominance is unusual: environmental and tissue studies typically report mixed polymer assemblages, and the repeated appearance of polyethylene as the single dominant polymer across organs and timepoints is one of the specific grounds on which commentators have questioned whether an analytical artefact is driving the result [7]. That argument comes from a named industry commentator writing in a trade publication, not from a peer-reviewed experiment, and it should be read as a lead rather than a finding.
 
-The contamination problem is structural, not incidental. BfR documents that in the Nihart workflow brains were stored in plastic buckets with formalin, ultracentrifuge tubes were polycarbonate or HDPE, and organs were cut on polyethylene cutting boards — and that the extent of cutting-board contamination "was not investigated" [5]. Formalin and KOH were checked for plastic components with no evidence found, but BfR judges the control data "only described in outline and are therefore of little significance" [5].
+## Methods: what each technique can and cannot see
 
-The most specific technical criticism concerns ion selection. Py-GC/MS quantification requires defined ratios of pyrolysis fragment ions, and BfR notes the paper does not state which ions were used or their ratios, so "interference from non-polymeric components and a significant overestimation of the polymer content cannot be ruled out" [5]. BfR cites Rauert et al. (*Environmental Science & Technology*, 2025) on C10/C12/C14-alkene and C21-alkadiene ratios as evidence of polyethylene interference [5]. A 2026 *Talanta* PRISMA review independently finds Py-GC-MS suffers lipid interference in biological samples and that certified reference materials for complex matrices do not exist [9].
+| Method | What it measures | Size floor | Main false-positive risk |
+|---|---|---|---|
+| Py-GC/MS | Polymer mass by pyrolysis products | Not size-limited (digests everything) | Matrix-derived pyrolysis products mimicking polymer markers [7] |
+| µFTIR | Particle count and polymer ID | ~3 µm in the olfactory bulb study [3]; ~20 µm cited elsewhere [5] | Endogenous fatty acids and proteins producing plastic-like spectra [8] |
+| Raman | Particle count and polymer ID | ~1 µm [5] | Fluorescence and spectral interference from tissue |
+| LDIR | Particle count and polymer ID | Not stated in retrieved abstract [4] | As for FTIR |
 
-### 4. Contamination Controls and Replication Quality
+The critical asymmetry is that Py-GC/MS is the only method that can quantify nanoscale and sub-micron plastic mass — and it is also the method most exposed to matrix interference, because it identifies polymers by their breakdown products rather than by imaging an intact particle. A 2026 method-validation paper makes the point from the other direction: spectroscopic and microscopic methods carry "false-positive risks" and reduced sensitivity in complex biological matrices, especially for submicron particles, which is why that group built a matrix-matched calibration and QC protocol for Py-GC/MS [9]. Their validated method covers polystyrene, polycarbonate, PMMA, PET, PVC and polypropylene — **polyethylene is not among the targeted polymers** [9].
 
-Control practices vary widely across the studies, and the variation tracks the strength of the claims.
+## Contamination controls and replication
 
-The olfactory-bulb study ran a plastic-free protocol with cotton coats, glass and stainless steel instruments, laminar flow (ISO class 5) and prefiltered solutions; procedural blank filters contained cotton fibers, silica beads and a silicate fragment but no polymeric material, and a negative control filter was clean [2]. A stillbirth olfactory bulb showed no microplastics [2]. The authors concede a recovery test was not feasible [2].
+Nihart et al. did run controls: KOH and formalin blanks, measurement of the polymer composition of tubes and tips, and an independent Py-GC/MS re-analysis of five 2016 brain samples by Oklahoma State University, which returned consistent values (P = 0.49) [1][10]. Both laboratories reported roughly 25% within-sample coefficient of variation, and the authors acknowledge residual biomatrix effects, lipid interference, and incomplete recovery below 200 nm [1].
 
-Li et al. sampled intraoperative contaminants in three randomly selected patients — specimen bottle, air control, syringe and infusion set, gelatin sponge, surgical patty and gloved-finger rinsate — and report airborne contamination controls during post-mortem collection at zero by both LDIR and Py-GC/MS [3]. They also checked confounders: no significant correlation between infusion volume (P=0.081) or surgical duration (P=0.65) and particle burden [3]. Method agreement was tested by re-analysing 18 particles on both LDIR and O-PTIR, with one mismatch in each matching-degree group [3].
+That is more than most of the field does. A PRISMA 2020 systematic review of 218 human-tissue microplastic studies (2000–2024) found a "widespread lack of robust quality assurance," with few studies consistently running blank controls and spike-recovery experiments [11]. A separate PRISMA-ScR scoping review of 26 in-vivo human studies applied a four-domain risk-of-bias tool and rated 9 high risk, 3 unclear and 14 low; four were high-risk on sampling for absent contamination controls and six high-risk on reporting for failing to give concentration per gram of tissue [12]. That scoping review contains no brain or central-nervous-system studies at all [12].
 
-The Polish single-donor study is the weakest on this dimension. Procedural blanks and controls were processed in parallel but analysed by SEM-EDS only, with no blank particle counts, polymer spectra or per-blank concentrations reported [4]. Its claim of polystyrene, PET and PAN nanoparticles below 0.02 µm is not supported by its own dynamic light scattering sizes, which range from 12.5 to 2,396 nm [4].
+The collaborator re-analysis is not independent replication in the sense that matters here. No group unaffiliated with the original authors was found to have reproduced the high brain mass concentrations by Py-GC/MS or by an orthogonal method.
 
-Nihart's replication is the most consequential and the most limited. Five 2016 brain samples were independently re-analysed at Oklahoma State University by Py-GC/MS and found consistent (P=0.49) [1]. But this is the same method in a second lab, not an orthogonal method, and both labs observed ~25% within-sample coefficient of variation [1]. The authors acknowledge that residual biomatrix and lipid interference, oxidative degradation and incomplete ultracentrifugation of particles below 200 nm could bias estimates in either direction [1].
+## The methodological dispute
 
-### 5. Published Criticism and the Contested Record
+The peer-reviewed challenge is a two-page *Nature Medicine* letter, "Challenges in studying microplastics in human brain," by Monikh, Materić, Valsami-Jones and six co-authors, published online 13 November 2025 [2]. Its abstract-level argument is that the Nihart study "appears to face methodological challenges, such as limited contamination controls and lack of validation steps, which may affect the reliability of the reported concentrations" [2]. The full body text sits behind a paywall and was not retrieved, so the specific quantitative criticisms cannot be quoted here.
 
-The critique of the brain findings is now substantial and multiply sourced, though partly secondhand.
+What the letter's reference list does show is the shape of its case: a Py-GC-MS validation study in human blood, a paper on microparticle patterns in blank samples, a study of how KOH digestion affects polystyrene microspheres, and several sources on brain lipid and fat content [2]. That combination is consistent with a lipid-interference argument, but the reference list is not the argument.
 
-The peer-reviewed anchor is the *Nature Medicine* correspondence "Challenges in studying microplastics in human brain" (Monikh, Materić, Valsami-Jones et al., 31:4034–4035, 2025), which cites the Nihart paper as its first reference and draws on literature covering sub-micron plastics in biological matrices, blank-sample best practices, digestion interference and Py-GC-MS validation in human blood [6]. Its full text is paywalled, so its verbatim arguments cannot be verified from the accessible record.
+The lipid-interference mechanism itself is stated plainly only in non-peer-reviewed commentary. A named industry columnist argues that polyethylene does not cleanly depolymerise and that its pyrolysis oligomers can also form from lipids, so that in a lipid-rich matrix "the method had to be counting lipids as polyethylene" [7]. A health-news aggregator makes a similar point, noting that brain is roughly 60% lipid by dry weight against under 5% in liver and kidney. Both are secondhand and neither reports an experiment. **No matrix-matched polyethylene spike-recovery study in lipid-rich brain tissue was found.** The nearest validation evidence is a 2018 instrument vendor's application note on decomposed fishmeal, which recovered polystyrene at +7.4% and PMMA at −12.0% deviation but reports no polyethylene recovery at all.
 
-BfR's assessment is the most detailed institutional critique available. It concludes the study is "noteworthy in terms of its topicality and novelty" but has methodological weaknesses in sample preparation, detection methods and signal assignment, and that "the measured amounts appear implausibly high" [5]. It lists numerous published critical comments, including Kozlov in *Nature* (2025), Xu, Wright, Rauert and Thomas in *Nature* (2025) arguing "more rigorous science is needed," and a Science Media Centre expert reaction [5].
+There is also a documented image problem. Three sets of ATR-FTIR images in the Nihart supplement were duplicated, first flagged on PubPeer; the principal investigator called it "purely clerical" and said corrected images would be submitted [13]. Separately, two named outside experts quoted in trade press argued the mass was likely "massively overestimated" and that reported brain levels exceeded those in sewage sludge, which "seems unlikely" [13]. That reporting is journalism, not peer review, but it is the most specific public statement of the critique.
 
-Press reporting adds a "Matters arising" letter submitted in November 2025, described as citing "limited contamination controls and lack of validation steps, which may affect the reliability of the reported concentrations" [7][8]. The *Guardian* quotes critic Dušan Materić of the Helmholtz Centre for Environmental Research arguing that fat — roughly 60% of brain — is known to produce false positives for polyethylene, and suggesting rising obesity could explain the trend [7]. Senior author Matthew Campen responds that most criticism is "conjectural and not buffeted by actual data" [7]. The letter's own text, citation and author list were not directly accessed; this critique rests on secondary reporting.
+The field's blank-correction norms are themselves unsettled. When PLOS ONE issued an expression of concern over a µFTIR study of saphenous vein tissue, the corresponding author stated that "there is no standardized method for blank correction in microplastic research," and the journal noted that tissue fatty acids and proteins are well-known false positives for plastic [8]. A transferable quality-scoring framework exists — nine criteria scored 0/1/2, requiring replicated procedural blanks and positive controls for full credit — but it was built for water matrices, and only 4 of the 50 studies it assessed scored non-zero on every criterion [14].
 
-The closest documented formal action against a human-tissue microplastics study is a *PLOS One* Expression of Concern (24 March 2025) on a µFTIR saphenous-vein pilot [10]. That study found 29.28 ± 34.88 particles/g in tissue versus 10.4 ± 9.21 particles per sample in procedural blanks, a difference that was not statistically significant (p=0.293) [10]. The Expression of Concern cites unavailable raw spectra, fatty acids and proteins flagged as common false positives, confusion of detection limit with spatial resolution, and questioned blank correction [10]. It is not a brain study, but it documents the generic failure modes that the brain critiques allege.
+## Does it cause harm?
 
-A *Nature Reviews Cancer* commentary, "Microplastics but macro-concerns on the brain" (Brewer, 26:388, 2026), is keyed to Li et al. and its title implies a cautionary stance, but the page is a paywall preview and its specific targets cannot be confirmed [14].
+The toxicological literature is large and almost entirely non-human. A systematic review of 234 original studies (2011–2025) found that only four rodent studies showed polystyrene particles of 17–100 nm and 2 µm reaching brain tissue, that 83% of neurotoxicity assays used concentrations far above environmental levels, that most used spherical polystyrene only, and that the field broadly lacks quality control, reproducibility and robust sample sizes [15]. A narrative review of central-nervous-system impacts describes oxidative stress, neuroinflammation, mitochondrial dysfunction, apoptosis and gut–brain-axis effects across fish, mouse and in vitro models, and states that epidemiological evidence linking microplastics to neurological disease "remain[s] blank" [16].
 
-### 6. How Solid Is the Evidence? A Calibrated Assessment
+The mechanistic work is thin at the point where it matters most. A mouse proof-of-principle study with two animals per group found that only 0.293 µm polystyrene produced detectable fluorescent signal in brain tissue two hours after oral gavage — not 1.14 µm or 9.55 µm particles — and the signal was lower by four hours [17]. The authors' molecular-dynamics simulations attributed passage to a cholesterol biomolecular corona, but those free energies are simulated, not measured [17].
 
-The evidence separates cleanly into a well-supported claim and a weakly supported one.
+The dementia finding deserves particular caution. The 12-case cohort's median of 26,076 µg/g is roughly five times the 2024 general median, and the authors themselves describe the data as associative and non-causal [1]. A twelve-person comparison cannot separate dementia from age, institutional setting, cause of death, or post-mortem interval.
 
-**Presence: moderate-to-strong confidence.** Four groups using four method families (Py-GC/MS, µFTIR, LDIR, O-PTIR) across three countries and five brain regions report synthetic polymers in brain tissue [1][2][3][4]. Detection rates range from 8 of 15 olfactory bulbs to 100% of healthy samples [2][3]. The convergence across methods that share few failure modes is the strongest argument for the finding.
+## Overall confidence rating
 
-**Absolute concentrations: low confidence.** The µg/g magnitudes rest on one lab's Py-GC/MS method, with acknowledged lipid interference, unstated ion ratios, inadequately described blanks and plastic contact throughout processing [1][5]. No certified reference material exists to calibrate brain Py-GC/MS, and the nearest interlaboratory anchors are water-matrix studies showing between-lab relative standard deviations of 58–64% with recoveries of 59–63% [11] and reproducibility of 46–129% across 84 labs [12]. Those figures describe method variance generally, not brain calibration, but they establish that even in a clean matrix, labs disagree by large margins.
+| Claim | Confidence | Basis |
+|---|---|---|
+| Plastics are present in human brain tissue | High | Three independent groups, three methods, no retraction [1][3][4] |
+| Brain concentrations exceed liver and kidney | Moderate | Single study, internally consistent, contested method [1][2] |
+| Reported mass concentrations are accurate | Low | Lipid-interference critique unresolved; no independent replication [2][7] |
+| Brain plastic burden rose ~50% from 2016 to 2024 | Low | Single study; confounded by donor and storage differences [1] |
+| Brain plastics cause dementia or neurotoxicity in humans | Very low | No human epidemiological data; animal doses supraphysiological [16][15] |
 
-**Temporal trend and dementia signal: low confidence.** The 2016→2024 increase (P=0.01) and the dementia median of 26,076 µg/g are single-lab findings with no independent replication [1]. BfR declines to endorse the magnitude and notes alternative explanations [5]; Materić proposes rising obesity as a confounder [7]. The authors themselves assume no causality for dementia [1].
+The single most decisive gap is a matrix-matched polyethylene recovery experiment in lipid-rich tissue. If brain lipid extracts generate polyethylene marker ions under pyrolysis, the Nihart mass figures collapse; if they do not, the critique loses its main mechanism. Either result would move the field more than another descriptive survey. The second gap is genuine independent replication by a group with no ties to the original authors, ideally using an orthogonal method on the same banked samples. The third is any human biomarker or epidemiological study linking measured brain or cerebrospinal-fluid burden to neurological outcomes — without it, the harm question stays in the animal literature.
 
-**Cross-study comparability: poor.** Because mass and particle-count metrics cannot be converted without a dual-method calibration on the same samples, the field currently cannot say whether 24.4 particles/g in white matter and 4,917 µg/g in frontal cortex describe similar or wildly different burdens [1][4]. Li et al.'s dual LDIR plus Py-GC/MS design is the obvious candidate to bridge the units, but its conversion data sit behind a paywall [3].
-
-## Risks & Counterpoints
-
-The strongest counterargument is that the brain findings are an artefact of the matrix. Brain is roughly 60% lipid, and pyrolysis fragments from fats overlap with those from polyethylene and PVC [7][8]. Rauert's January 2025 paper concluded Py-GC-MS "is not currently a suitable technique for identifying polyethylene or PVC due to persistent interferences" and identified 18 studies that did not account for fat-derived false positives [7][8]. If that conclusion holds for brain, the dominant polymer in the Nihart dataset is precisely the one most likely to be spurious.
-
-The counter-counterargument is that the critiques are themselves partly unverified. The *Nature Medicine* correspondence is paywalled [6]; the "Matters arising" letter is known only through journalism [7][8]; and Campen characterises the criticism as lacking data [7]. BfR's assessment is detailed and institutional but is not itself a peer-reviewed replication or a formal journal letter [5].
-
-A second risk is that the field's quality-assurance baseline is weak across the board, not just in brain studies. A PRISMA review of 218 human-tissue studies found few consistently used blank controls and spike-recovery experiments [15], and a 2026 *Talanta* review found inconsistent marker-ion selection and no certified reference materials for complex matrices [9]. This cuts both ways: it makes the brain studies less exceptional in their weaknesses, but it also means no study in this literature can claim external calibration.
-
-A third consideration is that the Li et al. cohort, while large and multi-method, is not a clean independent test of Nihart. It uses different instruments, a different population and a different sampling frame, and its quantitative blank values are not accessible [3]. Its 100% detection rate is impressive but cannot adjudicate the µg/g magnitudes.
-
-## Open Questions
-
-Whether the µg/g magnitudes survive depends on data not accessible here: Nihart's numeric procedural-blank and formalin-storage-control polymer mass, and Li's procedural-blank µg values and any empirical µg/g-to-particles/g conversion [1][3]. Without those, the brain concentrations cannot be judged against blank levels rather than qualitative quality-control statements.
-
-No certified reference material or interlaboratory round-robin for microplastics in lipid-rich biological tissue was found; the closest anchors are water-matrix studies [11][12]. Whether brain Py-GC/MS quantification can be externally calibrated at all remains unresolved.
-
-No negative replication — a study reporting no polymers above blank in brain tissue with stated detection limits — was retrieved. The robustness of the 99.4–100% detection rates therefore rests entirely on positive findings, and a well-controlled null result would materially change the confidence assessment.
+Two things this report could not establish: the specific quantitative arguments inside the Monikh et al. letter, and whether any non-collaborator has attempted and failed to reproduce the high concentrations. Absence of a located replication is not evidence that replication failed.
 
 ## References
 
 - **[1] pmc.ncbi.nlm.nih.gov** - "Bioaccumulation of microplastics in decedent human brains". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC12003191/) (accessed 2026-10-28)
-- **[2] pmc.ncbi.nlm.nih.gov** - "Microplastics in the Olfactory Bulb of the Human Brain". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC11406405/) (accessed 2026-10-28)
-- **[3] Nature** - "Microplastics and nanoplastics in brain tumours and the healthy human brain". [Source](https://www.nature.com/articles/s44360-026-00091-4) (accessed 2026-10-28)
-- **[4] pmc.ncbi.nlm.nih.gov** - "Post-mortem evidence of microplastic bioaccumulation in human organs: insights from advanced imaging and spectroscopic analysis". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC12454625/) (accessed 2026-10-28)
-- **[5] bfr.bund.de** - "Microplastics in the brain". [Source](https://www.bfr.bund.de/assets/01_Veröffentlichungen/Mitteilungen_englisch/microplastics-in-the-brain.pdf) (accessed 2026-10-28)
-- **[6] Nature** - "Challenges in studying microplastics in human brain". [Source](https://www.nature.com/articles/s41591-025-04045-3) (accessed 2026-10-28)
-- **[7] the Guardian** - "‘A bombshell’: doubt cast on discovery of microplastics throughout human body". [Source](https://www.theguardian.com/environment/2026/jan/13/microplastics-human-body-doubt) (accessed 2026-10-28)
-- **[8] Futurism** - "Wait… All Those Studies May Have "Detected" Microplastics in the Human Body Because of a Severe Error". [Source](https://futurism.com/science-energy/microplastics-studies-human-body-error) (accessed 2026-10-28)
-- **[9] PubMed** - "Thermal analysis techniques for microplastic mass quantification: Methodological challenges and standardization needs". [Source](https://pubmed.ncbi.nlm.nih.gov/42275720/) (accessed 2026-10-28)
-- **[10] journals.plos.org** - "Detection of microplastics in human saphenous vein tissue using μFTIR: A pilot study". [Source](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0280594) (accessed 2026-10-28)
-- **[11] norman-network.net** - "Interlaboratory comparison study for microplastics using the upcoming ISO-standard". [Source](https://www.norman-network.net/sites/default/files/files/reports/Final_Norman_PlasticTrace_Report_ILS_2024.pdf) (accessed 2026-10-28)
-- **[12] Seoul National University of Science & Technology** - "Interlaboratory Comparison Reveals State of the Art in Microplastic Detection and Quantification Methods". [Source](https://pure.seoultech.ac.kr/en/publications/interlaboratory-comparison-reveals-state-of-the-art-in-microplast/) (accessed 2026-10-28)
-- **[13] PubMed** - "Qualitative and quantitative analysis of microplastics and nanoplastics in healthy human central nervous system and its blood-brain barrier transmission...". [Source](https://pubmed.ncbi.nlm.nih.gov/41242417/) (accessed 2026-10-28)
-- **[14] Nature** - "Microplastics but macro-concerns on the brain". [Source](https://www.nature.com/articles/s41568-026-00937-9) (accessed 2026-10-28)
-- **[15] PubMed** - "Analytical challenges and advances in detecting microplastics in human tissue and organ samples". [Source](https://pubmed.ncbi.nlm.nih.gov/42561358/) (accessed 2026-10-28)
+- **[2] Nature** - "Challenges in studying microplastics in human brain". [Source](https://www.nature.com/articles/s41591-025-04045-3) (accessed 2026-10-28)
+- **[3] pmc.ncbi.nlm.nih.gov** - "Microplastics in the Olfactory Bulb of the Human Brain". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC11406405/) (accessed 2026-10-28)
+- **[4] PubMed** - "Qualitative and quantitative analysis of microplastics and nanoplastics in healthy human central nervous system and its blood-brain barrier transmission...". [Source](https://pubmed.ncbi.nlm.nih.gov/41242417/) (accessed 2026-10-28)
+- **[5] Nature** - "Microplastics in nucleus pulposus tissue of humans revealed by Raman mosaic imaging screening - Scientific Reports". [Source](https://www.nature.com/articles/s41598-026-58045-5) (accessed 2026-10-28)
+- **[6] scielo.br** - "First evidence of microplastic accumulation in placentas and umbilical cords from pregnancies in Brazil". [Source](https://www.scielo.br/j/aabc/a/6xSCn4dRCStfMntnCvJt3Wn/?lang=en) (accessed 2026-10-28)
+- **[7] Design World** - "Technical thinking: Why the 7-gram microplastics study fell apart". [Source](https://www.designworldonline.com/technical-thinking-why-the-7-gram-microplastics-study-fell-apart/) (accessed 2026-10-28)
+- **[8] journals.plos.org** - "Expression of concern: Detection of microplastics in human saphenous vein tissue using FTIR: A pilot study". [Source](https://journals.plos.org/plosone/article/file?type=printable&id=10.1371/journal.pone.0320655) (accessed 2026-10-28)
+- **[9] PubMed** - "Quantifying micro- and nanoplastics in blood, urine, and soft tissues using optimized cascaded microfiltration and pyrolysis-GC/MS for exposomic...". [Source](https://pubmed.ncbi.nlm.nih.gov/42264345/) (accessed 2026-10-28)
+- **[10] pmc.ncbi.nlm.nih.gov** - "Bioaccumulation of Microplastics in Decedent Human Brains Assessed by Pyrolysis Gas Chromatography-Mass Spectrometry". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC11100893/) (accessed 2026-10-28)
+- **[11] PubMed** - "Analytical challenges and advances in detecting microplastics in human tissue and organ samples". [Source](https://pubmed.ncbi.nlm.nih.gov/42561358/) (accessed 2026-10-28)
+- **[12] pmc.ncbi.nlm.nih.gov** - "Detection of microplastics in human tissues and organs: A scoping review". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC11342020/) (accessed 2026-10-28)
+- **[13] The Transmitter: Neuroscience News and Perspectives** - "‘Spoonful of plastics in your brain’ paper has duplicated images". [Source](https://www.thetransmitter.org/publishing/spoonful-of-plastics-in-your-brain-paper-has-duplicated-images/) (accessed 2026-10-28)
+- **[14] pmc.ncbi.nlm.nih.gov** - "Microplastics in freshwaters and drinking water: Critical review and assessment of data quality". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC6449537/) (accessed 2026-10-28)
+- **[15] pmc.ncbi.nlm.nih.gov** - "A systematic review of the potential neurotoxicity of micro-and nanoplastics: the known and unknown". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC12590691/) (accessed 2026-10-28)
+- **[16] pmc.ncbi.nlm.nih.gov** - "Neurotoxicity of Micro- and Nanoplastics: A Comprehensive Review of Central Nervous System Impacts". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC12813711/) (accessed 2026-10-28)
+- **[17] pmc.ncbi.nlm.nih.gov** - "Micro- and Nanoplastics Breach the Blood–Brain Barrier (BBB): Biomolecular Corona’s Role Revealed". [Source](https://pmc.ncbi.nlm.nih.gov/articles/PMC10141840/) (accessed 2026-10-28)

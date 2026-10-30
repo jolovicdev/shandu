@@ -1,183 +1,128 @@
-# KV-Cache Compression for Long-Context LLM Inference: Quantization, Eviction, and Low-Rank Methods Compared
+# KV-Cache Compression for Long-Context Inference: Quantization, Eviction, and Low-Rank Methods Compared
 
-## Executive Summary
+**Quantization is the only family that ships in production engines, and it is also the family with the best-documented accuracy-per-byte at moderate compression.** Eviction buys larger nominal compression ratios but degrades sharply on long-context and multi-turn workloads, and its strongest results depend on seeing the question before compressing. Low-rank and latent methods reach the highest compression ratios, but only when stacked on top of quantization, and they require calibration or fine-tuning that no serving engine exposes as a user-facing feature. No single study benchmarks all three families at matched budgets on one long-context suite, so the cross-family ranking below is stitched from each paper's own comparisons and should be read as directional.
 
-Quantization is the only one of the three families that production inference engines actually ship, and it is also the family with the most consistent accuracy-per-byte story in the literature. Eviction buys larger nominal compression ratios but degrades sharply on long-context and multi-turn workloads, and low-rank/latent methods achieve the highest compression ratios only when stacked with quantization or baked into pretraining.
+## The three families side by side
 
-The strongest single anchor is KVQuant, which reports **3.7×, 4.8×, and 6.9× KV-cache reduction at 4-, 3-, and 2-bit** with under 0.02, 0.1, and 0.5 Wikitext-2 perplexity degradation respectively across LLaMA/Llama-2/Llama-3/Mistral [1]. At 128K sequence length, LLaMA-7B's KV cache falls from 64.0 GB in fp16 to 13.3 GB at 3-bit with 1% outliers and 9.3 GB at 2-bit [1]. Those savings are estimated from bit-width assumptions rather than measured end-to-end, but the perplexity numbers are measured.
+| | Quantization | Eviction / token dropping | Low-rank / latent |
+|---|---|---|---|
+| **Mechanism** | Store K/V at lower bit-width; dequantize in the attention kernel | Keep a subset of tokens (by attention score, recency, or a learned policy); discard the rest | Project K/V into a smaller latent space; reconstruct on the fly or attend in latent space |
+| **Reported memory savings** | 3.7× at 4-bit, 4.8× at 3-bit, 6.9× at 2-bit [1]; realized 3.2–5.3× in an independent benchmark [2] | 4× at a 0.75 keep-ratio [2]; 6.6× at 15% retention [3]; 92% at a 1,024-token cache on ~13K-token inputs [4] | 40% reduction (0.6×) [5]; 50% [6]; 93.3% for pretrained MLA [7]; 92–97% when stacked with quantization [8][6] |
+| **Reported accuracy loss** | <0.02 / <0.1 / <0.5 WikiText-2 PPL at 4/3/2-bit [1]; near-parity on LongBench at 4-bit [2] | Negligible at moderate budgets on LongBench [4][9]; collapses beyond 32K on RULER [3]; ~15–36% ROUGE loss on summarization [2] | +0.32 to +1.79 PPL at 0.8×/0.7×/0.6× [5]; ~1% LongBench drop at 92% reduction with fine-tuning [8] |
+| **Production adoption** | Shipped, opt-in: FP8 in vLLM, SGLang, TGI, TensorRT-LLM; FP4 experimental in SGLang and TensorRT-LLM [10][11][12] | Not shipped as token eviction; engines ship block-level LRU and cyclic/StreamingLLM windows [12][13] | Not shipped for general models; MLA latent caching only for MLA-native checkpoints [7] |
 
-Eviction methods report headline ratios of 5–10× (H2O at a 20% budget [2]) and ~92% compression at a 1024-token cache on LongBench (SnapKV [3]), yet peer-reviewed matched-budget work shows the picture darkens with context length: at 15% retention on RULER, SnapKV scores 12.82 at 128K against a full-cache 62.30, while a learned policy (LKV) holds 55.34 [4]. SCBench reaches a similar conclusion, arguing that sub-O(n) memory is "almost infeasible in multi-turn decoding" because the critical KVs change per query [5].
+## Quantization: the best-characterized family
 
-Low-rank and latent methods reach the highest compression — DeepSeek-V2's MLA cuts KV cache 93.3% versus DeepSeek 67B [6], and Palu reaches 91.25% when combined with 2-bit quantization [7] — but the pure low-rank operating point is modest (Eigen Attention tops out at 40% reduction [8]) and post-hoc conversion carries real costs.
+### Memory savings and granularity
 
-**Bottom line:** for a serving deployment today, FP8 KV cache is the safe default-adjacent lever (roughly 2× memory at minimal measured accuracy cost), with 4-bit integer schemes as the research frontier for larger savings. Eviction is a research technique with documented long-context failure modes, and low-rank is either a pretraining decision (MLA) or a research method that needs quantization stacked on top to be competitive.
+KVQuant is the most complete published accounting. It reports **3.7×, 4.8×, and 6.9× KV-cache reduction at 4-, 3-, and 2-bit** respectively, with the bit-widths being averages that include scaling and outlier overhead (nuq4-1% ≈ 4.32–4.35 bits, nuq3-1% ≈ 3.32–3.35 bits, nuq2-1% ≈ 2.32–2.35 bits) [1]. At 128K sequence length, LLaMA-7B's cache falls from 64.0 GB in fp16 to 13.3 GB at nuq3-1% and 9.3 GB at nuq2-1%; the paper's context-length projections are estimates from bit-width assumptions, not measured allocations [1].
 
-## Key Findings
+Granularity choices carry most of the accuracy. On LLaMA-7B at 3-bit, quantizing keys per-channel before RoPE and values per-token improves perplexity by **3.82 points** over per-token quantization of both; moving key quantization before RoPE adds 0.82; keeping 1% of per-vector outliers in fp16 adds 0.19 [1]. Atom takes a different route, quantizing asymmetrically at **per-attention-head** granularity and reporting only a 0.12 WikiText-2 perplexity increase on Llama-7B (6.04 → 6.16) on top of its W4A4 weight/activation scheme [14]. Atom does not report a KV-specific compression ratio or any long-context benchmark [14].
 
-1. **Quantization scales predictably with bit-width, and the degradation curve is steep at 2-bit.** KVQuant's measured Wikitext-2 perplexity on LLaMA-7B moves from 5.68 (fp16) to 5.69 (4-bit), 5.75 (3-bit), and 6.01 (2-bit) [1]. Naive integer baselines at the same widths are catastrophic — int3 gives 10.87 and int2 gives 11,779 — so the method's gains come from granularity and outlier handling, not bit-width alone [1].
+### Accuracy at each bit-width
 
-2. **Granularity choices dominate quantization quality.** In KVQuant's ablation, per-channel Key plus per-token Value quantization improves perplexity by 3.82 over per-token quantization of both at 3-bit; quantizing Keys before RoPE rather than after adds another 0.82; keeping 1% of outliers in fp16 adds 0.19 [1].
+The degradation curve is steep at the bottom. KVQuant's own baselines show uniform INT3 at 10.87 PPL and INT2 at 11,779 PPL on LLaMA-7B against a 5.68 fp16 baseline, versus 5.75 and 6.01 for KVQuant-3bit-1% and -2bit-1% [1]. On long-context suites, KVQuant-3bit-1% scores 31.21 vs 31.96 fp16 on LongBench and 53.65 vs 56.40 on RULER for LLaMA-2-7B-32K, while 2-bit falls to 36.54 on RULER [1].
 
-3. **Long-context accuracy at 3-bit is close to fp16; 2-bit is not.** On LLaMA-2-7B-32K, KVQuant at 3.33 average bits scores 31.21 on LongBench versus 31.96 for fp16, and 53.65 versus 56.40 on RULER; at 2.33 bits RULER falls to 36.54 [1]. KIVI at 3.05 bits scores 30.04 and 39.78 on the same pair, which KVQuant cites as roughly 14% better RULER at similar width [1].
+An independent benchmark by Agrawal and Mayer, run on a single A100 40GB with Llama-3.1-8B-Instruct and Mistral-7B-Instruct-v0.3, finds **KIVI 4-bit the most accuracy-stable method across models and workloads** (Llama Multi-news 26.95 vs 27.15 all-KV; HotpotQA 55.99 vs 55.72), with realized compression of 3.15–3.19× [2]. KIVI 2-bit reaches 5.16–5.32× compression with small but visible losses [2]. The same benchmark shows aggressive quantization is not uniformly safe: TurboQuant at an effective 3.25 bits collapses Llama Multi-news ROUGE to 16.39 from 27.15 and drops TriviaQA by roughly 7 points [2]. That is a preprint, not yet peer-reviewed, and its summarization runs for TurboQuant were executed once [2].
 
-4. **Eviction's accuracy depends heavily on the policy and the evaluation protocol.** H2O matches full-cache accuracy at a 20% budget on OPT-30B HELM tasks, while a recency-only policy collapses (PiQA 57.94 versus 80.09) [2]. StreamingLLM's recency-plus-sink hybrid restores Llama-2-13B perplexity from 5158.07 to 5.40 on a 65K-token book [9], but its accuracy on StreamEval falls to zero once the query–answer distance exceeds the cache size [9].
+## Eviction: large nominal ratios, fragile under long context
 
-5. **Attention-score eviction degrades badly at long context and under question-agnostic evaluation.** Ada-KV reports SnapKV's LongBench average dropping from 49.09 to 42.86 when moving from question-aware to question-agnostic scoring at a 2048 budget [10]. LKV's RULER sweep at 15% retention shows SnapKV at 12.82 and PyramidKV at 10.53 at 128K, against 62.30 for full cache [4].
+### Attention-score policies
 
-6. **Low-rank alone is a moderate-compression technique; its high-compression results come from stacking.** Eigen Attention reports up to 40% KV reduction with average accuracy drops of 1%/2%/3% at 0.8×/0.7×/0.6× across nine models [8]. Palu reports 50% compression at Llama-2-7B WikiText-2 perplexity 6.01 versus 5.47 baseline, and 91.25% compression at 5.76 perplexity when combined with 2-bit quantization [7].
+H2O keeps a mix of accumulated-attention "heavy hitters" and recent tokens. At a **20% KV budget it matches full-cache accuracy** on OPT-30B across HELM and lm-eval tasks (PiQA 79.22 vs 80.09, COPA 85.00 vs 81.00, Winogrande 71.67 vs 71.51), while a recency-only baseline collapses (PiQA 57.94) [15]. Keeping only heavy hitters or only local tokens degrades 2.85–22.75%, and some 0/1-shot tasks need 30–40% budget [15]. These evaluations are short-context classification and QA tasks, not LongBench or RULER.
 
-7. **At matched memory, quantization often beats low-rank alone.** Palu's own table shows KVQuant at 3-bit reaching 5.35 perplexity at 81.25% compression, while Palu-50% in fp16 reaches 5.63 at only 50% compression [7]. Palu-30% plus 3-bit reaches 5.33 at 86.87%, roughly tied with KVQuant at higher compression [7].
+SnapKV scores tokens from an observation window at the end of the prompt. On LongBench with ~13K-token average inputs it reports **~92% compression at a 1,024-token cache and ~68% at 4,096, "with negligible drops in accuracy"**, and at a matched 4,096-token budget it beats H2O on most tasks (Mistral HotpotQA 42.32 vs 36.54; 2WikiMQA 27.93 vs 20.6) [4]. On Command-R at 128K with 32× compression it scores 9.819 vs 9.866 on NIAH, a 0.5% drop [4]. PyramidKV, which varies the per-layer budget, averages 37.25 vs 41.46 full cache at a 128-token per-layer budget on LLaMA-3-8B, ahead of SnapKV (35.50), H2O (35.37) and StreamingLLM (32.00); at 2,048 tokens it matches full cache (41.49 vs 41.46) [9].
 
-8. **Production engines ship quantization only, as opt-in flags.** vLLM exposes FP8 KV cache through `kv_cache_dtype` with per-tensor or per-head scaling [11]; SGLang adds FP4 formats (`nvfp4`, `fp4_mx_block16`) [12]; TensorRT-LLM supports FP8/INT8 per-tensor KV and a prototype NVFP4 mixed-precision mode [13][14]. No engine documentation shows token-level eviction or low-rank KV as a user-facing feature.
+### Recency policies
 
-9. **FP4 KV cache can break hard reasoning while leaving easy benchmarks flat.** SGLang's own table shows GPT-OSS-120B scoring 0.7533 on aime25 at KV16 versus 0.3533 at KV4, while gsm8k stays at 0.9161 versus 0.9152 [12].
+StreamingLLM keeps 4 attention-sink tokens plus a rolling window. It restores Llama-2-13B PG-19 perplexity from **5158.07 under a pure window to 5.40**, close to the sliding-window-with-recomputation oracle at 5.43 [16]. Its failure mode is structural: accuracy on StreamEval falls to zero once the query–answer distance exceeds the cache size, and it underperforms simple truncation on LongBench (NarrativeQA 11.6 vs 18.7) [16].
 
-## Detailed Analysis
+### What peer-reviewed matched-budget work shows
 
-### 1. Quantization: bit-width, granularity, and the accuracy cliff
+Ada-KV (NeurIPS 2025) quantifies how much eviction depends on seeing the question. SnapKV's LongBench average drops from **49.09 question-aware to 42.86 question-agnostic** at a 2,048-token budget, and its question-agnostic RULER average at 20% budget is 44.02, rising to 53.29 with adaptive head-wise budgeting [17]. LKV (EMNLP 2026) at 15% retention scores 46.73 vs 47.48 full cache on LongBench for Llama-3.1-8B, but **55.34 vs 62.30 at 128K on RULER**, while heuristic eviction collapses outright at that length (SnapKV 12.82, PyramidKV 10.53) [3]. LKV also measures the memory side directly: at 200K context, KV storage falls from 25.0 GB to 3.75 GB at 15% budget, a 6.6× reduction [3].
 
-#### 1.1 What the savings actually are
+SCBench (ICLR 2025) adds a second matched-budget lane across compression rates from 1/32 to 1/2. On Llama-3.1-8B multi-turn, KIVI at 1/8 averages 32.0 against full attention's 48.7, while SnapKV 20.9, PyramidKV 21.0 and StreamingLLM 15.5 at 1/32 [18]. The paper's conclusion is that sub-linear-memory methods are "almost infeasible in multi-turn decoding" because the critical KVs change with each query [18].
 
-KVQuant's headline ratios are 3.7×, 4.8×, and 6.9× at 4-, 3-, and 2-bit [1]. These are not raw bit-width ratios: the effective widths including scaling and outlier overhead are about 4.32–4.35 bits at "4-bit", 3.32–3.35 at "3-bit", and 2.32–2.35 at "2-bit" [1]. The paper's KV-cache byte figures are estimated from those bit-width assumptions, not measured on hardware: LLaMA-7B at 128K sequence length goes from 64.0 GB fp16 to 17.3 GB (4-bit), 13.3 GB (3-bit with 1% outliers), and 9.3 GB (2-bit) [1]. The same estimates put LLaMA-7B at 1M tokens on a single A100-80GB at 2-bit [1].
+## Low-rank and latent methods: highest ratios, heaviest prerequisites
 
-Atom takes a different route: asymmetric INT4 at per-attention-head granularity, fused into FlashInfer with paged attention [15]. Its KV-specific accuracy cost is small — 0.12 WikiText-2 perplexity on Llama-7B (6.04 to 6.16) on top of W4A4 weights and activations [15] — but the paper reports no KV-specific compression ratio and no long-context benchmarks, so it anchors the granularity question rather than the savings question [15].
+### Post-training low-rank projection
 
-#### 1.2 Why granularity matters more than bit-width
+Palu SVD-decomposes the K/V projection weights and caches the latent states. At **50% compression** on Llama-2-7B it reports WikiText-2 perplexity 5.47 → 6.01 (group-head, group size 4) and zero-shot average 65.05 → 62.61; the joint-head variant is much better (5.62 PPL, 64.82 average) but costs more to reconstruct [6]. On LongBench, 30% compression costs under 1% (Mistral-7B 42.54 → 41.55), but 50% falls to 36.23 [6]. Combined with 2-bit per-token quantization, Palu reaches **91.25% compression (11.4×) at 5.76 PPL**, against KVQuant 2-bit at 6.95 PPL and 87.5% compression [6].
 
-The ablation is the most useful part of KVQuant for practitioners. At 3-bit on LLaMA-7B, quantizing Keys per-channel and Values per-token instead of both per-token improves perplexity by 3.82 (7.05 versus 10.87) [1]. Moving Key quantization before RoPE rather than after adds 0.82 (6.23 versus 7.05) [1]. Non-uniform datatypes add 0.29, and isolating 1% of outliers in fp16 adds 0.19 [1]. The mechanism is that RoPE rotates Keys after they are written, so quantizing the rotated representation mixes positional information into the quantization error.
+Palu's own tables also show low-rank alone is not uniformly better than quantization. At 3-bit, KVQuant (5.35 PPL, 81.25% compression) beats Palu-50% in fp16 (5.63 PPL, 50% compression) on accuracy per byte, while Palu-30%+3-bit (5.33 PPL, 86.87%) is roughly tied with KVQuant-3bit at higher compression [6]. A separate preprint by Salfati claimed quantization dominates rank reduction at matched storage, but its own v2 retracts the matched-storage comparison, stating the compared arms are weight-perturbation interventions that do not implement packed cache storage [19]. That head-to-head claim is therefore unvalidated in either direction.
 
-This is why the naive baselines are so bad: int3 gives 10.87 and int2 gives 11,779 on LLaMA-7B, while KVQuant's tuned 3-bit gives 5.75 and 2-bit gives 6.01 [1]. A team that simply casts the cache to INT4 without per-channel Key scaling and outlier handling should expect the naive numbers, not the tuned ones.
+### Eigenbasis projection
 
-#### 1.3 The accuracy curve on long-context benchmarks
+Eigen Attention (Findings of EMNLP 2024) merges SVD-derived per-head bases into the projection weights and reports **up to 40% KV reduction** with average perplexity increases of 0.32 / 0.69 / 1.79 and accuracy drops of 1% / 2% / 3% at 0.8× / 0.7× / 0.6× across nine models [5]. At 40% compression keys compress 54% while values compress only 26%, and larger models tolerate it better (OPT-66B loses 1% accuracy) [5]. Its own matched-ratio comparisons put eviction ahead at moderate compression (H2O at 0.4× roughly equals Eigen at 0.6×: Llama-2-7B 0.64 vs 0.63) and show quantized standard attention beating quantized Eigen at large cache sizes but losing as precision drops; combining Eigen with H2O reaches 0.24× cache [5].
 
-On LLaMA-2-7B-32K, KVQuant at 3.33 average bits scores 31.21 on LongBench against 31.96 for fp16, and 53.65 on RULER against 56.40 [1]. At 2.33 bits, RULER drops to 36.54 — a loss of roughly 20 points from fp16, calculated from the cited figures [1]. KIVI at 3.05 bits scores 30.04 on LongBench and 39.78 on RULER [1].
+### Latent caching (MLA)
 
-The independent benchmark by Agrawal and Mayer puts realized compression at about 5.16–5.32× for KIVI 2-bit and 3.15–3.19× for KIVI 4-bit, measured as prefill KV memory on an A100 40GB [16]. On Llama-3.1-8B, KIVI 4-bit is the most accuracy-stable method tested: HotpotQA 55.99 versus 55.72 for full cache, Multi-news 26.95 versus 27.15 [16]. KIVI 2-bit is close but not free: 54.42 on HotpotQA and 42.94 on 2WikiMQA versus 55.72 and 44.27 [16].
+DeepSeek-V2's Multi-head Latent Attention caches a 512-dimension latent plus a 64-dimension decoupled RoPE key, **cutting KV cache 93.3%** versus DeepSeek 67B and using about 4% of MHA's per-token KV elements in the large-MoE ablation (34.6K vs 860.2K) while matching or beating MHA on BBH, MMLU, C-Eval and CMMLU [7]. The deployed model adds 6-bit-average KV quantization on top [7]. This is a pretrained architecture, not a post-hoc compression, and the paper reports no matched-ratio comparison against eviction or quantization-only [7]. Post-hoc conversion is possible but costly: MHA2MLA reports 92.19% reduction on Llama2-7B with a ~1% LongBench drop, but requires full-parameter fine-tuning on 0.6–1% of pretraining tokens [8].
 
-TurboQuant at 3-bit and 4-bit shows the opposite pattern in the same benchmark: it holds up on QA but collapses on summarization, with Llama Multi-news ROUGE at 16.39 and 16.16 against 27.15 for full cache [16]. The authors note the summarization runs were executed once because each takes three to four days [16], so those two cells carry more noise than the rest of the table.
+## The trade-off curve, and where each family wins
 
-#### 1.4 Production quantization formats
+The honest summary is that **no single technique dominates across all settings**, which is the conclusion of a March 2026 survey that compiles per-paper numbers without running a matched experiment [20]. What the stitched evidence supports:
 
-vLLM documents FP8 KV cache through `kv_cache_dtype`, with `auto` as the unquantized default and `fp8_e4m3`/`fp8_e5m2` as opt-ins [11]. Per-attention-head scaling requires the Flash Attention backend plus llm-compressor calibration; a `--kv-cache-dtype-skip-layers` flag keeps sensitive layers such as sliding-window attention at native precision [11]. The vLLM v0.8.2 documentation states that FP8 roughly doubles KV-cache space but gives no latency improvement at that version because fused dequantization and attention were not yet implemented [11].
+- **Moderate compression (roughly 2–4×), accuracy-critical:** quantization wins. KIVI 4-bit is the most stable method in the only independent multi-method LongBench benchmark [2], and KVQuant-3bit sits within 0.1 PPL of fp16 [1]. Eviction at comparable budgets is competitive on question-aware LongBench [4][9] but loses once the question is hidden [17].
+- **High compression (8× and above), single long request:** eviction and low-rank both reach ratios quantization cannot, but with different failure modes. Eviction's accuracy collapses beyond 32K on RULER [3]; low-rank at 50% costs several LongBench points [6], and its best numbers come from stacking with quantization [8][6].
+- **Multi-turn and shared-prefix serving:** fixed-size quantization degrades gracefully while eviction degrades badly, because the tokens that matter change per query [18].
+- **Extreme compression with acceptable quality:** the strongest published combination is low-rank plus quantization — Palu-30%+2-bit at 91.25% compression and 5.76 PPL [6], or MHA2MLA+Int4 at 96.87% reduction with a 2.4-point LongBench drop [8].
 
-SGLang supports FP8 E4M3/E5M2 and FP4 (`nvfp4`, `fp4_mx_block16`) via `--kv-cache-dtype`, with per-tensor scaling only [12]. Its documented savings are about 1.78× more tokens than FP8 and 3.56× more tokens than BF16 for FP4 block-16, computed from bit-width ratios including scaling overhead [12]. The accuracy table is the cautionary part: GPT-OSS-120B aime25 falls from 0.7533 at KV16 to 0.3533 at KV4, and gpqa_diamond from 0.5081 to 0.3202, while gsm8k is essentially unchanged [12]. SGLang's own guidance is to prefer `fp8_e4m3` for accuracy and warns that degradation may be worse in long-context scenarios [12].
+A caveat on the curve: the two matched-budget benchmarks that cover multiple families both exclude low-rank methods, one because they are not drop-in [2] and one by scope [18]. Low-rank's position relative to the other two at identical byte budgets therefore rests on each low-rank paper's own chosen baselines.
 
-TensorRT-LLM's older attention documentation lists INT8 and FP8 KV cache via `QuantMode.INT8_KV_CACHE` and `QuantMode.FP8_KV_CACHE`, with per-tensor scaling only in that version [14]. Its current KV Cache System page documents a prototype mixed-precision mode that stores full-attention history in NVFP4 with one FP8 scale per 16 elements while retaining the first and last N tokens in the compute dtype, selected through `dtype` values such as `mixed_nvfp4_bfloat16` [13][17]. That mode requires the TRT-LLM or FlashInfer backend with `use_kv_cache_manager_v2`, and does not support speculative decoding, beam search, sparse attention, cold-page compression, or context parallelism [17].
+## What production engines actually ship
 
-### 2. Eviction: high headline ratios, fragile at long context
+Quantization is universal and opt-in; nothing else is.
 
-#### 2.1 The three policy shapes
+| Engine | KV quantization | Flag / format | Eviction or low-rank |
+|---|---|---|---|
+| vLLM | FP8 only | `--kv-cache-dtype` = `auto`/`fp8`/`fp8_e4m3`/`fp8_e5m2`; per-tensor or per-head with Flash Attention plus llm-compressor calibration [10] | None; only LRU block eviction in prefix caching |
+| SGLang | FP8 and experimental FP4 | `--kv-cache-dtype` with `nvfp4`, `fp4_mx_block16`; per-tensor scaling only [11] | None documented |
+| TensorRT-LLM | FP8/INT8 per-tensor; prototype NVFP4 mixed precision | `KvCacheConfig.dtype`; `mixed_nvfp4_bfloat16`/`_fp8`/`_float16` retain first/last N tokens in compute dtype [12][13] | Prioritized LRU block eviction (priority 0–100, default 35), host offload, deprecated StreamingLLM sink tokens [12][13] |
+| TGI | FP8 | `--kv-cache-dtype` = `fp8_e4m3fn`/`fp8_e5m2`, defaulting to model dtype | LRU of cached prefixes only |
 
-Eviction methods differ mainly in what signal they use to decide which tokens to keep. H2O accumulates attention scores across decoding steps and keeps a mix of "heavy hitters" and recent tokens [2]. StreamingLLM is purely positional: four initial attention-sink tokens plus a rolling window of recent tokens [9]. SnapKV and PyramidKV score tokens from an observation window at the end of the prompt, with SnapKV using per-head voting plus max-pooling and PyramidKV varying the per-layer budget [3][18].
+SGLang's own documentation gives the clearest accuracy picture for FP4: GPT-OSS-120B scores 0.7533 on aime25 at KV16 versus **0.3533 at KV4**, while gsm8k stays flat, and the docs warn degradation may be worse in long-context scenarios [11]. Documented memory savings are ~3.56× more tokens than BF16 for FP4 and ~1.78× more than FP8 [11].
 
-The policy choice matters more than the budget. In H2O's OPT-30B table at a 20% budget, full cache scores 80.09 on PiQA and the recency-only "Local" baseline scores 57.94, while H2O scores 79.22 [2]. Keeping only heavy hitters or only local tokens degrades 2.85%–22.75% versus full cache; combining both recovers full performance [2]. H2O also reports that some 0/1-shot tasks need 30–40% budget to match full cache [2].
+No engine documents low-rank or latent KV compression as a user-facing feature. MLA latent caching is supported only for MLA-native DeepSeek-family checkpoints; post-hoc conversion remains research code [7][8].
 
-StreamingLLM's sink-token result is the cleanest demonstration that pure recency fails: on Llama-2-13B over a 65K-token book, a pure 1024-token window gives perplexity 5158.07, while four sink tokens plus a 1020-token window gives 5.40, close to the sliding-window-with-recomputation oracle at 5.43 [9]. But the same paper shows accuracy on StreamEval falling to zero once the query–answer distance exceeds the cache size, and StreamingLLM underperforming simple truncation on LongBench (NarrativeQA 11.6 versus 18.7) [9].
+## Practical constraints
 
-#### 2.2 What the long-context numbers look like
+**Kernel support and latency.** vLLM's FP8 KV cache historically gave no latency improvement because fused dequantization plus attention was not implemented [10]. TensorRT-LLM's prototype mixed-precision mode pays a per-step cost: each forward gathers two pools into a staging copy sized to the longest sequence in the batch [12]. On the eviction side, SnapKV has the best throughput in the independent benchmark, on par with or above all-KV, while TurboQuant incurs the highest time-to-first-token (1351 ms vs 1125 ms on Llama Qasper 8K+) [2].
 
-SnapKV reports roughly 92% average compression at a 1024-token prompt cache and 68% at 4096 on LongBench, where average input is about 13K tokens [3]. At a matched 4096-token budget it beats H2O on most tasks: Mistral-7B HotpotQA 42.32 versus 36.54, 2WikiMQA 27.93 versus 20.60 [3]. On Command-R at 128K with 32× compression, NIAH scores 9.819 versus 9.866 baseline, a 0.5% drop [3].
+**Paged attention and prefix caching.** Quantized KV interacts badly with prefix caching in documented cases. A vLLM issue reports `--kv-cache-dtype fp8` raising attention block size from 800 to 1600 on a hybrid Mamba model and collapsing prefix-cache hit rate from 31.7% to about 10% — community evidence from a single user, not an official statement. SGLang's 2026 H2 roadmap lists open tasks for FP4 KV prefix-cache correctness and an NVFP4+FP8 KV corruption blocker. These are leads rather than settled findings; no official engine page states the interaction directly.
 
-PyramidKV at a 128-token per-layer budget on LLaMA-3-8B averages 37.25 versus 41.46 for full cache, ahead of SnapKV at 35.50, H2O at 35.37, and StreamingLLM at 32.00 [18]. At 2048 tokens per layer it matches full cache (41.49 versus 41.46) [18]. Its measured KV memory at 8192 tokens is 107M at a 128-token cache (1.6% of full) versus 6848M for full cache [18].
+**Prerequisites.** Low-rank methods need calibration data and, for the best results, fine-tuning [8][6][5]. Eviction needs an observation window or question access to score tokens well, and its accuracy depends on that access [17].
 
-The peer-reviewed evaluations are harsher. Ada-KV reports SnapKV's LongBench average falling from 49.09 to 42.86 when moving from question-aware to question-agnostic scoring at a 2048 budget [10]. LKV, at a single matched 15% retention ratio, reports LongBench 46.73 versus 47.48 for full cache on Llama-3.1-8B, but RULER at 128K of 55.34 versus 62.30 [4]. At the same 15% budget, SnapKV scores 38.05 on LongBench and 12.82 at 128K on RULER; PyramidKV scores 32.12 and 10.53 [4]. The gap between learned and heuristic policies widens as compression increases: LKV holds 43.93 at a 10% budget while SnapKV falls to 34.62 [4].
+## Which family fits which regime
 
-SCBench adds a second matched-budget lane from 1/32 to 1/2 compression. On Llama-3.1-8B multi-turn, KIVI at 1/8 averages 32.0 against 48.7 for full attention, while SnapKV at 1/32 averages 20.9, PyramidKV 21.0, and StreamingLLM 15.5 [5]. The paper's argument is structural: sub-O(n) memory is "almost infeasible in multi-turn decoding" because the critical KVs vary per query [5].
+- **Default production serving, 2–4× memory relief, minimal risk:** FP8 KV cache. It is the only option with vendor support across four engines, and 4-bit-class quantization is the most accuracy-stable family in independent testing [2].
+- **Very long single requests where some quality loss is acceptable:** attention-score eviction at moderate budgets, accepting that accuracy falls off beyond 32K and on summarization [3][2].
+- **Maximum compression with a calibration budget:** low-rank stacked on quantization — Palu-30%+2-bit or an MLA conversion — not low-rank alone [6][8].
+- **Multi-turn or shared-prefix workloads:** avoid token eviction; fixed-size quantization degrades far more gracefully [18].
 
-#### 2.3 Eviction in engines
+## Evidence gaps
 
-No engine documentation shows token-level eviction as a shipped feature. TensorRT-LLM's eviction is block-level prioritized LRU: blocks get priority 0–100 with a default of 35, only leaf blocks can be evicted, and `host_cache_size` offloads to CPU memory with a default of 0 [13][17]. Its older attention documentation describes a cyclic rolling-buffer KV cache that overwrites least-recently-used entries beyond `max_attention_window_size`, and a StreamingLLM mode with sink tokens enabled via a `streamingllm` flag [14]. vLLM's prefix caching uses LRU block eviction, which is cache management rather than token eviction.
-
-### 3. Low-rank and latent methods: highest ceiling, narrowest operating point
-
-#### 3.1 Post-hoc low-rank
-
-Eigen Attention performs SVD on per-layer, per-head query/key/value representation matrices from a calibration set and merges the basis into the projection weights, so Keys and Values are stored at reduced dimension [8]. It reports up to 40% KV reduction with average perplexity increases of 0.32, 0.69, and 1.79 and accuracy drops of 1%, 2%, and 3% at 0.8×, 0.7×, and 0.6× compression across OPT, MPT, Llama-2, and Llama-3 models [8]. At 40% compression, Keys compress 54% while Values compress only 26% [8]. Larger models tolerate it better: OPT-66B loses about 1% accuracy at 40% compression, while Llama-3-8B loses 7 points [8].
-
-Palu decomposes K/V projection weights offline and caches the low-dimensional latent states, reconstructing on the fly [7]. At 50% compression on Llama-2-7B, WikiText-2 perplexity is 6.01 versus 5.47 baseline with group-head decomposition at group size 4, and zero-shot average is 62.61 versus 65.05 [7]. Joint decomposition across all heads is more accurate (5.62 perplexity, 64.82 zero-shot) but costs more at reconstruction time [7]. On LongBench, Palu at 30% compression loses under 1% on average (Mistral-7B 42.54 to 41.55), but at 50% it falls to 36.23 [7].
-
-#### 3.2 Latent caching in pretrained architectures
-
-DeepSeek-V2's Multi-head Latent Attention caches a 512-dimension latent vector plus a 64-dimension decoupled RoPE key per head instead of full per-head K/V, reducing KV cache 93.3% versus DeepSeek 67B [6]. In the paper's large-MoE ablation, MLA uses about 4% of MHA's per-token KV elements (34.6K versus 860.2K) while matching or beating MHA on BBH (50.7 versus 46.6), MMLU (59.0 versus 57.5), C-Eval (59.2 versus 57.9), and CMMLU (62.5 versus 60.7) [6]. The deployed model additionally applies 6-bit-average KV quantization [6]. This is an architecture decision made at pretraining, not a post-hoc compression method, and the paper reports no matched-ratio comparison against eviction or quantization alone.
-
-MHA2MLA attempts to retrofit MLA onto existing models via partial-RoPE removal plus joint SVD, with fine-tuning on 0.6%–1% of pretraining tokens [19]. It reports 92.19% KV reduction on Llama2-7B with about a 1% LongBench drop, and 96.87% when combined with Int4 HQQ [19]. At roughly 87.5% compression it beats Int2 quantization on LongBench (25.1 versus 21.2 for HQQ and 18.5 for Quanto) [19]. The fine-tuning requirement is the catch: this is not a drop-in serving flag.
-
-#### 3.3 The contested head-to-head
-
-A 2026 preprint claimed that per-channel INT4 quantization dominates low-rank projection at matched storage — for example, Mistral 7B at 512 bits giving 9.42 perplexity for INT4 versus 44.19 for rank-32 fp16 [20]. Its own v2 retracts the matched-storage comparison, stating that the compared arms are weight-perturbation interventions that reconstruct dense floating-point weights and do not implement packed cache storage [20]. The matched-ratio claim is therefore not validated, and the low-rank-versus-quantization question has to be answered from each method's own tables.
-
-Those tables point in a consistent direction. Palu's own comparison shows KVQuant at 3-bit reaching 5.35 perplexity at 81.25% compression while Palu-50% in fp16 reaches 5.63 at 50% compression [7]. Eigen Attention's matched-ratio table shows quantized standard attention beating quantized Eigen at large cache sizes but losing as precision drops [8]. The pattern is that low-rank and quantization are complementary: low-rank removes dimensions, quantization reduces the precision of what remains, and stacking them reaches the highest compression at acceptable accuracy.
-
-### 4. The trade-off curve across families
-
-No single study benchmarks all three families at matched budgets on the same long-context suite. The closest is Agrawal and Mayer's benchmark, which covers quantization, eviction, and merging but explicitly excludes low-rank methods as not drop-in [16]. SCBench covers quantization and eviction but no low-rank [5]. The cross-family curve therefore has to be stitched from each paper's own comparisons, and should be read as indicative rather than measured.
-
-| Family | Representative method | Reported compression | Reported accuracy cost | Production status |
-|---|---|---|---|---|
-| Quantization | KVQuant 3-bit | 4.8× [1] | <0.1 PPL; LongBench 31.21 vs 31.96 [1] | FP8 shipped; INT4 research [11][12] |
-| Quantization | KIVI 4-bit | 3.15–3.19× [16] | HotpotQA 55.99 vs 55.72 [16] | Research; FP8 is the shipped analogue |
-| Quantization | SGLang FP4 | ~3.56× vs BF16 [12] | aime25 0.3533 vs 0.7533 [12] | Opt-in flag [12] |
-| Eviction | H2O 20% budget | ~5× [2] | Matches full cache on HELM [2] | Not shipped as token eviction |
-| Eviction | SnapKV 1024-token cache | ~92% on LongBench [3] | RULER 128K 12.82 vs 62.30 | Not shipped |
-| Eviction | LKV 15% retention | 6.6× at 200K [4] | LongBench 46.73 vs 47.48 [4] | Not shipped |
-| Low-rank | Eigen Attention 0.6× | 40% reduction [8] | ~3% accuracy drop [8] | Not shipped |
-| Low-rank | Palu 50% | 2× [7] | PPL 6.01 vs 5.47 [7] | Not shipped |
-| Low-rank | Palu-30% + 3-bit | 86.87% [7] | PPL 5.33 vs 5.12 [7] | Not shipped |
-| Latent | DeepSeek-V2 MLA | 93.3% [6] | Matches or beats MHA [6] | Only for MLA-native checkpoints |
-
-The shape of the curve that emerges: at moderate compression (roughly 2–4×), quantization and eviction are both close to lossless, and quantization is the safer choice because its failure mode is graceful. At high compression (8× and above), eviction's accuracy collapses on long-context and multi-turn workloads [4][5], while quantization at 2-bit degrades but does not collapse [1]. Low-rank alone sits in the middle and is dominated by quantization at matched memory in Palu's own table [7]; low-rank stacked with quantization reaches the highest compression at modest cost [7][19].
-
-### 5. Practical constraints
-
-**Kernel support and latency.** vLLM's v0.8.2 documentation states that FP8 KV cache gave no latency improvement at that version because fused dequantization and attention were not implemented [11]. SGLang's FP4 prefill path requires SM100 hardware, a page size divisible by 4, and an attention head dimension divisible by 64 [12]. TensorRT-LLM's mixed-precision NVFP4 mode gathers two pools into a staging copy each forward, with per-step cost proportional to the longest sequence in the batch [17].
-
-**Prefix caching interaction.** Quantized KV interacts badly with prefix caching in at least one documented case: a vLLM issue reports `--kv-cache-dtype fp8` raising attention block size from 800 to 1600 on a hybrid Mamba model and collapsing prefix-cache hit rate from 31.7% to about 10%. That is a single user's community report, not official documentation, and should be treated as a lead rather than a confirmed engine property. SGLang's 2026 H2 quantization roadmap lists open tasks for FP4 KV prefix-cache correctness and an NVFP4+FP8 KV corruption blocker [21].
-
-**Eviction and paged attention.** Eviction methods that drop tokens mid-sequence conflict with paged attention's fixed block allocation, which is one reason engines implement block-level LRU rather than token-level eviction [13]. TensorRT-LLM's cyclic KV cache overwrites least-recently-used entries but does not work with beam search [14].
-
-**Low-rank and serving.** Palu requires a custom Triton kernel for RoPE attention because reconstruction must happen online [7]. MHA2MLA requires fine-tuning on 0.6%–1% of pretraining tokens [19]. Neither is a configuration flag.
-
-## Risks & Counterpoints
-
-The evidence for quantization is the strongest of the three families, but it is not uniform. KVQuant's byte-level savings are estimated from bit-width assumptions rather than measured on hardware [1], and its long-context numbers come from a single model family (LLaMA-2-7B-32K) [1]. The independent benchmark that measures realized compression covers only 7–8B models on a single A100 40GB [16], so the ratios may not transfer to larger models or different hardware.
-
-The eviction literature has a systematic evaluation problem. H2O and StreamingLLM were evaluated mostly on short-context HELM and lm-eval tasks [2][9], and the long-context numbers that do exist come from later papers evaluating them as baselines. SnapKV's strongest claims come from its own paper [3]; the independent re-implementation that found a 20% budget to be a "sweet spot" tested only 2–3.5K-token contexts on a single task [22], which is far short of the 32K+ regime SnapKV targets.
-
-The low-rank evidence is thinner and partly contested. The one preprint that claimed quantization dominates rank reduction retracted its matched-storage comparison in v2 [20]. Palu and Eigen Attention each compare against their own chosen baselines, and neither reports RULER numbers at 32K–128K, so low-rank behavior at extreme context is unmeasured relative to eviction's documented collapse. DeepSeek-V2's MLA results are the authors' own architecture evaluated by its developers [6], and the compression is not available to models that were not pretrained with it.
-
-Finally, the production picture is narrower than the research picture. FP8 KV cache is shipped and documented, but the accuracy evidence for it in engine documentation is qualitative — vLLM's page says FP8 E4M3 "typically only minimally degrades inference accuracy" without numbers [11]. The concrete accuracy tables come from SGLang's FP4 documentation [12], which shows that aggressive formats can halve reasoning scores on hard benchmarks.
-
-## Open Questions
-
-**A true three-family matched-budget study.** The dominance question cannot be settled without a single independent benchmark that runs quantization, eviction, and low-rank methods at the same KV budgets on the same LongBench or RULER suite. The two closest benchmarks each exclude low-rank [16][5], so the cross-family curve in this report is stitched from per-paper comparisons.
-
-**Low-rank behavior at extreme context.** Palu and Eigen Attention report LongBench or short-context perplexity but no RULER results at 32K–128K [7][8]. Whether low-rank degrades gracefully like quantization or collapses like eviction at long context is unknown.
-
-**Quantization and prefix caching.** No official vLLM or SGLang documentation states whether FP8 or FP4 quantized KV blocks are hashable and reusable in prefix caching, or what the measured throughput overhead is. The available signals are a community issue report and a roadmap listing open correctness tasks [21].
-
-**llama.cpp KV-cache quantization.** No retrieved page documents llama.cpp's `--cache-type-k`/`--cache-type-v` flags or Q8_0/Q4_0 KV formats, so this report cannot confirm what that engine ships.
+Three limits bound these conclusions. First, no study benchmarks quantization, eviction and low-rank at matched budgets on one long-context suite; the two multi-family benchmarks exclude low-rank [2][18]. Second, low-rank methods have no published RULER results at 32K–128K, so their behavior at extreme context is unmeasured against eviction's documented collapse. Third, the interaction between quantized KV and prefix caching is documented only in issue threads and roadmaps, not in official engine documentation.
 
 ## References
 
 - **[1] arxiv.org** - "KVQuant: Towards 10 Million Context Length LLM Inference with KV Cache Quantization". [Source](https://arxiv.org/html/2401.18079v4) (accessed 2026-10-28)
-- **[2] arxiv.org** - "H2O: Heavy-Hitter Oracle for Efficient Generative Inference of Large Language Models". [Source](https://arxiv.org/pdf/2306.14048) (accessed 2026-10-28)
-- **[3] arxiv.org** - "SnapKV: LLM Knows What You are Looking for Before Generation". [Source](https://arxiv.org/html/2404.14469v2) (accessed 2026-10-28)
-- **[4] aclanthology.org** - "LKV: End-to-End Learning of Head-wise Budgets and Token Selection for LLM KV Cache Eviction". [Source](https://aclanthology.org/2026.emnlp-main.1183.pdf) (accessed 2026-10-28)
-- **[5] arxiv.org** - "SCBENCH: A KV CACHE-CENTRIC ANALYSIS OF LONG-CONTEXT METHODS". [Source](https://arxiv.org/pdf/2412.10319) (accessed 2026-10-28)
-- **[6] arxiv.org** - "DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model". [Source](https://arxiv.org/html/2405.04434v2) (accessed 2026-10-28)
-- **[7] arxiv.org** - "Palu: Compressing KV-Cache with Low-Rank Projection". [Source](https://arxiv.org/html/2407.21118v1) (accessed 2026-10-28)
-- **[8] aclanthology.org** - "Eigen Attention: Attention in Low-Rank Space for KV Cache Compression". [Source](https://aclanthology.org/2024.findings-emnlp.899.pdf) (accessed 2026-10-28)
-- **[9] arxiv.org** - "Efficient Streaming Language Models with Attention Sinks". [Source](https://arxiv.org/html/2309.17453v4) (accessed 2026-10-28)
-- **[10] papers.nips.cc** - "Ada-KV: Optimizing KV Cache Eviction by Adaptive Budget Allocation for Efficient LLM Inference". [Source](https://papers.nips.cc/paper_files/paper/2025/file/a40ff56daab9f4808b1e18350c8a11ce-Paper-Conference.pdf) (accessed 2026-10-28)
-- **[11] docs.vllm.ai** - "Quantized KV Cache". [Source](https://docs.vllm.ai/en/latest/features/quantization/quantized_kvcache/) (accessed 2026-10-28)
-- **[12] SGLang Documentation** - "Quantized KV Cache". [Source](https://docs.sglang.io/docs/advanced_features/quantized_kv_cache) (accessed 2026-10-28)
-- **[13] nvidia.github.io** - "KV Cache System". [Source](https://nvidia.github.io/TensorRT-LLM/latest/features/kvcache.html) (accessed 2026-10-28)
-- **[14] nvidia.github.io** - "Multi-Head, Multi-Query, and Group-Query Attention". [Source](https://nvidia.github.io/TensorRT-LLM/1.0.0rc5/advanced/gpt-attention.html) (accessed 2026-10-28)
-- **[15] proceedings.mlsys.org** - "Atom: Low-Bit Quantization for Efficient and Accurate LLM Serving". [Source](https://proceedings.mlsys.org/paper_files/paper/2024/file/5edb57c05c81d04beb716ef1d542fe9e-Paper-Conference.pdf) (accessed 2026-10-28)
-- **[16] arxiv.org** - "Benchmarking KV-Cache Optimizations across Task Quality and System Performance for Long-Context Serving". [Source](https://arxiv.org/pdf/2607.05399) (accessed 2026-10-28)
-- **[17] GitHub** - "TensorRT-LLM/docs/source/features/kvcache.md at main · NVIDIA/TensorRT-LLM". [Source](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/kvcache.md) (accessed 2026-10-28)
-- **[18] arxiv.org** - "PyramidKV: Dynamic KV Cache Compression based on Pyramidal Information Funneling". [Source](https://arxiv.org/html/2406.02069v2) (accessed 2026-10-28)
-- **[19] arxiv.org** - "Towards Economical Inference: Enabling DeepSeek's Multi-Head Latent Attention in Any Transformer-based LLMs". [Source](https://arxiv.org/abs/2502.14837v2) (accessed 2026-10-28)
-- **[20] arxiv.org** - "Quantization Dominates Rank Reduction for KV-Cache Compression". [Source](https://arxiv.org/pdf/2604.11501v1) (accessed 2026-10-28)
-- **[21] GitHub** - "[Roadmap] Quantization 2026 H2 · Issue #31783 · sgl-project/sglang". [Source](https://github.com/sgl-project/sglang/issues/31783) (accessed 2026-10-28)
-- **[22] GitHub** - "GitHub - AayushSalvi/SnapKV-analysis: DSC 291 Efficient AI - Improving KV Cache Compression Techniques". [Source](https://github.com/AayushSalvi/SnapKV-analysis) (accessed 2026-10-28)
+- **[2] arxiv.org** - "Benchmarking KV-Cache Optimizations across Task Quality and System Performance for Long-Context Serving". [Source](https://arxiv.org/pdf/2607.05399) (accessed 2026-10-28)
+- **[3] aclanthology.org** - "LKV: End-to-End Learning of Head-wise Budgets and Token Selection for LLM KV Cache Eviction". [Source](https://aclanthology.org/2026.emnlp-main.1183.pdf) (accessed 2026-10-28)
+- **[4] arxiv.org** - "SnapKV: LLM Knows What You are Looking for Before Generation". [Source](https://arxiv.org/html/2404.14469v2) (accessed 2026-10-28)
+- **[5] aclanthology.org** - "Eigen Attention: Attention in Low-Rank Space for KV Cache Compression". [Source](https://aclanthology.org/2024.findings-emnlp.899.pdf) (accessed 2026-10-28)
+- **[6] arxiv.org** - "Palu: Compressing KV-Cache with Low-Rank Projection". [Source](https://arxiv.org/html/2407.21118v1) (accessed 2026-10-28)
+- **[7] arxiv.org** - "DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model". [Source](https://arxiv.org/html/2405.04434v2) (accessed 2026-10-28)
+- **[8] arxiv.org** - "Towards Economical Inference: Enabling DeepSeek's Multi-Head Latent Attention in Any Transformer-based LLMs". [Source](https://arxiv.org/abs/2502.14837v2) (accessed 2026-10-28)
+- **[9] arxiv.org** - "PyramidKV: Dynamic KV Cache Compression based on Pyramidal Information Funneling". [Source](https://arxiv.org/html/2406.02069v2) (accessed 2026-10-28)
+- **[10] docs.vllm.ai** - "Quantized KV Cache". [Source](https://docs.vllm.ai/en/latest/features/quantization/quantized_kvcache/) (accessed 2026-10-28)
+- **[11] SGLang Documentation** - "Quantized KV Cache". [Source](https://docs.sglang.io/docs/advanced_features/quantized_kv_cache) (accessed 2026-10-28)
+- **[12] nvidia.github.io** - "KV Cache System". [Source](https://nvidia.github.io/TensorRT-LLM/latest/features/kvcache.html) (accessed 2026-10-28)
+- **[13] nvidia.github.io** - "Multi-Head, Multi-Query, and Group-Query Attention". [Source](https://nvidia.github.io/TensorRT-LLM/1.0.0rc5/advanced/gpt-attention.html) (accessed 2026-10-28)
+- **[14] proceedings.mlsys.org** - "Atom: Low-Bit Quantization for Efficient and Accurate LLM Serving". [Source](https://proceedings.mlsys.org/paper_files/paper/2024/file/5edb57c05c81d04beb716ef1d542fe9e-Paper-Conference.pdf) (accessed 2026-10-28)
+- **[15] arxiv.org** - "H2O: Heavy-Hitter Oracle for Efficient Generative Inference of Large Language Models". [Source](https://arxiv.org/pdf/2306.14048) (accessed 2026-10-28)
+- **[16] arxiv.org** - "Efficient Streaming Language Models with Attention Sinks". [Source](https://arxiv.org/html/2309.17453v4) (accessed 2026-10-28)
+- **[17] papers.nips.cc** - "Ada-KV: Optimizing KV Cache Eviction by Adaptive Budget Allocation for Efficient LLM Inference". [Source](https://papers.nips.cc/paper_files/paper/2025/file/a40ff56daab9f4808b1e18350c8a11ce-Paper-Conference.pdf) (accessed 2026-10-28)
+- **[18] arxiv.org** - "SCBENCH: A KV CACHE-CENTRIC ANALYSIS OF LONG-CONTEXT METHODS". [Source](https://arxiv.org/pdf/2412.10319) (accessed 2026-10-28)
+- **[19] arxiv.org** - "Quantization Dominates Rank Reduction for KV-Cache Compression". [Source](https://arxiv.org/pdf/2604.11501v1) (accessed 2026-10-28)
+- **[20] arxiv.org** - "KV Cache Optimization Strategies for Scalable and Efficient LLM Inference". [Source](https://arxiv.org/pdf/2603.20397) (accessed 2026-10-28)

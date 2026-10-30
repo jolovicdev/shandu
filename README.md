@@ -12,11 +12,11 @@ Example reports, each written by `deepseek/deepseek-flash` with its thinking
 turned off:
 
 - [The CrowdStrike outage of July 2024](examples/crowdstrike-outage.md): default
-  effort, 27 sources, 3 minutes.
+  effort, 23 sources, 3 minutes.
 - [Microplastics in human brain tissue](examples/microplastics-in-the-brain.md):
-  default effort, 15 sources, 3 minutes.
+  default effort, 17 sources, 3 minutes.
 - [KV-cache compression for long-context inference](examples/kv-cache-compression.md):
-  high effort, 22 sources, 5 minutes.
+  high effort, 20 sources, 5 minutes.
 
 The architecture is described in [`ARCH.md`](ARCH.md).
 
@@ -86,7 +86,7 @@ instead of printing it.
 `resume`, `report`, and `aisearch` commands open with a short animation of the
 Serbian flag; `SHANDU_NO_INTRO=1` turns it off.
 
-![A terminal run: progress lines, the run summary, and the sources](assets/cli.png)
+![A terminal run mid-research: the event lines and the progress block under them](assets/cli.png)
 
 | Option | Effect |
 |---|---|

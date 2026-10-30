@@ -77,9 +77,10 @@ RESEARCHER_CHOICES = [
 ]
 LENGTH_CHOICES = [
     ("Saved settings", "settings"),
-    ("Concise (1,200 words)", "concise"),
-    ("Standard (2,200 words)", "standard"),
-    ("Long (3,600 words)", "high"),
+    ("Fit the evidence", "auto"),
+    ("Up to 1,200 words", "concise"),
+    ("Up to 2,200 words", "standard"),
+    ("Up to 3,600 words", "high"),
 ]
 OPTIONS_NOTE = (
     "Low to Max replace Iterations, Parallel subagents, Results per query and Pages per "
@@ -230,9 +231,10 @@ def build_gui() -> gr.Blocks:
                 choices=list(DETAIL_LEVELS),
                 value=defaults.detail_level
                 if defaults.detail_level in DETAIL_LEVELS
-                else "high",
+                else "auto",
                 label="Detail",
-                info="Report length: about 1,200, 2,200 or 3,600 words.",
+                info="auto fits the report to its evidence; the others cap it at about "
+                "1,200, 2,200 or 3,600 words.",
             )
             depth_policy = gr.Dropdown(
                 choices=list(DEPTH_POLICIES),
@@ -241,7 +243,8 @@ def build_gui() -> gr.Blocks:
                 else "adaptive",
                 label="Depth",
                 info="Adaptive keeps searching while a sub-question lacks two credible "
-                "sources. Fixed lets the lead agent decide when to stop.",
+                "sources, and stops once an iteration adds no finding or credible source "
+                "to any sub-question. Fixed lets the lead agent decide when to stop.",
             )
             max_results_per_query = gr.Slider(
                 1, 20, value=defaults.max_results_per_query, step=1, label="Results per query"
@@ -460,8 +463,6 @@ def build_gui() -> gr.Blocks:
                 examples.dataset,
                 run_button,
             ],
-            concurrency_id="shandu_runtime",
-            concurrency_limit=1,
         ).then(fn=_refresh_library, outputs=[library, first_run])
 
     demo.queue(default_concurrency_limit=1, max_size=12)
@@ -718,7 +719,12 @@ def _refresh_library() -> tuple[Any, Any]:
     )
 
 
-def _open_report(sample: list[str]) -> tuple[Any, ...]:
+def _open_report(
+    sample: list[str], http_request: gr.Request | None = None
+) -> tuple[Any, ...]:
+    if http_request is not None and http_request.session_hash in _ACTIVE_RUNS:
+        gr.Info("A run is in progress. Open the saved report once it ends or is stopped.")
+        return (gr.skip(),) * 13
     run_id = sample[-1] if sample else ""
     reports = {report.run_id: report for report in list_recent_reports()}
     report = reports.get(run_id)

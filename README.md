@@ -33,9 +33,9 @@ The architecture is described in [`ARCH.md`](ARCH.md).
    quotes, and a claim whose quote is not on the page is dropped.
 4. Code rates each sub-question by how many independent credible sites back it.
    Research continues until each has two, or the budget runs out.
-5. The writer drafts the report from the evidence. An auditor then checks every
-   cited sentence against its sources and removes the citations they do not
-   support.
+5. The writer drafts the report, fitting its outline and length to the question
+   and the evidence. An auditor then checks every cited sentence against its
+   sources and removes the citations they do not support.
 6. The run is saved as it happens. `shandu resume <run_id>` continues a stopped
    run, and `shandu report <run_id>` rewrites its report without searching
    again.
@@ -86,7 +86,7 @@ of printing it.
 |---|---|
 | `--effort low\|medium\|high\|max` | Research budget preset, below. Individual budget flags override it. |
 | `--researcher pipeline\|agentic` | How each task gathers evidence, below. |
-| `--detail-level concise\|standard\|high` | Report length: about 1,200, 2,200, or 3,600 words. |
+| `--detail-level auto\|concise\|standard\|high` | Report length. `auto` (default) sizes it to the question and the evidence; the others also cap it at about 1,200, 2,200, or 3,600 words. |
 | `--include-domain`, `--exclude-domain` | Only use, or never use, a site. Repeatable. |
 | `--since YYYY-MM-DD` | Skip pages dated before this day. |
 | `--max-cost USD` | Start no new iteration once this much is spent, then write the report. Writing and the citation check come after, so the total can end higher. |

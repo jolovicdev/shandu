@@ -367,6 +367,21 @@ def test_run_passes_a_valid_cost_cap_and_start_day_to_the_request(monkeypatch) -
     assert (request.max_cost_usd, request.since, request.max_iterations) == (0.5, date(2025, 1, 31), 8)
 
 
+def test_run_sizes_the_report_to_its_evidence_unless_a_level_caps_it(monkeypatch) -> None:
+    seen = _stub_run_engine(monkeypatch)
+    # No saved setting, whatever the developer's own config holds.
+    monkeypatch.setattr(config, "get", lambda section, key, default=None: default)
+
+    plain = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
+    plain_request = seen["request"]
+    capped = CliRunner(mix_stderr=False).invoke(cli, ["run", "q", "--detail-level", "concise"])
+
+    assert plain.exit_code == 0 and capped.exit_code == 0, plain.output + capped.output
+    assert plain_request.detail_level == "auto"
+    assert "length fits the evidence" in plain.output
+    assert seen["request"].detail_level == "concise"
+
+
 def test_a_rejected_key_exits_1_with_the_fix_and_the_run_to_continue(monkeypatch) -> None:
     async def run(request, progress_callback=None):
         progress_callback(
@@ -384,6 +399,50 @@ def test_a_rejected_key_exits_1_with_the_fix_and_the_run_to_continue(monkeypatch
     assert "Set the key with `shandu configure`" in result.stderr
     assert "Continue with: shandu resume e319d654" in result.stderr
     assert "Traceback" not in result.output
+
+
+def test_a_rejected_key_while_clarifying_exits_1_with_the_fix(monkeypatch) -> None:
+    closed: list[bool] = []
+
+    async def clarifying_questions(query):
+        raise ProviderRejectedError("key", "Authentication Fails, Your api key: ****0000 is invalid")
+
+    engine = SimpleNamespace(
+        clarifying_questions=clarifying_questions, close=lambda: closed.append(True)
+    )
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q", "--clarify"])
+
+    assert result.exit_code == 1
+    assert "The model provider rejected the API key: Authentication Fails" in result.stderr
+    assert "Set the key with `shandu configure`" in result.stderr
+    assert closed == [True]
+
+
+def test_configure_proposes_the_new_models_key_variable_and_keeps_a_custom_one(
+    monkeypatch, tmp_path
+) -> None:
+    with monkeypatch.context() as patched:
+        patched.setattr(config, "_path", tmp_path / "config.json")
+        patched.setattr(config, "_config", {key: dict(value) for key, value in config._config.items()})
+        patched.setattr(config, "_overlay", {})
+        patched.setattr(config, "apply_provider_api_key", lambda model=None: None)
+        patched.setattr("shandu.cli.reset_bootstrap", lambda: None)
+        runner = CliRunner(mix_stderr=False)
+
+        def configure_with(model: str) -> str:
+            result = runner.invoke(cli, ["configure"], input=f"{model}\n" + "\n" * 6)
+            assert result.exit_code == 0, result.output
+            return str(config.get("api", "api_key_env"))
+
+        config.set("api", "model", "deepseek/deepseek-flash")
+        config.set("api", "api_key_env", "")
+        assert configure_with("deepseek/deepseek-flash") == "DEEPSEEK_API_KEY"
+        assert configure_with("openai/gpt-5") == "OPENAI_API_KEY"
+
+        config.set("api", "api_key_env", "MY_KEY")
+        assert configure_with("mistral/mistral-large-latest") == "MY_KEY"
 
 
 def test_aisearch_joins_words_refuses_a_blank_question_and_stops_on_a_rejection(

@@ -550,18 +550,33 @@ def _parse_plaintext(data: bytes) -> _ExtractionResult:
 _UTF8_HTML_PARSER = lxml.html.HTMLParser(encoding="utf-8")
 
 
+def _parse_html(html: str) -> lxml.html.HtmlElement | None:
+    # Plain lxml: a second BeautifulSoup tree per page costs about 20 times
+    # more. UTF-8 bytes, because lxml rejects a str that carries an XML
+    # encoding declaration.
+    try:
+        return lxml.html.fromstring(html.encode("utf-8"), parser=_UTF8_HTML_PARSER)
+    except lxml.etree.ParserError:
+        return None
+
+
+def _first_meta_content(
+    metas: list[lxml.html.HtmlElement], attribute: str, value: str
+) -> str | None:
+    for meta in metas:
+        if meta.get(attribute) == value:
+            return meta.get("content")
+    return None
+
+
 def _extract_links(html: str, base_url: str) -> list[PageLink]:
     """Outbound links with their anchor text, links to other hosts first.
 
     Links to other hosts are where a page cites its sources, so they lead;
     site chrome is dropped before the scan so menus do not fill the list.
     """
-    # Plain lxml: a second BeautifulSoup tree per page costs about 20 times
-    # more. UTF-8 bytes, because lxml rejects a str that carries an XML
-    # encoding declaration.
-    try:
-        document = lxml.html.fromstring(html.encode("utf-8"), parser=_UTF8_HTML_PARSER)
-    except lxml.etree.ParserError:
+    document = _parse_html(html)
+    if document is None:
         return []
     for tag in document.xpath("//nav|//header|//footer|//aside|//script|//style"):
         tag.drop_tree()
@@ -585,15 +600,20 @@ def _extract_links(html: str, base_url: str) -> list[PageLink]:
 
 
 def _extract_published_at(html: str) -> str | None:
-    soup = BeautifulSoup(html, "lxml")
+    document = _parse_html(html)
+    if document is None:
+        return None
+    metas = list(document.iter("meta"))
 
-    og_time = soup.find("meta", attrs={"property": "article:published_time"})
-    if og_time and og_time.get("content"):
-        return str(og_time["content"]).strip()
+    og_time = _first_meta_content(metas, "property", "article:published_time")
+    if og_time:
+        return og_time.strip()
 
-    for script in soup.select("script[type='application/ld+json']"):
+    for script in document.iter("script"):
+        if (script.get("type") or "").lower() != "application/ld+json":
+            continue
         try:
-            data = json.loads(script.string or "")
+            data = json.loads(script.text or "")
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(data, dict):
@@ -622,13 +642,14 @@ def _extract_published_at(html: str) -> str | None:
         "uploadDate",
     )
     for meta_name in meta_names:
-        tag = soup.find("meta", attrs={"name": meta_name})
-        if tag and tag.get("content"):
-            return str(tag["content"]).strip()
+        content = _first_meta_content(metas, "name", meta_name)
+        if content:
+            return content.strip()
 
-    time_tag = soup.find("time", attrs={"datetime": True})
-    if time_tag:
-        return str(time_tag["datetime"]).strip()
+    for time_tag in document.iter("time"):
+        stamp = time_tag.get("datetime")
+        if stamp is not None:
+            return stamp.strip()
 
     return None
 
@@ -712,9 +733,11 @@ def _guess_format(url: str, content_type: str) -> str:
 
 
 def _extract_site_name(html: str) -> str | None:
-    tag = BeautifulSoup(html, "lxml").find("meta", attrs={"property": "og:site_name"})
-    content = tag.get("content") if tag is not None else None
-    cleaned = " ".join(str(content).split()) if content else ""
+    document = _parse_html(html)
+    if document is None:
+        return None
+    content = _first_meta_content(list(document.iter("meta")), "property", "og:site_name")
+    cleaned = " ".join(content.split()) if content else ""
     return cleaned[:160] or None
 
 

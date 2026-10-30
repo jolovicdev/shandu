@@ -120,6 +120,7 @@ class _ClaimDesk:
                 source_class="unknown",
                 authorship="anonymous",
                 is_promotional=False,
+                self_published=False,
                 summarizes_inaccessible_source=False,
                 claims=[
                     Claim(statement="per-channel keys", quote="quantizes the key cache per channel", sub_question=1),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from ...interfaces import DepthPolicy, DetailLevel
+from ...contracts import ReportLength
+from ...interfaces import DepthPolicy
 
-DETAIL_LEVELS: tuple[DetailLevel, ...] = ("concise", "standard", "high")
+DETAIL_LEVELS: tuple[ReportLength, ...] = ("auto", "concise", "standard", "high")
 DEPTH_POLICIES: tuple[DepthPolicy, ...] = ("adaptive", "fixed")

@@ -38,6 +38,9 @@ QualityFlag = Literal[
     "unassessed",
 ]
 
+# "auto" sizes a report to its evidence; the other levels also cap its length.
+ReportLength = Literal["auto", "concise", "standard", "high"]
+
 
 # Research budget presets. A request that names an effort takes the
 # preset's value for every budget it does not set itself.
@@ -81,7 +84,7 @@ class ResearchRequest(BaseModel):
     query: str
     max_iterations: int = Field(default=2, ge=1, le=8)
     parallelism: int = Field(default=3, ge=1, le=8)
-    detail_level: Literal["concise", "standard", "high"] = "high"
+    detail_level: ReportLength = "auto"
     depth_policy: Literal["adaptive", "fixed"] = "adaptive"
     max_results_per_query: int = Field(default=8, ge=1, le=20)
     max_pages_per_task: int = Field(default=6, ge=1, le=10)

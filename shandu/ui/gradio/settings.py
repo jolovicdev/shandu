@@ -4,8 +4,9 @@ import os
 from dataclasses import dataclass
 from typing import cast
 
-from ...config import DEFAULT_MODEL, config, infer_api_key_env_name
-from ...interfaces import DepthPolicy, DetailLevel
+from ...config import DEFAULT_MODEL, api_key_env_to_keep, config, infer_api_key_env_name
+from ...contracts import ReportLength
+from ...interfaces import DepthPolicy
 from ...runtime import reset_bootstrap
 from .constants import DEPTH_POLICIES, DETAIL_LEVELS
 
@@ -49,7 +50,7 @@ def load_defaults() -> GuiDefaults:
         max_tokens=int(config.get("api", "max_tokens", 32768)),
         max_iterations=int(config.get("orchestration", "max_iterations", 2)),
         parallelism=int(config.get("orchestration", "parallelism", 3)),
-        detail_level=str(config.get("orchestration", "detail_level", "high")),
+        detail_level=str(config.get("orchestration", "detail_level", "auto")),
         depth_policy=str(config.get("orchestration", "depth_policy", "adaptive")),
         max_results_per_query=int(
             config.get("orchestration", "max_results_per_query", 8)
@@ -58,11 +59,11 @@ def load_defaults() -> GuiDefaults:
     )
 
 
-def resolved_detail_level(value: object) -> DetailLevel:
-    text = str(value or "high")
+def resolved_detail_level(value: object) -> ReportLength:
+    text = str(value or "auto")
     if text in DETAIL_LEVELS:
-        return cast(DetailLevel, text)
-    return "high"
+        return cast(ReportLength, text)
+    return "auto"
 
 
 def resolved_depth_policy(value: object) -> DepthPolicy:
@@ -89,11 +90,7 @@ def save_configuration(
     env_text = str(api_key_env or "").strip()
     key_text = str(api_key_value or "").strip()
 
-    # A variable that only named the previous model's usual key would carry
-    # that key over to a new model's provider.
-    previous_model = str(config.get("api", "model", ""))
-    if model_text != previous_model and env_text == infer_api_key_env_name(previous_model):
-        env_text = ""
+    env_text = api_key_env_to_keep(env_text, str(config.get("api", "model", "")), model_text)
     resolved_env = env_text or infer_api_key_env_name(model_text)
     runtime_before = _runtime_snapshot()
     config.set("api", "model", model_text)

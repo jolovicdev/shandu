@@ -26,6 +26,7 @@ class _RecordingDesk:
                 source_class="unknown",
                 authorship="anonymous",
                 is_promotional=False,
+                self_published=False,
                 summarizes_inaccessible_source=False,
                 claims=[],
             )

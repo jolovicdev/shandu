@@ -271,16 +271,14 @@ class ScrapeService:
             self._page_cache.move_to_end(normalized_url)
             return cached
 
-        in_flight = self._inflight.get(normalized_url)
-        if in_flight is not None:
-            return await in_flight
-
-        task = asyncio.create_task(self._do_scrape(normalized_url, session))
-        self._inflight[normalized_url] = task
-        try:
-            return await task
-        finally:
-            self._inflight.pop(normalized_url, None)
+        task = self._inflight.get(normalized_url)
+        if task is None:
+            task = asyncio.create_task(self._do_scrape(normalized_url, session))
+            self._inflight[normalized_url] = task
+            task.add_done_callback(lambda _: self._inflight.pop(normalized_url, None))
+        # Shielded so that one caller's cancellation leaves the fetch the
+        # other callers wait on running.
+        return await asyncio.shield(task)
 
     async def _do_scrape(
         self,

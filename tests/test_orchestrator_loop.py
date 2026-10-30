@@ -564,7 +564,7 @@ def test_compact_evidence_gives_small_corpus_full_text() -> None:
     large = LeadAgent._compact_evidence(payload(150), [])
 
     assert {len(record["extracted_text"]) for record in small} == {9000}
-    assert {len(record["extracted_text"]) for record in large} == {2200}
+    assert max(len(record["extracted_text"]) for record in large) == 2200
 
 
 def test_adaptive_continues_while_sub_questions_are_open_or_sources_conflict() -> None:
@@ -658,6 +658,56 @@ class _RichSearchSubagent(FakeSearchSubagent):
         ]
 
 
+class _WeakFindingSubagent(FakeSearchSubagent):
+    """Each iteration adds a non-credible page with a new claim for sub-question 1."""
+
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
+    ):
+        del run_scope, request, progress_callback, extracted_urls
+        return [
+            EvidenceRecord(
+                evidence_id=f"e-{task.task_id}",
+                task_id=task.task_id,
+                query=task.focus,
+                requested_url=f"https://example.com/{task.task_id}",
+                title="T",
+                snippet="s",
+                extracted_text="x",
+                confidence=0.8,
+                claims=[
+                    Claim(statement=f"claim {task.task_id}", quote="x", sub_question=1)
+                ],
+            )
+        ]
+
+
+class _LaterCredibleSubagent(FakeSearchSubagent):
+    """One claim for sub-question 1: first on a non-credible page, then on a
+    credible page of one site, which later iterations only repeat."""
+
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
+    ):
+        del run_scope, request, progress_callback, extracted_urls
+        first = task.task_id == "task-0"
+        return [
+            EvidenceRecord(
+                evidence_id=f"e-{task.task_id}",
+                task_id=task.task_id,
+                query=task.focus,
+                requested_url=f"https://example.com/{task.task_id}",
+                domain="first.example" if first else "later.example",
+                title="T",
+                snippet="s",
+                extracted_text="x",
+                confidence=0.8,
+                credibility_score=None if first else 0.8,
+                claims=[Claim(statement="the same fact", quote="x", sub_question=1)],
+            )
+        ]
+
+
 def _run_with(lead, subagent, max_iterations: int, store: RunStore):
     orchestrator = LeadOrchestrator(
         lead_agent=lead,
@@ -684,7 +734,7 @@ def test_adaptive_ignores_model_stop_on_weak_coverage(tmp_path) -> None:
         )
     )
 
-    result = _run_with(lead, FakeSearchSubagent(), 3, RunStore(tmp_path))
+    result = _run_with(lead, _WeakFindingSubagent(), 3, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 3
 
@@ -706,7 +756,27 @@ def test_adaptive_stops_on_strong_corpus(tmp_path) -> None:
 
 
 def test_adaptive_without_coverage_follows_open_sub_questions(tmp_path) -> None:
-    result = _run_with(_StoppingLead(None), FakeSearchSubagent(), 3, RunStore(tmp_path))
+    result = _run_with(_StoppingLead(None), _WeakFindingSubagent(), 3, RunStore(tmp_path))
+
+    assert result.run_stats["iterations"] == 3
+
+
+def test_adaptive_stops_when_an_iteration_adds_nothing_to_the_checklist(tmp_path) -> None:
+    result = _run_with(_StoppingLead(None), FakeSearchSubagent(), 4, RunStore(tmp_path))
+
+    assert result.run_stats["iterations"] == 2
+
+
+def test_adaptive_stops_without_gain_even_while_sources_conflict(tmp_path) -> None:
+    lead = _StoppingLead(CoverageAssessment(contradiction_count=2))
+
+    result = _run_with(lead, FakeSearchSubagent(), 4, RunStore(tmp_path))
+
+    assert result.run_stats["iterations"] == 2
+
+
+def test_adaptive_counts_a_new_credible_source_as_gain(tmp_path) -> None:
+    result = _run_with(_StoppingLead(None), _LaterCredibleSubagent(), 5, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 3
 

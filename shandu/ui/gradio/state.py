@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import escape
@@ -23,8 +24,13 @@ _STAGE_WORDS = {
 _REFERENCE_LINE = re.compile(r"^- (?=\*\*\[(\d+)\])")
 # Browsers break lines at a hyphen, which splits a date across two lines.
 _ACCESS_DATE = re.compile(r"\(accessed (\d{4}-\d{2}-\d{2})\)")
-# A citation marker that is not already a link's text.
-_MARKER = re.compile(r"\[(\d+)\](?!\()")
+# A citation marker that is not already a link's text, or a code span, which
+# can hold bracketed digits like arr[1] that are not citations.
+_MARKER_OR_CODE = re.compile(r"(`+).+?\1|\[(\d+)\](?!\()")
+
+
+def _link_marker(match: re.Match[str]) -> str:
+    return f"[[{match[2]}]](#ref-{match[2]})" if match[2] else match[0]
 
 # The loop always passes through these five before it completes.
 _STEPS = ("plan", "search", "synthesize", "cite", "write")
@@ -74,6 +80,25 @@ def _field(label: str, value: object, extra_class: str = "") -> str:
         return ""
     classes = f"field {extra_class}".strip()
     return f"<span class='{classes}'>{escape(label)} <b>{text}</b></span>"
+
+
+def _outside_fences(lines: list[str]) -> Iterator[tuple[int, str]]:
+    in_fence = False
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+        elif not in_fence:
+            yield index, line
+
+
+def _section_headings(lines: list[str]) -> list[tuple[int, str]]:
+    """Line index and title of each report section, in order. The contents list
+    and the section anchors both number from this, so they cannot disagree."""
+    return [
+        (index, line[3:].strip())
+        for index, line in _outside_fences(lines)
+        if line.startswith("## ") and line[3:].strip().lower() != "references"
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,7 +195,9 @@ class GuiRunState:
                 if "hits" in event.metrics:
                     task["Hits"] = str(event.metrics["hits"])
                 if "scraped" in event.metrics:
-                    task["Scraped"] = str(event.metrics["scraped"])
+                    task["Scraped"] = str(
+                        int(task["Scraped"] or 0) + int(event.metrics["scraped"])
+                    )
 
     def apply_result(self, result: ResearchRunResult) -> None:
         self.run_id = result.run_id
@@ -262,28 +289,24 @@ class GuiRunState:
             if line.startswith("# "):
                 del lines[index]
                 break
-        section = 0
+        for number, (index, _) in enumerate(_section_headings(lines), start=1):
+            lines[index] = f"## <a id='section-{number}'></a>{lines[index][3:]}"
         in_references = False
-        for index, line in enumerate(lines):
+        for index, line in _outside_fences(lines):
             if line.startswith("## "):
                 in_references = line[3:].strip().lower() == "references"
-                if not in_references:
-                    section += 1
-                    lines[index] = f"## <a id='section-{section}'></a>{line[3:]}"
             elif in_references:
                 line = _ACCESS_DATE.sub(r"(accessed <span class='shandu-date'>\1</span>)", line)
                 lines[index] = _REFERENCE_LINE.sub(
                     lambda match: f"- <a id='ref-{match[1]}'></a>", line
                 )
             else:
-                lines[index] = _MARKER.sub(r"[[\1]](#ref-\1)", line)
+                lines[index] = _MARKER_OR_CODE.sub(_link_marker, line)
         return "\n".join(lines).lstrip("\n")
 
     def contents_html(self) -> str:
         sections = [
-            line[3:].strip()
-            for line in self.report_markdown.splitlines()
-            if line.startswith("## ") and line[3:].strip().lower() != "references"
+            title for _, title in _section_headings(self.report_markdown.splitlines())
         ]
         if len(sections) < 3:
             return ""

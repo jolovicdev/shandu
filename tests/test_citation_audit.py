@@ -321,7 +321,10 @@ class _StripAll(_StripSecond):
         outcome = await super().audit(markdown, citations, evidence)
         return AuditOutcome(
             markdown=outcome.markdown.replace(" [1]", ""),
-            verdicts=outcome.verdicts,
+            verdicts=[
+                verdict.model_copy(update={"verdict": "unsupported"})
+                for verdict in outcome.verdicts
+            ],
             llm_usage=None,
             calls=1,
         )
@@ -343,6 +346,35 @@ def test_audit_that_removes_every_marker_leaves_no_references(tmp_path) -> None:
 
     assert result.citations == []
     assert "## References" not in result.report_markdown
+
+
+class _CodeLead(_Lead):
+    async def build_final_report(self, request, iteration_summaries, evidence_payload, citations_payload, brief=None):
+        return FinalReportDraft(
+            title="T",
+            executive_summary="E",
+            markdown="# T\n\nA claim [1]. Another [2]. Use `arr[1]` here.",
+        )
+
+
+def test_audit_that_removes_every_marker_ignores_digits_in_code(tmp_path) -> None:
+    orchestrator = LeadOrchestrator(
+        lead_agent=_CodeLead(),
+        search_subagent=_Subagent(),
+        citation_agent=_Citations(),
+        run_store=RunStore(tmp_path),
+        report_service=ReportService(),
+        auditor=_StripAll(),
+    )
+
+    result = asyncio.run(
+        orchestrator.run(ResearchRequest(query="q", max_iterations=1, parallelism=1))
+    )
+
+    assert result.citations == []
+    assert result.run_stats["citation_count"] == 0
+    assert "## References" not in result.report_markdown
+    assert "`arr[1]`" in result.report_markdown
 
 
 class _RejectedAuditDesk:

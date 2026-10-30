@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from types import SimpleNamespace
 
 import pytest
 
-from shandu.agents.lead import LeadAgent
+from shandu.agents.lead import _REPORTER_EVIDENCE_BUDGET, LeadAgent
 from shandu.agents.search_subagent import SearchSubagent
 from shandu.contracts import (
     ResearchBrief,
@@ -92,6 +93,107 @@ def test_reporter_retries_empty_content_and_sums_usage() -> None:
     assert draft.markdown == "# Title\n\nBody [1]."
     assert agent.fallback_count == 0
     assert agent.last_llm_usage == {"total_tokens": 30, "cost_usd": 0.03, "llm_calls": 3}
+
+
+class _RecordingDesk:
+    def __init__(self) -> None:
+        self.inputs: list[str] = []
+
+    async def arun(self, worker, job):
+        del worker
+        self.inputs.append(job.input)
+        return SimpleNamespace(status="completed", content="# Title\n\nBody [1].", metrics={})
+
+
+@pytest.mark.parametrize(
+    ("detail_level", "sources", "limit"),
+    [("auto", 0, 400), ("auto", 2, 600), ("auto", 30, 9000), ("concise", 30, 1200), ("high", 2, 600)],
+)
+def test_report_length_follows_the_cited_sources(detail_level, sources, limit) -> None:
+    # Two copies of each work share one citation, so copies do not add length.
+    evidence = [
+        {"evidence_id": f"e{index}{copy}", "confidence": 0.9, "credibility_score": 0.9}
+        for index in range(sources)
+        for copy in "ab"
+    ]
+    citations = [
+        {"citation_id": index + 1, "evidence_ids": [f"e{index}a", f"e{index}b"]}
+        for index in range(sources)
+    ]
+    desk = _RecordingDesk()
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+    request = ResearchRequest(query="q", detail_level=detail_level)
+
+    asyncio.run(agent.build_final_report(request, [], evidence, citations))
+
+    assert f"Keep the body under {limit} words" in desk.inputs[0]
+
+
+@pytest.mark.parametrize(("records", "chars"), [(1, 130_000), (2, 70_000), (20, 7_000)])
+def test_every_record_of_a_corpus_that_fits_reaches_the_writer(records, chars) -> None:
+    line = 'a "quoted" line of text\n'
+    evidence = [
+        {
+            "evidence_id": f"e{index}",
+            "requested_url": f"https://example.org/{index}",
+            "title": f"Title {index}",
+            "snippet": "snippet " * 20,
+            "extracted_text": (line * (chars // len(line) + 1))[:chars],
+            "confidence": 0.9,
+            "credibility_score": 0.9,
+        }
+        for index in range(records)
+    ]
+    citations = [
+        {"citation_id": index + 1, "evidence_ids": [f"e{index}"]} for index in range(records)
+    ]
+    desk = _RecordingDesk()
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    asyncio.run(agent.build_final_report(_request(), [], evidence, citations))
+
+    job_input = desk.inputs[0]
+    sent = json.loads(job_input.split("Input JSON:\n", 1)[1])["evidence"]
+    assert len(sent) == records
+    assert (
+        sum(len(json.dumps(record, ensure_ascii=False)) for record in sent)
+        <= _REPORTER_EVIDENCE_BUDGET
+    )
+    assert f"Keep the body under {max(400, 300 * records)} words" in job_input
+
+
+@pytest.mark.parametrize(
+    ("entry", "sent"),
+    [
+        ({"confidence": 0.0}, 0.0),
+        ({"confidence": 0.8}, 0.8),
+        ({"confidence": None}, 0.5),
+        ({"confidence": "n/a"}, 0.5),
+        ({}, 0.5),
+    ],
+)
+def test_confidence_reaches_the_writer_as_recorded(entry, sent) -> None:
+    compact = LeadAgent._compact_evidence([{"evidence_id": "e1", **entry}], [])
+
+    assert compact[0]["confidence"] == sent
+
+
+def test_zero_confidence_ranks_last_for_the_evidence_budget() -> None:
+    evidence = [
+        {
+            "evidence_id": f"e{index}",
+            "requested_url": f"https://x.example/{index}",
+            "extracted_text": "x" * 3000,
+            "confidence": 0.0 if index == 0 else 0.3,
+            "credibility_score": 0.9,
+        }
+        for index in range(100)
+    ]
+
+    compact = LeadAgent._compact_evidence(evidence, [])
+
+    assert len(compact) < len(evidence)
+    assert "https://x.example/0" not in [record["url"] for record in compact]
 
 
 def test_reporter_falls_back_after_repeated_empty_content() -> None:

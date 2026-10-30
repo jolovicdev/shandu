@@ -81,6 +81,12 @@ Each task runs through one of two researchers, chosen per run with
   recorded as an error event.
 
 Tasks the planner marks `scholarly` also search arXiv, OpenAlex, and PubMed.
+Under `--include-domain`, a paper query carries the sites as `site:` operators
+and goes only to the indexes whose result hosts sit under one of them. arXiv
+runs for arxiv.org. PubMed runs for nih.gov, nlm.nih.gov, ncbi.nlm.nih.gov,
+pubmed.ncbi.nlm.nih.gov, or pmc.ncbi.nlm.nih.gov, so a site such as
+cancer.nih.gov does not select it. OpenAlex always runs, because its links
+include publisher pages.
 An index whose rate limit is spent sits out the wait it names, and the others
 continue; keyless OpenAlex allows about 100 searches a day.
 Pages an iteration's tasks start reading go into a shared set, so parallel tasks
@@ -102,7 +108,9 @@ flowchart TD
 
 - **Credibility** comes from a pure scoring function over the extractor's source
   classification: a per-class tier, minus penalties for undated, anonymous,
-  promotional, and secondhand pages.
+  promotional, and secondhand pages. A page whose publisher writes about itself
+  is classed by what it contains and flagged rather than scored down, so the
+  writer cites it for its own facts and attributes its measurements to it.
 - **Claims** keep only quotes that appear verbatim (ignoring whitespace and case)
   in the text the extractor read.
 - **Findings** merge claims whose word sets overlap by 80% or more, carrying every
@@ -114,8 +122,9 @@ flowchart TD
 ## 6) Stopping Rules
 
 - The adaptive loop continues while any sub-question is short of strong or
-  sources conflict, until `max_iterations`. When the brief call fails, the
-  query itself becomes the one sub-question.
+  sources conflict, until `max_iterations`. It also stops when an iteration
+  adds no finding or credible source to any sub-question. When the brief call
+  fails, the query itself becomes the one sub-question.
 - `--max-cost` stops research before the next iteration once metered spend
   reaches the budget; the report is still written. A model that reports no
   price cannot be budgeted, and the run emits an event saying so.
@@ -129,9 +138,15 @@ flowchart TD
 ## 7) Writer
 
 One call writes the report from compacted evidence: cited records first, then
-the rest by credibility, inside a fixed character budget. A reply that is empty
-or carries no heading (a provider refusal in place of the report) is retried,
-and after three attempts a deterministic report is built from the syntheses.
+the rest by credibility, inside a fixed character budget. The outline follows
+the question: the brief's deliverable sets the starting shape, a structure the
+query asks for overrides it, and headings name what each section establishes.
+Length follows the evidence too: the writer stays under 300 words per cited
+source it receives, never less than 400, and a detail level other than `auto`
+lowers that ceiling.
+A reply that is empty or carries no heading (a provider refusal in place of
+the report) is retried, and after three attempts a deterministic report is
+built from the syntheses.
 
 ## 8) Citation Guarantees
 

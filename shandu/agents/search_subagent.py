@@ -4,7 +4,7 @@ import asyncio
 import calendar
 import logging
 import re
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Awaitable, Callable
 from datetime import date
 from itertools import zip_longest
 from typing import Any, Literal
@@ -38,6 +38,7 @@ from ..runtime.calls import ProviderRejectedError, structured_call
 from ..runtime.costing import collect_llm_usage
 from ..runtime.roles import role_model
 from ..services.findings import verified_claims
+from ..services.search import _host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +74,6 @@ def _cased_title(page_title: str, hit_title: str) -> str:
         if len(page_words & hit_words) >= 0.6 * len(page_words | hit_words):
             return hit
     return page_title
-
-
-def _host_matches(url: str, domains: Collection[str]) -> bool:
-    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
-    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
 
 
 def _dated_before(published_at: str | None, since: date) -> bool:
@@ -116,6 +112,7 @@ class _ExtractionPayload(BaseModel):
     source_class: SourceClass
     authorship: Literal["named", "organizational", "anonymous"]
     is_promotional: bool
+    self_published: bool
     summarizes_inaccessible_source: bool
     claims: list[Claim]
 
@@ -130,6 +127,7 @@ def assess_source_quality(
     is_promotional: bool,
     summarizes_inaccessible_source: bool,
     has_publish_date: bool,
+    self_published: bool = False,
 ) -> tuple[float, list[str]]:
     """Score an assessed source from its provenance signals.
 
@@ -137,6 +135,9 @@ def assess_source_quality(
     date, missing author, promotional intent, and secondhand summaries. Every
     credibility constant lives here. Callers handle the non-assessed buckets
     (snippet-only, unassessed) directly.
+
+    A publisher writing about itself is the primary record of its own facts, so
+    that is flagged for the writer to attribute rather than scored down.
     """
     tiers: dict[str, float] = {
         "peer_reviewed": 0.92,
@@ -174,7 +175,7 @@ def assess_source_quality(
     if summarizes_inaccessible_source:
         score -= 0.15
         flags.append("secondhand")
-    if source_class in self_published_classes:
+    if self_published or source_class in self_published_classes:
         flags.append("self_published")
 
     return max(0.0, min(1.0, score)), flags
@@ -209,9 +210,13 @@ class SearchSubagent:
             (query, self._search, "web")
             for query in self._scoped_queries(planned, request)[: request.max_searches_per_task]
         ]
-        # Paper search ignores site: scoping, so each planned query runs once.
+        # A paper query carries every included site, so each planned query runs
+        # once and the paper service picks the indexes that can serve them.
         if task.scholarly and self._scholarly is not None:
-            searches += [(query, self._scholarly, "scholarly") for query in planned]
+            searches += [
+                (self._paper_query(query, request), self._scholarly, "scholarly")
+                for query in planned
+            ]
         outcomes = await asyncio.gather(
             *(
                 self._traced_search(service, query, source, task, request, progress_callback)
@@ -388,6 +393,11 @@ class SearchSubagent:
         ]
 
     @staticmethod
+    def _paper_query(query: str, request: ResearchRequest) -> str:
+        """The query with every included site as a site: operator."""
+        return " ".join([query, *(f"site:{domain}" for domain in request.include_domains)])
+
+    @staticmethod
     def _in_scope(url: str, published_at: str | None, request: ResearchRequest) -> bool:
         """Whether a source passes the request's domain and date filters."""
         if request.include_domains and not _host_matches(url, request.include_domains):
@@ -511,6 +521,7 @@ class SearchSubagent:
                 extraction.is_promotional,
                 extraction.summarizes_inaccessible_source,
                 page.published_at is not None,
+                self_published=extraction.self_published,
             )
         else:
             source_class = None
@@ -740,6 +751,7 @@ class SearchSubagent:
                 source_class="unknown",
                 authorship="anonymous",
                 is_promotional=False,
+                self_published=False,
                 summarizes_inaccessible_source=False,
                 claims=[],
             ),

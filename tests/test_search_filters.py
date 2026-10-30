@@ -55,6 +55,7 @@ class _ExtractDesk:
                 source_class="unknown",
                 authorship="anonymous",
                 is_promotional=False,
+                self_published=False,
                 summarizes_inaccessible_source=False,
                 claims=[],
             ),
@@ -209,7 +210,9 @@ def test_domain_scoping_keeps_every_planned_query_under_the_search_cap() -> None
         "q1 site:b.org",
         "q2 site:b.org",
     ]
-    assert papers.queries == ["q1", "q2", "q3", "q4"]
+    assert papers.queries == [
+        f"{query} site:a.org site:b.org site:c.org" for query in ("q1", "q2", "q3", "q4")
+    ]
 
 
 def test_pipeline_never_reads_a_page_already_read_or_claimed() -> None:

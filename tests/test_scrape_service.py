@@ -136,6 +136,36 @@ def test_scrape_does_not_close_caller_session() -> None:
     assert session.closed is False
 
 
+def test_cancelling_one_scraper_leaves_the_shared_fetch_to_the_others() -> None:
+    service = ScrapeService()
+    fetched: list[str] = []
+
+    async def fake_do_scrape(url: str, session: object = None) -> ScrapedPage:
+        fetched.append(url)
+        await asyncio.sleep(0.05)
+        return ScrapedPage(requested_url=url, url=url, title=url, text="t", domain="d")
+
+    service._do_scrape = fake_do_scrape  # type: ignore[assignment]
+
+    async def run_all() -> tuple[asyncio.Task, list[ScrapedPage]]:
+        first = asyncio.create_task(service.scrape("https://example.com/a"))
+        second = asyncio.create_task(service.scrape("https://example.com/a"))
+        await asyncio.sleep(0.01)
+        first.cancel()
+        third = asyncio.create_task(service.scrape("https://example.com/a"))
+        pages = await asyncio.gather(second, third)
+        await asyncio.gather(first, return_exceptions=True)
+        await asyncio.sleep(0)
+        return first, pages
+
+    first, pages = asyncio.run(run_all())
+
+    assert first.cancelled()
+    assert [page.text for page in pages] == ["t", "t"]
+    assert fetched == ["https://example.com/a"]
+    assert service._inflight == {}
+
+
 def test_page_cache_evicts_oldest() -> None:
     from shandu.services.scrape.service import _PAGE_CACHE_MAX
 

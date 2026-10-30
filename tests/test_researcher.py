@@ -82,6 +82,7 @@ class _ModelDesk:
                     source_class="unknown",
                     authorship="anonymous",
                     is_promotional=False,
+                    self_published=False,
                     summarizes_inaccessible_source=False,
                     claims=[],
                 ),
@@ -373,7 +374,7 @@ def test_parallel_researchers_do_not_read_one_page_twice() -> None:
     assert second.replies[0].startswith("Already read in this run")
 
 
-def test_researcher_paper_search_ignores_domain_scoping() -> None:
+def test_researcher_paper_search_carries_every_included_site() -> None:
     papers = _Search()
 
     async def script(tools, replies):
@@ -389,7 +390,7 @@ def test_researcher_paper_search_ignores_domain_scoping() -> None:
         )
     )
 
-    assert papers.queries == ["kivi quantization"]
+    assert papers.queries == ["kivi quantization site:arxiv.org site:nih.gov"]
 
 
 def test_researcher_reads_only_allowed_domains() -> None:

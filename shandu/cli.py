@@ -14,8 +14,8 @@ from rich.console import Console
 from rich.markup import escape
 
 from . import __version__
-from .config import config, infer_api_key_env_name
-from .contracts import EFFORT_PRESETS, ResearchRequest, ResearchRunResult, RunEvent
+from .config import api_key_env_to_keep, config, infer_api_key_env_name
+from .contracts import EFFORT_PRESETS, ReportLength, ResearchRequest, ResearchRunResult, RunEvent
 from .engine import ShanduEngine
 from .interfaces import DepthPolicy, DetailLevel
 from .runtime import get_async_runner, reset_bootstrap
@@ -28,6 +28,7 @@ console = ui.console
 err_console = Console(theme=ui.theme, stderr=True)
 
 _DETAIL_LEVELS: tuple[DetailLevel, ...] = ("concise", "standard", "high")
+_REPORT_LENGTHS: tuple[ReportLength, ...] = ("auto", "concise", "standard", "high")
 _DEPTH_POLICIES: tuple[DepthPolicy, ...] = ("adaptive", "fixed")
 
 
@@ -37,6 +38,16 @@ def _resolve_detail_level(value: str | None, fallback: DetailLevel) -> DetailLev
     if value in _DETAIL_LEVELS:
         return cast(DetailLevel, value)
     return fallback
+
+
+def _resolve_report_length(value: str | None) -> ReportLength:
+    if value in _REPORT_LENGTHS:
+        return cast(ReportLength, value)
+    return "auto"
+
+
+def _length_label(level: str) -> str:
+    return "length fits the evidence" if level == "auto" else f"{level} detail"
 
 
 def _resolve_depth_policy(value: str | None, fallback: DepthPolicy) -> DepthPolicy:
@@ -148,11 +159,14 @@ def info() -> None:
 @cli.command()
 def configure() -> None:
     """Choose the model, save its API key, and set run defaults."""
-    model = click.prompt("Default model", default=config.get("api", "model"))
+    previous_model = str(config.get("api", "model"))
+    model = click.prompt("Default model", default=previous_model)
     inferred_env_name = infer_api_key_env_name(model)
+    saved_env_name = api_key_env_to_keep(
+        str(config.get("api", "api_key_env", "")).strip(), previous_model, model
+    )
     api_key_env = click.prompt(
-        "API key env var name",
-        default=str(config.get("api", "api_key_env", "")).strip() or inferred_env_name,
+        "API key env var name", default=saved_env_name or inferred_env_name
     ).strip()
     existing_key = str(config.get("api", "api_key", "")).strip()
     key_in_env = bool(os.getenv(api_key_env))
@@ -261,16 +275,18 @@ def _parse_gui_auth(value: str | None) -> tuple[str, str] | None:
 @click.option(
     "--detail-level",
     default=None,
-    show_default=_resolve_detail_level(str(config.get("orchestration", "detail_level", "high")), "high"),
-    type=click.Choice(["concise", "standard", "high"]),
-    help="Report length: about 1,200, 2,200, or 3,600 words.",
+    show_default=_resolve_report_length(str(config.get("orchestration", "detail_level", "auto"))),
+    type=click.Choice(_REPORT_LENGTHS),
+    help="Report length. auto sizes it to the question and the evidence; concise, "
+    "standard, and high also cap it at about 1,200, 2,200, or 3,600 words.",
 )
 @click.option(
     "--depth-policy",
     default=None,
     show_default=_resolve_depth_policy(str(config.get("orchestration", "depth_policy", "adaptive")), "adaptive"),
     type=click.Choice(["adaptive", "fixed"]),
-    help="adaptive keeps searching while a sub-question lacks two credible sources; "
+    help="adaptive keeps searching while a sub-question lacks two credible sources, "
+    "and stops once an iteration adds no finding or credible source to any sub-question; "
     "fixed lets the lead agent decide.",
 )
 @click.option(
@@ -362,10 +378,6 @@ def run_command(
             'Give a question to research, like: shandu run "What caused the 2024 CrowdStrike outage?"'
         )
     diag = err_console if (json_output and not output) else console
-    default_detail = _resolve_detail_level(
-        str(config.get("orchestration", "detail_level", "high")),
-        "high",
-    )
     default_depth = _resolve_depth_policy(
         str(config.get("orchestration", "depth_policy", "adaptive")),
         "adaptive",
@@ -384,7 +396,9 @@ def run_command(
             query=question,
             max_iterations=budget(max_iterations, "max_iterations", 2),
             parallelism=budget(parallelism, "parallelism", 3),
-            detail_level=_resolve_detail_level(detail_level, default_detail),
+            detail_level=_resolve_report_length(
+                detail_level or str(config.get("orchestration", "detail_level", "auto"))
+            ),
             depth_policy=_resolve_depth_policy(depth_policy, default_depth),
             max_results_per_query=budget(max_results_per_query, "max_results_per_query", 8),
             max_pages_per_task=budget(max_pages_per_task, "max_pages_per_task", 6),
@@ -406,9 +420,12 @@ def run_command(
 
     engine = ShanduEngine.from_config()
     if clarify:
-        request = request.model_copy(
-            update={"clarifications": _ask_clarifications(engine, question)}
-        )
+        try:
+            clarifications = _ask_clarifications(engine, question)
+        except ProviderRejectedError as exc:
+            engine.close()
+            raise click.ClickException(f"{exc}\n{_rejection_fix(exc)}") from None
+        request = request.model_copy(update={"clarifications": clarifications})
     diag.print(
         ui.header(
             request.query,
@@ -417,7 +434,7 @@ def run_command(
                 _count(request.max_iterations, "iteration"),
                 _count(request.parallelism, "subagent"),
                 f"{request.researcher} researcher",
-                f"{request.detail_level} detail",
+                _length_label(request.detail_level),
             ],
         )
     )
@@ -605,8 +622,8 @@ def resume_command(
 @click.option(
     "--detail-level",
     default=None,
-    type=click.Choice(["concise", "standard", "high"]),
-    help="Report length: about 1,200, 2,200, or 3,600 words. Defaults to the run's own.",
+    type=click.Choice(_REPORT_LENGTHS),
+    help="Report length, as for run. Defaults to the run's own.",
 )
 @click.option("--model", default=None, help="Model for the report writer.")
 @click.option("--no-audit", is_flag=True, help="Skip checking citations against sources.")
@@ -641,7 +658,7 @@ def report_command(
             [
                 f"rewriting report {run_id[:8]}",
                 model or str(config.get("api", "model")),
-                f"{detail_level or request.detail_level} detail",
+                _length_label(detail_level or request.detail_level),
             ],
         )
     )

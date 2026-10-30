@@ -45,6 +45,14 @@ _REPORTER_EVIDENCE_BUDGET = 120_000
 # Floor for one record's extracted text. A record gets an equal share of the
 # budget when that is larger, so a small corpus reaches the reporter whole.
 _MIN_EVIDENCE_TEXT_CHARS = 2200
+# Report length follows the evidence. Reports that read well carry 100 to 215
+# words per cited source; reports padded past their evidence ran 660 to 1,050.
+# 300 per source leaves the first untouched and stops the second.
+_WORDS_PER_SOURCE = 300
+# A report with one citable source or none still states its answer and limits.
+_MIN_REPORT_WORDS = 400
+# A detail level other than "auto" also caps the length.
+_LENGTH_CEILINGS = {"concise": 1200, "standard": 2200, "high": 3600}
 # A reasoning model sometimes drafts the whole report inside its reasoning
 # channel and then stops, so the call completes with empty content. The report
 # is the one call a run cannot do without, so that case is retried.
@@ -101,6 +109,10 @@ class _SynthesisPayload(BaseModel):
 
 def _brief_payload(brief: ResearchBrief | None) -> dict[str, Any] | None:
     return brief.model_dump(mode="json") if brief is not None else None
+
+
+def _record_size(record: dict[str, Any]) -> int:
+    return len(json.dumps(record, ensure_ascii=False, default=str))
 
 
 class LeadAgent:
@@ -333,18 +345,20 @@ class LeadAgent:
     ) -> FinalReportDraft:
         self.last_llm_usage = None
         self.last_call_count = 0
+        evidence = self._compact_evidence(evidence_payload, citations_payload)
         payload = {
             "query": request.query,
             "brief": _brief_payload(brief),
             "detail_level": request.detail_level,
             "iterations": [summary.model_dump(mode="json") for summary in iteration_summaries],
-            "evidence": self._compact_evidence(evidence_payload, citations_payload),
+            "evidence": evidence,
             "citations": self._compact_citations(citations_payload),
             "today": date.today().isoformat(),
         }
-        target_words = self._word_target(request.detail_level)
+        sources = len({record["citation_id"] for record in evidence} - {None})
+        max_words = self._word_limit(request.detail_level, sources)
         markdown, reason = await self._markdown_call(
-            "LeadReporter", "reporter", reporter_instructions(), reporter_job(payload, target_words)
+            "LeadReporter", "reporter", reporter_instructions(), reporter_job(payload, max_words)
         )
         if markdown is not None:
             return self._draft_from_markdown(markdown, request.query)
@@ -468,15 +482,11 @@ class LeadAgent:
         citations_payload: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         citation_by_evidence = LeadAgent._citation_ids(citations_payload)
-        text_chars = max(
-            _MIN_EVIDENCE_TEXT_CHARS,
-            _REPORTER_EVIDENCE_BUDGET // max(1, len(evidence_payload)),
-        )
         compact: list[dict[str, Any]] = []
         scores: list[float] = []
         for entry in evidence_payload:
             try:
-                confidence = float(entry.get("confidence", 0.5) or 0.5)
+                confidence = float(entry.get("confidence"))
             except (TypeError, ValueError):
                 confidence = 0.5
             try:
@@ -495,7 +505,7 @@ class LeadAgent:
                     "domain": str(entry.get("domain", "") or ""),
                     "title": str(entry.get("title", "")),
                     "snippet": str(entry.get("snippet", "")),
-                    "extracted_text": str(entry.get("extracted_text", ""))[:text_chars],
+                    "extracted_text": str(entry.get("extracted_text", "")),
                     "confidence": confidence,
                     "published_at": entry.get("published_at"),
                     "source_class": entry.get("source_class"),
@@ -503,28 +513,50 @@ class LeadAgent:
                     "quality_flags": entry.get("quality_flags") or [],
                 }
             )
+        # The share is what the budget leaves after every record's own fields.
+        overheads = [
+            _record_size({**record, "extracted_text": ""}) for record in compact
+        ]
+        text_chars = max(
+            _MIN_EVIDENCE_TEXT_CHARS,
+            (_REPORTER_EVIDENCE_BUDGET - sum(overheads)) // max(1, len(compact)),
+        )
+        compact = [
+            LeadAgent._fit_record(record, overhead + text_chars)
+            for record, overhead in zip(compact, overheads)
+        ]
         return LeadAgent._apply_evidence_budget(compact, scores)
+
+    @staticmethod
+    def _fit_record(record: dict[str, Any], room: int) -> dict[str, Any]:
+        # JSON escaping makes a record serialize longer than its text, and every
+        # cut character removes at least one serialized character, so cutting
+        # the overflow brings the record within room. The text is clipped to
+        # room first so a long page is not measured whole.
+        text = record["extracted_text"][:room]
+        overflow = _record_size({**record, "extracted_text": text}) - room
+        if overflow > 0:
+            text = text[: max(0, len(text) - overflow)]
+        return {**record, "extracted_text": text}
 
     @staticmethod
     def _apply_evidence_budget(
         compact: list[dict[str, Any]], scores: list[float]
     ) -> list[dict[str, Any]]:
-        sizes = [
-            len(json.dumps(record, ensure_ascii=False, default=str))
-            for record in compact
-        ]
         # Cited records claim the budget first, then the rest by score.
         order = sorted(
             range(len(compact)),
             key=lambda index: (compact[index].get("citation_id") is None, -scores[index]),
         )
-        kept: set[int] = set()
+        kept: dict[int, dict[str, Any]] = {}
         used = 0
         for index in order:
-            if used + sizes[index] <= _REPORTER_EVIDENCE_BUDGET:
-                kept.add(index)
-                used += sizes[index]
-        return [record for index, record in enumerate(compact) if index in kept]
+            record = LeadAgent._fit_record(compact[index], _REPORTER_EVIDENCE_BUDGET - used)
+            size = _record_size(record)
+            if used + size <= _REPORTER_EVIDENCE_BUDGET:
+                kept[index] = record
+                used += size
+        return [kept[index] for index in sorted(kept)]
 
     @staticmethod
     def _compact_citations(citations_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -617,12 +649,9 @@ class LeadAgent:
         return tasks
 
     @staticmethod
-    def _word_target(detail_level: str) -> int:
-        if detail_level == "concise":
-            return 1200
-        if detail_level == "standard":
-            return 2200
-        return 3600
+    def _word_limit(detail_level: str, sources: int) -> int:
+        limit = max(_MIN_REPORT_WORDS, _WORDS_PER_SOURCE * sources)
+        return min(limit, _LENGTH_CEILINGS.get(detail_level, limit))
 
     @staticmethod
     def _extract_title(markdown: str, fallback_query: str) -> str:

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from shandu.contracts import (
+    Claim,
     ResearchBrief,
     EvidenceRecord,
     FinalReportDraft,
@@ -16,6 +17,7 @@ from shandu.contracts import (
 )
 from shandu.engine import ShanduEngine
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
+from shandu.services.findings import build_findings
 from shandu.services.report import ReportService
 from shandu.services.run_store import RunNotFoundError, RunStore
 
@@ -178,6 +180,34 @@ def test_rewrite_report_uses_stored_evidence_without_searching(tmp_path) -> None
     assert lead.report_request is not None
     assert lead.report_request.detail_level == "concise"
     assert store.report_path(run_id).is_file()
+
+
+def test_load_result_carries_the_findings_of_the_stored_evidence(tmp_path) -> None:
+    store = RunStore(tmp_path)
+    store.create("a", ResearchRequest(query="q"), None)
+    record = EvidenceRecord(
+        evidence_id="e1",
+        task_id="t",
+        query="q",
+        requested_url="https://example.com/a",
+        title="T",
+        snippet="s",
+        extracted_text="The outage began at 04:09 UTC on July 19.",
+        claims=[
+            Claim(
+                statement="The outage began at 04:09 UTC.",
+                quote="The outage began at 04:09 UTC on July 19.",
+            )
+        ],
+    )
+    store.append_evidence("a", 0, [record])
+
+    result = store.load_result("a")
+
+    assert [finding.statement for finding in result.findings] == [
+        "The outage began at 04:09 UTC."
+    ]
+    assert result.findings == build_findings([record])
 
 
 def test_list_runs_newest_first_and_rejects_path_ids(tmp_path) -> None:

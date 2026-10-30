@@ -19,6 +19,7 @@ from ..contracts import (
     ResearchRunResult,
     RunEvent,
 )
+from .findings import build_findings
 
 
 class RunNotFoundError(LookupError):
@@ -253,6 +254,7 @@ class RunStore:
         citations = _read_json(directory / "citations.json") or []
         audit = _read_json(directory / "audit.json") or []
         result = _read_json(directory / "result.json") or {}
+        evidence = [record for _, record in stored.evidence]
         return ResearchRunResult(
             run_id=run_id,
             request=stored.request,
@@ -260,7 +262,8 @@ class RunStore:
             report_markdown=report.read_text(encoding="utf-8") if report.is_file() else "",
             citations=[CitationEntry.model_validate(entry) for entry in citations],
             citation_audit=[CitationVerdict.model_validate(entry) for entry in audit],
-            evidence=[record for _, record in stored.evidence],
+            evidence=evidence,
+            findings=build_findings(evidence),
             iteration_summaries=[item.synthesis for item in stored.iterations],
             run_stats=dict(result.get("run_stats") or {}),
         )

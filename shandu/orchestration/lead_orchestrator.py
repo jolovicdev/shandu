@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
@@ -35,7 +34,6 @@ from ..services.run_store import CompletedIteration, RunStore, StoredRun
 
 
 logger = logging.getLogger(__name__)
-_CITATION_MARKER = re.compile(r"\[\d+\]")
 
 
 def _empty_llm_totals() -> dict[str, Any]:
@@ -249,8 +247,7 @@ class LeadOrchestrator:
                 cost_hits = usage.get("cost_events", 1 if "cost_usd" in usage else 0)
                 if isinstance(cost_hits, int):
                     llm_totals["cost_events"] += cost_hits
-                if not rewrite:
-                    self._store.record_spend(run_id, llm_totals)
+                self._store.record_spend(run_id, llm_totals)
                 return usage
 
             def with_model_call_count(
@@ -570,7 +567,8 @@ class LeadOrchestrator:
                     break
 
                 if request.depth_policy == "adaptive":
-                    if not self._adaptive_should_continue(synthesis):
+                    previous = state.summaries[-2] if len(state.summaries) > 1 else None
+                    if not self._adaptive_should_continue(synthesis, previous):
                         break
                 elif not synthesis.continue_loop:
                     break
@@ -637,12 +635,15 @@ class LeadOrchestrator:
                 # Re-rendering drops references that lost their last marker
                 # and renumbers the rest. The renderer keeps the whole ledger
                 # for a body without markers, so an audit that removed every
-                # marker leaves no references to render.
-                body = outcome.markdown.partition("\n## References\n")[0]
+                # marker leaves no references to render. A marker survives
+                # unless its verdict is unsupported; the auditor masks code
+                # and links, so a bracketed number there is not one.
                 rendered_report = self._report.render_result(
                     request,
                     draft.model_copy(update={"markdown": outcome.markdown}),
-                    rendered_report.citations if _CITATION_MARKER.search(body) else [],
+                    rendered_report.citations
+                    if any(verdict.verdict != "unsupported" for verdict in citation_audit)
+                    else [],
                 )
                 await emit(
                     RunEvent(
@@ -771,9 +772,20 @@ class LeadOrchestrator:
             fallback_reasons.append(f"{method}: {reason}"[:300])
 
     @staticmethod
-    def _adaptive_should_continue(synthesis: IterationSynthesis) -> bool:
+    def _adaptive_should_continue(
+        synthesis: IterationSynthesis, previous: IterationSynthesis | None = None
+    ) -> bool:
         # The brief's checklist decides: keep going while any sub-question
-        # lacks two independent credible sources, or while sources conflict.
+        # lacks two independent credible sources, or while sources conflict,
+        # but only while an iteration still moves the checklist. Claims
+        # without a sub-question tag and pages that yield no claims leave it
+        # where it was.
+        if previous is not None and previous.coverage_matrix:
+            if not any(
+                now.findings > then.findings or now.credible_sources > then.credible_sources
+                for then, now in zip(previous.coverage_matrix, synthesis.coverage_matrix)
+            ):
+                return False
         contradictions = synthesis.coverage.contradiction_count if synthesis.coverage else 0
         return bool(synthesis.open_sub_questions) or contradictions > 0
 

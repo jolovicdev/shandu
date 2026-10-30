@@ -275,6 +275,7 @@ def test_extraction_preserves_page_order_under_concurrency() -> None:
                     source_class="unknown",
                     authorship="anonymous",
                     is_promotional=False,
+                    self_published=False,
                     summarizes_inaccessible_source=False,
                     claims=[],
                 ),
@@ -374,6 +375,19 @@ def test_assess_source_quality_penalties_lower_score() -> None:
     assert promo < base and "promotional" in promo_flags
 
 
+def test_a_publisher_writing_about_itself_is_flagged_not_scored_down() -> None:
+    independent, independent_flags = assess_source_quality(
+        "primary", "organizational", False, False, True
+    )
+    own, own_flags = assess_source_quality(
+        "primary", "organizational", False, False, True, self_published=True
+    )
+
+    assert own == independent
+    assert "self_published" in own_flags
+    assert "self_published" not in independent_flags
+
+
 def test_assess_source_quality_clamps() -> None:
     worst, _ = assess_source_quality("social_profile", "anonymous", True, True, False)
     assert worst == 0.0
@@ -390,6 +404,7 @@ def test_execute_task_populates_source_quality_on_success() -> None:
             source_class="journalism",
             authorship="named",
             is_promotional=False,
+            self_published=True,
             summarizes_inaccessible_source=False,
             claims=[],
         )
@@ -421,6 +436,7 @@ def test_execute_task_populates_source_quality_on_success() -> None:
     assert ev.relevance_score == 0.82
     assert "snippet_only" not in ev.quality_flags
     assert "unassessed" not in ev.quality_flags
+    assert "self_published" in ev.quality_flags
 
 
 def test_execute_task_fetch_error_is_snippet_only() -> None:
@@ -506,6 +522,7 @@ def test_extract_completed_trace_carries_credibility() -> None:
             source_class="official",
             authorship="organizational",
             is_promotional=False,
+            self_published=False,
             summarizes_inaccessible_source=False,
             claims=[],
         )
@@ -666,6 +683,7 @@ def _three_page_task(scrape: _BlockedPages) -> list:
         source_class="unknown",
         authorship="anonymous",
         is_promotional=False,
+        self_published=False,
         summarizes_inaccessible_source=False,
         claims=[],
     )
@@ -753,6 +771,7 @@ def test_extraction_calls_share_one_bounded_semaphore() -> None:
                     source_class="unknown",
                     authorship="anonymous",
                     is_promotional=False,
+                    self_published=False,
                     summarizes_inaccessible_source=False,
                     claims=[],
                 ),
@@ -795,6 +814,7 @@ def test_extraction_uses_constant_worker_name_across_tasks() -> None:
                     source_class="unknown",
                     authorship="anonymous",
                     is_promotional=False,
+                    self_published=False,
                     summarizes_inaccessible_source=False,
                     claims=[],
                 ),

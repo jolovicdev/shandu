@@ -12,7 +12,7 @@ from typing import Any
 
 import aiohttp
 
-from .search import SearchHit
+from .search import SearchHit, _host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,14 @@ _PUBMED_INTERVAL_SECONDS = 0.5
 _SNIPPET_CHARS = 400
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 _SITE_OPERATOR = re.compile(r"\s*\bsite:\S+")
+_SITE = re.compile(r"\bsite:(\S+)")
+# Where each index's results live. OpenAlex is absent because it always runs:
+# its links include publisher pages, and for gold open-access journals the
+# open-access PDF it prefers is on the publisher's own host.
+_INDEX_URLS = {
+    "arxiv": ("https://arxiv.org/",),
+    "pubmed": ("https://pubmed.ncbi.nlm.nih.gov/", "https://pmc.ncbi.nlm.nih.gov/"),
+}
 # Provider records sometimes carry markup debris after the URL.
 _CLEAN_URL = re.compile(r"https?://[^\s<>\"']+")
 _RATE_LIMITED_RETRY_SECONDS = 2.0
@@ -101,8 +109,10 @@ class ScholarlySearchService:
     """Searches arXiv, OpenAlex, and PubMed and merges their hits.
 
     It has the same interface as the web search service, so a research task
-    sends its queries here as well when papers can answer it. A provider that
-    fails drops out of that query; the query fails only when all of them do.
+    sends its queries here as well when papers can answer it. A query's site:
+    operators limit it to the providers whose results can be on those sites. A
+    provider that fails drops out of that query; the query fails only when all
+    the providers that ran do.
     """
 
     def __init__(self) -> None:
@@ -122,6 +132,14 @@ class ScholarlySearchService:
             "openalex": self._search_openalex,
             "pubmed": self._search_pubmed,
         }
+        sites = [site.lower().removeprefix("www.") for site in _SITE.findall(query)]
+        if sites:
+            providers = {
+                name: search
+                for name, search in providers.items()
+                if name not in _INDEX_URLS
+                or any(_host_matches(url, sites) for url in _INDEX_URLS[name])
+            }
         now = time.monotonic()
         resting = {name for name in providers if self._resting_until.get(name, 0.0) > now}
         searching = {

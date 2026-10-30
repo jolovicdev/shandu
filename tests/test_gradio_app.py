@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import re
 import threading
@@ -266,6 +267,16 @@ def test_effort_from_settings_keeps_the_saved_settings(monkeypatch) -> None:
     assert (request.researcher, request.audit, request.max_cost_usd) == ("pipeline", True, None)
 
 
+def test_a_run_without_a_saved_length_fits_the_report_to_its_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(
+        layout_module, "load_defaults", lambda: dataclasses.replace(_SAVED, detail_level="")
+    )
+
+    request = _capture_request(monkeypatch, "settings", "pipeline", "settings", "", True, "", "", "")
+
+    assert request.detail_level == "auto"
+
+
 def test_a_malformed_since_date_asks_for_a_date() -> None:
     outputs = next(layout_module._run_action("q", since_value="31/01/2025"))
 
@@ -313,6 +324,32 @@ def test_save_and_run_share_runtime_concurrency_group() -> None:
 
     assert groups["_save_action"] == ("shandu_runtime", 1)
     assert groups["_run_action"] == ("shandu_runtime", 1)
+
+
+def test_opening_a_saved_report_does_not_queue_behind_a_run() -> None:
+    demo = build_gui()
+    opener = next(dep for dep in demo.fns.values() if getattr(dep.fn, "__name__", "") == "_open_report")
+
+    assert opener.concurrency_id != "shandu_runtime"
+
+
+def test_opening_a_saved_report_leaves_the_live_run_of_that_session_alone(
+    monkeypatch, tmp_path
+) -> None:
+    from shandu.contracts import ResearchRequest
+    from shandu.services.run_store import RunStore
+
+    monkeypatch.setitem(config._config["runtime"], "storage_dir", str(tmp_path))
+    RunStore(tmp_path / "runs").create("a", ResearchRequest(query="first question"), None)
+    RunStore(tmp_path / "runs").save_report("a", "# first question", [], {})
+    shown = layout_module._library_samples(layout_module.list_recent_reports())
+    monkeypatch.setitem(layout_module._ACTIVE_RUNS, "s1", threading.Event())
+
+    running = layout_module._open_report(shown[0], SimpleNamespace(session_hash="s1"))
+    elsewhere = layout_module._open_report(shown[0], SimpleNamespace(session_hash="s2"))
+
+    assert running == (gr.skip(),) * 13
+    assert "first question" in elsewhere[1]
 
 
 def test_launch_gui_allows_runs_dir(monkeypatch, tmp_path) -> None:
@@ -365,6 +402,22 @@ def test_gradio_evidence_counts_every_task_while_running() -> None:
         )
 
     assert "evidence <b>7</b>" in state.strip_html(running=True)
+
+
+def test_gradio_pages_read_add_up_over_a_subagents_scrape_events() -> None:
+    state = GuiRunState()
+    for task_id, scraped in (("t1", 1), ("t1", 0), ("t1", 1), ("t2", 4)):
+        state.apply_event(
+            RunEvent(
+                stage="search",
+                message=f"Task {task_id} scrape completed",
+                metrics={"trace_type": "scrape_completed", "scraped": scraped},
+                payload={"task_id": task_id},
+            )
+        )
+
+    assert [row["Scraped"] for row in state.task_rows.values()] == ["2", "4"]
+    assert "pages <b>6</b>" in state.strip_html(running=True)
 
 
 def test_gradio_stopped_run_marks_open_subagents_stopped() -> None:
@@ -493,7 +546,8 @@ def test_each_visit_loads_settings_and_each_run_starts_after_its_check_passes() 
 def test_citations_and_contents_link_within_the_report() -> None:
     state = GuiRunState()
     state.report_markdown = (
-        "# Title\n\n## Summary\n\nA fact [1][2], see [Source](https://x.org).\n\n"
+        "# Title\n\n## Summary\n\nA fact [1][2], see [Source](https://x.org). "
+        "Run `arr[1]` first.\n\n```\nx = data[2]\n## install step\n```\n\n"
         "## Analysis\n\nMore [2].\n\n## Risks\n\nNone.\n\n## References\n\n"
         '- **[1] a.org** - "A". [Source](https://a.org)\n'
         '- **[2] b.org** - "B". [Source](https://b.org) (accessed 2026-10-28)\n'
@@ -503,8 +557,11 @@ def test_citations_and_contents_link_within_the_report() -> None:
     contents = state.contents_html()
 
     assert "A fact [[1]](#ref-1)[[2]](#ref-2), see [Source](https://x.org)." in body
+    assert "Run `arr[1]` first." in body
+    assert "\nx = data[2]\n## install step\n" in body
     assert "## <a id='section-2'></a>Analysis" in body
     assert "## References" in body
     assert "- <a id='ref-2'></a>**[2] b.org**" in body
     assert "(accessed <span class='shandu-date'>2026-10-28</span>)" in body
     assert "<a href='#section-3'>Risks</a>" in contents
+    assert "install step" not in contents

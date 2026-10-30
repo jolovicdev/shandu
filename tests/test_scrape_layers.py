@@ -19,6 +19,7 @@ from shandu.services.scrape.extraction import (
     _detect_fetch_error,
     _extract_html,
     _extract_published_at,
+    _extract_site_name,
     _extract_with_bs4,
     _extract_with_readability,
     _extract_with_trafilatura,
@@ -403,6 +404,19 @@ def test_extract_published_at_finds_known_sources(head, expected) -> None:
     html = f"<html><head>{head}</head><body></body></html>"
     assert _extract_published_at(html) == expected
 
+
+
+def test_site_name_and_published_date_are_read_without_a_beautifulsoup_tree() -> None:
+    html = (
+        '<html><head><meta property="og:site_name" content="Example News">'
+        '<meta property="article:published_time" content="2024-03-01"></head>'
+        "<body></body></html>"
+    )
+    with mock.patch("shandu.services.scrape.extraction.BeautifulSoup") as soup:
+        assert _extract_site_name(html) == "Example News"
+        assert _extract_published_at(html) == "2024-03-01"
+
+    assert soup.call_count == 0
 
 
 def test_detect_fetch_error_detects_paywall() -> None:

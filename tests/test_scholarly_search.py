@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+
+import pytest
 
 from shandu.services import scholarly
 from shandu.services.scholarly import ScholarlySearchService
@@ -71,11 +74,13 @@ def _service(failing: set[str] = frozenset()) -> ScholarlySearchService:
     }
 
     async def fake_get(url, params):
+        service.seen_urls.append(url)
         service.seen_params.append(params)
         if any(name in url for name in failing):
             raise ConnectionError(f"{url} down")
         return responses[url]
 
+    service.seen_urls = []
     service.seen_params = []
     service._get = fake_get
     return service
@@ -83,7 +88,7 @@ def _service(failing: set[str] = frozenset()) -> ScholarlySearchService:
 
 def test_merges_providers_round_robin_with_dedup_and_parsed_fields() -> None:
     service = _service()
-    hits = asyncio.run(service.search("q site:example.org", 8))
+    hits = asyncio.run(service.search("q site:arxiv.org site:nih.gov", 8))
 
     assert {"search_query": "all:q", "max_results": 8, "sortBy": "relevance"} in (
         service.seen_params
@@ -119,6 +124,49 @@ def test_query_fails_only_when_every_provider_fails() -> None:
     error = broken.last_error_for("q", 8)
     assert error is not None
     assert "arxiv" in error and "openalex" in error and "pubmed" in error
+
+
+_INDEX_URLS = {
+    "arxiv": scholarly._ARXIV_URL,
+    "openalex": scholarly._OPENALEX_URL,
+    "pubmed": scholarly._PUBMED_SEARCH_URL,
+}
+
+
+@pytest.mark.parametrize(
+    ("sites", "searched"),
+    [
+        ("", {"arxiv", "openalex", "pubmed"}),
+        (" site:nature.com", {"openalex"}),
+        (" site:arxiv.org", {"arxiv", "openalex"}),
+        (" site:www.arxiv.org", {"arxiv", "openalex"}),
+        (" site:ArXiv.org", {"arxiv", "openalex"}),
+        (" site:nih.gov", {"openalex", "pubmed"}),
+        (" site:ncbi.nlm.nih.gov", {"openalex", "pubmed"}),
+        (" site:nature.com site:arxiv.org", {"arxiv", "openalex"}),
+    ],
+)
+def test_site_operators_limit_a_query_to_the_indexes_that_can_serve_them(
+    sites, searched
+) -> None:
+    service = _service()
+
+    asyncio.run(service.search(f"q{sites}", 8))
+
+    assert {name for name, url in _INDEX_URLS.items() if url in service.seen_urls} == searched
+
+
+def test_a_scoped_query_fails_only_when_every_index_that_ran_fails() -> None:
+    only_openalex = _service(failing={"openalex"})
+    assert asyncio.run(only_openalex.search("q site:nature.com", 8)) == []
+    error = only_openalex.last_error_for("q site:nature.com", 8)
+    assert error is not None and "openalex" in error and "pubmed" not in error
+
+    resting = _service(failing={"arxiv"})
+    resting._resting_until["openalex"] = time.monotonic() + 600
+    assert asyncio.run(resting.search("q site:arxiv.org", 8)) == []
+    error = resting.last_error_for("q site:arxiv.org", 8)
+    assert error is not None and "arxiv" in error and "openalex" in error
 
 
 def test_titles_in_other_scripts_are_not_merged_as_duplicates() -> None:

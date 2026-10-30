@@ -55,12 +55,46 @@ def infer_api_key_env_name(model: str) -> str:
     return f"{normalized}_API_KEY"
 
 
+def api_key_env_to_keep(api_key_env: str, previous_model: str, model: str) -> str:
+    # A variable that only named the previous model's usual key would carry
+    # that key over to a new model's provider.
+    if model != previous_model and api_key_env == infer_api_key_env_name(previous_model):
+        return ""
+    return api_key_env
+
+
 DEFAULT_MODEL = "deepseek/deepseek-flash"
 DEFAULT_STORAGE_DIR = "~/.shandu/storage"
 # Research roles that can each run on their own model.
 Role = Literal["planner", "researcher", "extractor", "synthesizer", "writer", "auditor"]
 ROLES: tuple[Role, ...] = get_args(Role)
-_LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+# Releases before 3.2 saved the whole config, so their config.json holds that
+# release's defaults beside the user's choices. In a file of that shape these
+# values load as unset. The last column marks values that load as unset in any
+# file.
+_LEGACY_DEFAULTS: tuple[tuple[str, str, Any, bool], ...] = (
+    ("api", "model", "deepseek/deepseek-chat", False),
+    ("api", "model", "deepseek/deepseek-v4-flash", True),
+    ("api", "max_tokens", 8192, False),
+    ("api", "max_tokens", 16384, False),
+    ("runtime", "storage_dir", ".blackgeorge", False),
+    ("orchestration", "max_results_per_query", 5, False),
+    ("orchestration", "max_pages_per_task", 3, False),
+    ("orchestration", "detail_level", "high", False),
+)
+# Every release that saved the whole config wrote these runtime keys. Neither
+# `shandu configure` nor the GUI writes that section.
+_WHOLE_CONFIG_RUNTIME_KEYS = frozenset(
+    {"storage_dir", "structured_output_retries", "max_iterations", "max_tool_calls"}
+)
+
+
+def _is_legacy_default(section: str, key: str, value: Any, whole_config: bool) -> bool:
+    return any(
+        (legacy_section, legacy_key, legacy_value) == (section, key, value)
+        and (whole_config or in_any_file)
+        for legacy_section, legacy_key, legacy_value, in_any_file in _LEGACY_DEFAULTS
+    )
 
 
 DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
@@ -89,7 +123,7 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "parallelism": 3,
         "max_results_per_query": 8,
         "max_pages_per_task": 6,
-        "detail_level": "high",
+        "detail_level": "auto",
         "depth_policy": "adaptive",
     },
     "search": {
@@ -131,6 +165,10 @@ class Config:
         try:
             with self._path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
+            runtime = payload.get("runtime")
+            whole_config = (
+                isinstance(runtime, dict) and _WHOLE_CONFIG_RUNTIME_KEYS <= runtime.keys()
+            )
             for section, values in payload.items():
                 if not isinstance(values, dict):
                     continue
@@ -138,11 +176,7 @@ class Config:
                 for key, value in values.items():
                     if key in defaults and defaults[key] == value:
                         continue
-                    if (
-                        section == "api"
-                        and key == "model"
-                        and value == _LEGACY_DEFAULT_MODEL
-                    ):
+                    if _is_legacy_default(section, key, value, whole_config):
                         continue
                     self._overlay.setdefault(section, {})[key] = value
                     self._config.setdefault(section, {})[key] = value

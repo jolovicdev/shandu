@@ -6,9 +6,10 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from types import ModuleType
 from typing import Any, Protocol, cast
+from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
@@ -41,6 +42,11 @@ class SearchHit(BaseModel):
     title: str
     snippet: str
     published_at: str | None = None
+
+
+def _host_matches(url: str, domains: Collection[str]) -> bool:
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
 
 
 class _DDGSClient(Protocol):
@@ -125,16 +131,14 @@ class SearchService:
         if cached is not None:
             return cached
 
-        in_flight = self._inflight.get(key)
-        if in_flight is not None:
-            return await in_flight
-
-        task = asyncio.create_task(self._do_search(key, query, max_results))
-        self._inflight[key] = task
-        try:
-            return await task
-        finally:
-            self._inflight.pop(key, None)
+        task = self._inflight.get(key)
+        if task is None:
+            task = asyncio.create_task(self._do_search(key, query, max_results))
+            self._inflight[key] = task
+            task.add_done_callback(lambda _: self._inflight.pop(key, None))
+        # Shielded so that one caller's cancellation leaves the search the
+        # other callers wait on running.
+        return await asyncio.shield(task)
 
     async def _do_search(self, key: str, query: str, max_results: int) -> list[SearchHit]:
         self._errors.pop(key, None)

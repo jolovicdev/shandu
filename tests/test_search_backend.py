@@ -75,6 +75,41 @@ def test_search_service_bounds_concurrent_backend_calls() -> None:
     assert 1 < tracker["peak"] <= 4
 
 
+class _SlowClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def text(self, *, query, region, safesearch, max_results, backend):
+        del query, region, safesearch, max_results, backend
+        self.calls += 1
+        time.sleep(0.05)
+        return [{"href": "https://x.example/a", "title": "t", "body": "b"}]
+
+
+def test_cancelling_one_searcher_leaves_the_shared_search_to_the_others() -> None:
+    service = SearchService()
+    client = _SlowClient()
+    service._ddgs = lambda *, timeout: client
+
+    async def run_all() -> tuple[asyncio.Task, list]:
+        first = asyncio.create_task(service.search("q", 3))
+        second = asyncio.create_task(service.search("q", 3))
+        await asyncio.sleep(0.01)
+        first.cancel()
+        third = asyncio.create_task(service.search("q", 3))
+        results = await asyncio.gather(second, third)
+        await asyncio.gather(first, return_exceptions=True)
+        await asyncio.sleep(0)
+        return first, results
+
+    first, results = asyncio.run(run_all())
+
+    assert first.cancelled()
+    assert [[hit.url for hit in hits] for hits in results] == [["https://x.example/a"]] * 2
+    assert client.calls == 1
+    assert service._inflight == {}
+
+
 class _FlakyClient:
     def __init__(self) -> None:
         self.calls = 0

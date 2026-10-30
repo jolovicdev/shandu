@@ -3,7 +3,10 @@ from __future__ import annotations
 import math
 import os
 import shutil
+import signal
+import sys
 from collections.abc import Callable, Coroutine
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -12,6 +15,7 @@ import click
 from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
+from rich.text import Text
 
 from . import __version__
 from .config import api_key_env_to_keep, config, infer_api_key_env_name
@@ -21,7 +25,7 @@ from .interfaces import DepthPolicy, DetailLevel
 from .runtime import get_async_runner, reset_bootstrap
 from .runtime.calls import ProviderRejectedError
 from .services.run_store import RunNotFoundError
-from .ui import ShanduUI
+from .ui import ShanduUI, intro
 
 ui = ShanduUI()
 console = ui.console
@@ -92,6 +96,13 @@ class _Day(click.ParamType):
 _COMMAND_ORDER = (
     "run", "aisearch", "resume", "report", "list", "show", "inspect", "gui", "info", "configure", "clean",
 )
+# How the home screen groups the commands, with the argument each one takes.
+_HOME_SECTIONS = (
+    ("Research", ('run "question"', 'aisearch "question"', "resume RUN_ID", "report RUN_ID")),
+    ("Runs", ("list", "show RUN_ID", "inspect RUN_ID")),
+    ("Setup", ("gui", "info", "configure", "clean")),
+)
+_EXAMPLE = 'shandu run "What caused the 2024 CrowdStrike outage?"'
 
 
 class _OrderedGroup(click.Group):
@@ -104,15 +115,28 @@ class _OrderedGroup(click.Group):
 
 @click.group(
     cls=_OrderedGroup,
+    invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"], "max_content_width": 100},
 )
 @click.version_option(__version__, prog_name="shandu")
-def cli() -> None:
+@click.pass_context
+def cli(ctx: click.Context) -> None:
     """Deep research from the terminal.
 
     Searches the web and papers, reads the pages, and writes a report with
     citations. Start with: shandu run "your question"
     """
+    # The UI draws with block and check-mark glyphs. A stream in a legacy
+    # encoding, such as Windows output redirected to a file, prints "?" for
+    # them instead of raising.
+    for stream in (sys.stdout, sys.stderr):
+        if not (getattr(stream, "encoding", None) or "").lower().startswith("utf") and hasattr(
+            stream, "reconfigure"
+        ):
+            stream.reconfigure(errors="replace")
+    # A termination request stops a run the way Ctrl+C does, so the live
+    # display restores the cursor and the run is kept for resume.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     legacy = Path.cwd() / ".blackgeorge"
     storage = Path(str(config.get("runtime", "storage_dir")))
     if legacy.is_dir() and legacy.resolve() != storage:
@@ -122,18 +146,54 @@ def cli() -> None:
             ),
             soft_wrap=True,
         )
+    if ctx.invoked_subcommand is None:
+        played = intro.should_play(console)
+        if played:
+            intro.play(console, keep=True)
+            console.print()
+        sections = [
+            (title, [(usage, cli.commands[usage.split()[0]].get_short_help_str(80)) for usage in usages])
+            for title, usages in _HOME_SECTIONS
+        ]
+        console.print(ui.home(sections, _EXAMPLE, with_mark=not played, notice=_missing_key_notice()))
+
+
+def _play_intro(target: Console, json_output: bool) -> None:
+    # JSON on stdout is for another program; the flag would only delay it.
+    if not json_output and intro.should_play(target):
+        intro.play(target)
+
+
+def _working(target: Console, message: str) -> AbstractContextManager[object]:
+    """A spinner for one long call that reports no progress of its own."""
+    if intro.is_watched(target):
+        return target.status(Text(message, style="muted"), spinner="dots", spinner_style="brand")
+    return nullcontext()
+
+
+def _key_is_set() -> bool:
+    api_key_env = config.get_api_key_env_name()
+    return bool(api_key_env and os.getenv(api_key_env)) or bool(
+        str(config.get("api", "api_key", "")).strip()
+    )
+
+
+def _missing_key_notice() -> Text | None:
+    """What a first run would fail on, said before it spends anything."""
+    api_key_env = config.get_api_key_env_name()
+    if not api_key_env or _key_is_set():
+        return None
+    return ui.warning(f"No API key in {api_key_env} or the saved config. Run shandu configure first.")
 
 
 @cli.command()
 def info() -> None:
     """Show the model, key status, and storage in use."""
     api_key_env = config.get_api_key_env_name()
-    key_in_env = bool(api_key_env and os.getenv(api_key_env))
-    key_in_config = bool(str(config.get("api", "api_key", "")).strip())
     if api_key_env:
         key_rows = [
             ("API key env", api_key_env),
-            ("API key", "set" if (key_in_env or key_in_config) else "not set"),
+            ("API key", Text("set", "ok") if _key_is_set() else Text("not set", "danger")),
         ]
     else:
         key_rows = [
@@ -153,7 +213,12 @@ def info() -> None:
         ("default iterations", config.get("orchestration", "max_iterations")),
         ("default subagents", config.get("orchestration", "parallelism")),
     ]
-    console.print(ui.key_values("Configuration", [(label, str(value)) for label, value in rows]))
+    console.print(
+        ui.key_values(
+            "Configuration",
+            [(label, value if isinstance(value, Text) else str(value)) for label, value in rows],
+        )
+    )
 
 
 @cli.command()
@@ -210,6 +275,9 @@ def configure() -> None:
     reset_bootstrap()
     config.apply_provider_api_key()
     console.print(ui.success("Configuration saved."))
+    notice = _missing_key_notice()
+    if notice is not None:
+        console.print(notice)
 
 
 @cli.command("gui")
@@ -418,14 +486,8 @@ def run_command(
         )
         raise click.ClickException(f"Invalid research options: {problems}") from exc
 
+    _play_intro(diag, json_output)
     engine = ShanduEngine.from_config()
-    if clarify:
-        try:
-            clarifications = _ask_clarifications(engine, question)
-        except ProviderRejectedError as exc:
-            engine.close()
-            raise click.ClickException(f"{exc}\n{_rejection_fix(exc)}") from None
-        request = request.model_copy(update={"clarifications": clarifications})
     diag.print(
         ui.header(
             request.query,
@@ -438,6 +500,13 @@ def run_command(
             ],
         )
     )
+    if clarify:
+        try:
+            clarifications = _ask_clarifications(engine, question)
+        except ProviderRejectedError as exc:
+            engine.close()
+            raise click.ClickException(f"{exc}\n{_rejection_fix(exc)}") from None
+        request = request.model_copy(update={"clarifications": clarifications})
     result = _run_to_completion(
         engine,
         request,
@@ -449,7 +518,12 @@ def run_command(
 
 
 def _ask_clarifications(engine: ShanduEngine, query: str) -> list[str]:
-    questions = get_async_runner().run(engine.clarifying_questions(query))
+    with _working(err_console, "Writing clarifying questions"):
+        questions = get_async_runner().run(engine.clarifying_questions(query))
+    if questions:
+        err_console.print(
+            ui.warning(f"Answer up to {len(questions)} questions to focus the research; Enter skips one.")
+        )
     answers: list[str] = []
     for question in questions:
         answer = click.prompt(question, default="", show_default=False, err=True).strip()
@@ -465,16 +539,20 @@ def _run_to_completion(
     diag: Console,
     verbose: bool = False,
     again: str = "resume",
+    phase: str = "brief",
 ) -> ResearchRunResult:
-    snapshot = ui.new_snapshot(request, str(config.get("api", "model")))
+    snapshot = ui.new_snapshot(request, str(config.get("api", "model")), phase)
 
     def on_event(event: RunEvent) -> None:
         snapshot.apply(event)
         ui.print_event(event, snapshot, diag, verbose)
 
+    # A log or a pipe gets the event lines alone.
+    live = ui.live_progress(snapshot, diag) if intro.is_watched(diag) else nullcontext()
     future = get_async_runner().submit(start(on_event))
     try:
-        result = future.result()
+        with live:
+            result = future.result()
     except KeyboardInterrupt:
         future.cancel()
         try:
@@ -487,6 +565,15 @@ def _run_to_completion(
         raise click.ClickException(f"Run {exc} not found.") from None
     except ProviderRejectedError as exc:
         steps = [str(exc), _rejection_fix(exc)]
+        if snapshot.run_id != "pending":
+            steps.append(_resume_hint(snapshot.run_id, again))
+        raise click.ClickException("\n".join(steps)) from None
+    except Exception as exc:
+        # The run is stored as failed with its cause; --verbose keeps the
+        # traceback for a bug report.
+        if verbose:
+            raise
+        steps = [f"Run failed: {' '.join(str(exc).split()) or type(exc).__name__}"]
         if snapshot.run_id != "pending":
             steps.append(_resume_hint(snapshot.run_id, again))
         raise click.ClickException("\n".join(steps)) from None
@@ -505,9 +592,10 @@ def _deliver(
     json_output: bool,
     diag: Console,
 ) -> None:
-    diag.print(ui.result_summary(result))
-
+    # A printed report comes first, so the summary is what is on screen when
+    # the run ends.
     if output:
+        diag.print(ui.result_summary(result))
         path = Path(output)
         path.parent.mkdir(parents=True, exist_ok=True)
         if json_output:
@@ -516,9 +604,11 @@ def _deliver(
             path.write_text(result.report_markdown, encoding="utf-8")
         diag.print(ui.success(f"Output saved to {path}"), soft_wrap=True)
     elif json_output:
+        diag.print(ui.result_summary(result))
         console.print_json(result.model_dump_json(indent=2))
     else:
         diag.print(ui.document("Final Report", result.report_markdown))
+        diag.print(ui.result_summary(result))
 
     if not output:
         report_path = engine.report_path(result.run_id)
@@ -604,6 +694,7 @@ def resume_command(
     engine = ShanduEngine.from_config()
     run_id = _resolve_run_id(engine, run_id)
     request = _load_request(engine, run_id)
+    _play_intro(diag, json_output)
     diag.print(
         ui.header(request.query, [f"resuming {run_id[:8]}", str(config.get("api", "model"))])
     )
@@ -613,6 +704,7 @@ def resume_command(
         lambda on_event: engine.resume(run_id, progress_callback=on_event),
         diag,
         verbose,
+        phase="plan",
     )
     _deliver(engine, result, output, json_output, diag)
 
@@ -652,6 +744,7 @@ def report_command(
         overrides["detail_level"] = detail_level
     if no_audit:
         overrides["audit"] = False
+    _play_intro(diag, json_output)
     diag.print(
         ui.header(
             request.query,
@@ -664,10 +757,11 @@ def report_command(
     )
     result = _run_to_completion(
         engine,
-        request,
+        request.model_copy(update=overrides),
         lambda on_event: engine.rewrite_report(run_id, overrides, progress_callback=on_event),
         diag,
         again="report",
+        phase="cite",
     )
     _deliver(engine, result, output, json_output, diag)
 
@@ -707,8 +801,8 @@ def show_command(run_id: str) -> None:
     finally:
         engine.close()
     if result.report_markdown:
-        console.print(ui.result_summary(result))
         console.print(ui.document("Final Report", result.report_markdown))
+        console.print(ui.result_summary(result))
         return
     console.print(ui.key_values("Run summary", [("run", run_id[:8]), ("status", status)]))
     console.print(ui.warning("This run has no report yet."))
@@ -749,6 +843,7 @@ def ai_search_command(
             'Give a question to answer, like: shandu aisearch "Which browsers support WebGPU?"'
         )
     diag = err_console if (json_output and not output) else console
+    _play_intro(diag, json_output)
     diag.print(
         ui.header(
             question,
@@ -757,12 +852,13 @@ def ai_search_command(
     )
     engine = ShanduEngine.from_config()
     try:
-        result = engine.ai_search_sync(
-            query=question,
-            max_results=max_results,
-            max_pages=max_pages,
-            detail_level=_resolve_detail_level(detail_level, "standard"),
-        )
+        with _working(diag, f"Searching, reading {_count(max_pages, 'page')}, and writing the answer"):
+            result = engine.ai_search_sync(
+                query=question,
+                max_results=max_results,
+                max_pages=max_pages,
+                detail_level=_resolve_detail_level(detail_level, "standard"),
+            )
     except ProviderRejectedError as exc:
         raise click.ClickException(f"{exc}\n{_rejection_fix(exc)}") from None
     finally:

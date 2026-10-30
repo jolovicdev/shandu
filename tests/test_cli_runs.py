@@ -140,7 +140,7 @@ def test_show_names_the_status_of_a_run_without_a_report(monkeypatch, status, re
 
     result = CliRunner(mix_stderr=False).invoke(cli, ["show", "84743636"])
 
-    lines = [line.split() for line in result.stdout.splitlines()]
+    lines = [line.strip("│ ").split() for line in result.stdout.splitlines()]
     assert result.exit_code == 0, result.output
     assert ["status", status] in lines
     assert "This run has no report yet." in result.stdout
@@ -466,3 +466,28 @@ def test_aisearch_joins_words_refuses_a_blank_question_and_stops_on_a_rejection(
     assert rejected.exit_code == 1
     assert "does not know this model" in rejected.stderr
     assert "`shandu configure` or SHANDU_MODEL changes it" in rejected.stderr
+
+
+def test_a_run_that_fails_says_why_and_how_to_continue(monkeypatch) -> None:
+    async def run(request, progress_callback=None):
+        progress_callback(RunEvent(stage="bootstrap", message="Initializing run", metrics={"run_id": "abc12345ffff"}))
+        raise OSError("[Errno 101] Network\nis unreachable")
+
+    engine = SimpleNamespace(run=run, report_path=lambda run_id: Path("missing.md"), close=lambda: None)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
+
+    assert result.exit_code == 1
+    assert "Run failed: [Errno 101] Network is unreachable" in result.stderr
+    assert "Continue with: shandu resume abc12345" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_a_printed_report_comes_before_the_run_summary(monkeypatch) -> None:
+    _stub_run_engine(monkeypatch)
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.index("Body") < result.stdout.index("RUN SUMMARY")

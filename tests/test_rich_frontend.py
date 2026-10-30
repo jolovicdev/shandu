@@ -34,7 +34,7 @@ def test_recap_renders_without_events() -> None:
             },
             [
                 "USD spent",
-                "at least $0.012345 · 6 of 9 model calls metered",
+                "at least $0.0123 · 6 of 9 model calls metered",
                 "model calls",
                 "LLM tokens",
             ],
@@ -131,9 +131,9 @@ def test_inspect_summary_shows_local_times_under_lowercase_labels(utc_plus_5_30)
     console.print(ui.inspect_summary(payload))
     lines = console.export_text().splitlines()
 
-    assert any(line.split() == ["started", "2026-10-28", "23:04"] for line in lines)
-    assert any(line.split() == ["updated", "2026-10-29", "00:10"] for line in lines)
-    assert any(line.split() == ["sources", "3"] for line in lines)
+    assert any(line.strip("│ ").split() == ["started", "2026-10-28", "23:04"] for line in lines)
+    assert any(line.strip("│ ").split() == ["updated", "2026-10-29", "00:10"] for line in lines)
+    assert any(line.strip("│ ").split() == ["sources", "3"] for line in lines)
     assert "+00:00" not in "".join(lines)
 
 
@@ -151,7 +151,7 @@ def _summary_text(**run_stats) -> str:
 
 def test_result_summary_shows_the_short_run_id_and_calls_references_sources() -> None:
     text = _summary_text(citation_count=32)
-    lines = [line.split() for line in text.splitlines()]
+    lines = [line.strip("│ ").split() for line in text.splitlines()]
 
     assert ["run", "01234567"] in lines
     assert ["sources", "32"] in lines
@@ -173,7 +173,7 @@ def test_result_summary_leaves_cost_coverage_out_when_every_call_is_metered() ->
         usd_spent=0.05,
     )
 
-    assert "USD spent $0.050000" in " ".join(text.split())
+    assert "USD spent $0.0500" in " ".join(text.split())
     assert "coverage" not in text
     assert "69" not in text
 
@@ -186,7 +186,7 @@ def test_result_summary_marks_a_partly_metered_cost_as_a_lower_bound() -> None:
         usd_spent=0.05,
     )
 
-    assert "USD spent at least $0.050000 · 12 of 16 model calls metered" in " ".join(text.split())
+    assert "USD spent at least $0.0500 · 12 of 16 model calls metered" in " ".join(text.split())
 
 
 def _list_text(runs: list[RunSummary], width: int = 100) -> str:
@@ -411,3 +411,33 @@ def test_event_line_says_why_a_subagent_failed() -> None:
     text = ui.event_line(event, snapshot).plain
 
     assert text.endswith("Subagent 1 failed  researcher loop timed out")
+
+
+def test_event_line_puts_a_multi_line_reason_on_the_line_before_the_url() -> None:
+    ui = ShanduUI(console=Console(record=True, width=160))
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
+    event = _event(
+        "Task t1 extraction fell back to deterministic",
+        "t1",
+        payload={
+            "url": "https://example.org/page",
+            "reason": "<failed_attempts>\n<generation number=\"1\">\n  BadRequestError: tool_choice",
+        },
+    )
+
+    text = ui.event_line(event, snapshot).plain
+
+    assert "\n" not in text
+    assert text.index("BadRequestError") < text.index("https://example.org/page")
+
+
+def test_event_line_words_why_a_page_was_not_read() -> None:
+    ui = ShanduUI(console=Console(record=True, width=160))
+    snapshot = ui.new_snapshot(ResearchRequest(query="q"), model="m")
+    event = _event(
+        "Task t1 fallback evidence added",
+        "t1",
+        payload={"url": "https://example.org/a", "fetch_error": "blocked_403"},
+    )
+
+    assert "blocked (403)" in ui.event_line(event, snapshot).plain

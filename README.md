@@ -74,11 +74,17 @@ saves them to `~/.shandu/config.json`. `shandu info` shows what is in use.
 shandu run "What did the SELECT trial find about semaglutide and cardiovascular events?"
 ```
 
-Progress streams one plain line per step, and `--verbose` adds every event with
-its raw metrics. The run ends with a summary of the evidence, sources, citation
-checks, model calls, tokens, and cost, then the source list and the report. The
-report is saved with the run; `--output report.md` writes it to a file instead
-of printing it.
+Each step prints one line as it happens. On a terminal, a block under those
+lines shows the step under way, each subagent's queries and pages, and the time
+so far, and it clears itself when the run ends. `--verbose` adds every event
+with its raw metrics. The report prints first, then a summary of the evidence,
+sources, citation checks, model calls, tokens, and cost, and the source list.
+The report is saved with the run; `--output report.md` writes it to a file
+instead of printing it.
+
+`shandu` on its own lists the commands. On a terminal, it and the `run`,
+`resume`, `report`, and `aisearch` commands open with a short animation of the
+Serbian flag; `SHANDU_NO_INTRO=1` turns it off.
 
 ![A terminal run: progress lines, the run summary, and the sources](assets/cli.png)
 
@@ -186,6 +192,7 @@ Environment variables, which can also live in a `.env` file:
 | `SHANDU_SEARCH_BACKEND` | `ddgs` (default), or a search API: `tavily` with `TAVILY_API_KEY`, `brave` with `BRAVE_API_KEY`, `exa` with `EXA_API_KEY`, or `searxng` with `SEARXNG_URL`, an instance with JSON output enabled. A backend whose variable is missing falls back to `ddgs`. |
 | `OPENALEX_API_KEY`, `NCBI_API_KEY` | Optional. Raise the OpenAlex and PubMed rate limits for paper search. Without a key, OpenAlex allows about 100 searches a day; once they are spent, paper search continues on arXiv and PubMed. |
 | `SHANDU_PROXY` | Optional proxy for fetching pages. |
+| `SHANDU_NO_INTRO` | Set to `1` to skip the flag animation on a terminal. |
 
 Saved settings in `~/.shandu/config.json` apply when no variable overrides them.
 

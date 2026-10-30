@@ -66,3 +66,22 @@ def test_run_help_shows_the_default_of_each_option_that_has_one() -> None:
     for option in ("--effort", "--detail-level", "--depth-policy", "--researcher"):
         block = text.split(option, 1)[1].split("\n  --", 1)[0]
         assert "[default:" in block, option
+
+
+def test_bare_shandu_lists_every_command_with_a_first_command_to_try() -> None:
+    result = CliRunner().invoke(cli, [], terminal_width=120)
+
+    assert result.exit_code == 0, result.output
+    first_words = {line.split()[0].lstrip("▍") for line in result.output.splitlines() if line.strip()}
+    assert set(cli.commands) <= first_words
+    assert {"RESEARCH", "RUNS", "SETUP"} <= first_words
+    assert 'shandu run "' in result.output
+    hints = [line for line in result.output.splitlines() if line.split()[:2] in (["Start", "with"], ["Every", "option"])]
+    assert len({line.index("shandu run") for line in hints}) == 1
+
+
+def test_bare_shandu_runs_on_a_stream_in_a_legacy_encoding() -> None:
+    result = CliRunner(charset="ascii").invoke(cli, [], terminal_width=120)
+
+    assert result.exit_code == 0, result.output
+    assert "RESEARCH" in result.output

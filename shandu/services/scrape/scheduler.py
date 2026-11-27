@@ -29,17 +29,17 @@ class _DomainScheduler:
                 wait = fire_at - now
             if wait > 0:
                 await asyncio.sleep(wait)
-        except asyncio.CancelledError:
+        except BaseException:
             sem.release()
             raise
 
     async def release(self, domain: str) -> None:
-        async with self._lock:
-            # A slow fetch pushes spacing out; a fast one keeps the
-            # reservation so the next slot still waits its turn.
-            self._last_fetch[domain] = max(
-                self._last_fetch.get(domain, 0), time.monotonic()
-            )
+        # A slow fetch pushes spacing out; a fast one keeps the
+        # reservation so the next slot still waits its turn. No awaits here so
+        # cancellation cannot skip sem.release().
+        self._last_fetch[domain] = max(
+            self._last_fetch.get(domain, 0), time.monotonic()
+        )
         sem = self._semaphores.get(domain)
         if sem:
             sem.release()

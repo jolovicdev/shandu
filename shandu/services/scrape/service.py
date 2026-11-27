@@ -23,6 +23,7 @@ from .extraction import (
     _detect_fetch_error,
     _error_for_status,
     _extract_html,
+    _extract_links,
     _extract_published_at,
     _guess_format,
     _parse_csv,
@@ -54,6 +55,7 @@ def _ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         or ip.is_multicast
         or ip.is_reserved
         or ip.is_unspecified
+        or getattr(ip, "is_site_local", False)
     ):
         return False
     return ip.is_global
@@ -96,7 +98,7 @@ def _blocked_host_in_url(url: str) -> str | None:
 class _PublicAddressConnector(aiohttp.TCPConnector):
     async def _resolve_host(
         self, host: str, port: int, traces: Any = None
-    ) -> list[dict[str, Any]]:
+    ) -> list[Any]:
         records = await super()._resolve_host(host, port, traces=traces)
         public = [
             record
@@ -125,7 +127,7 @@ async def _proxy_target_blocked(url: str) -> bool:
             # This check is the only private-address guard on the proxy
             # path, so an unresolvable host is refused.
             return True
-        return not any(
+        return not records or not all(
             _record_host_is_public(str(record.get("host", ""))) for record in records
         )
     finally:
@@ -174,16 +176,26 @@ async def _read_limited_response(response: aiohttp.ClientResponse) -> bytes | No
 
 
 def _canonicalize_url(url: str) -> str:
-    if not url or not url.startswith(("http://", "https://")):
+    cleaned = (url or "").strip()
+    if not cleaned or not cleaned.lower().startswith(("http://", "https://")):
         return ""
-    parts = urlsplit(url.strip())
-    if parts.scheme not in ("http", "https") or not parts.netloc:
+    try:
+        parts = urlsplit(cleaned)
+    except ValueError:
+        return ""
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    if scheme not in ("http", "https") or not netloc:
         return ""
     path = parts.path or "/"
-    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+    return urlunsplit((scheme, netloc, path, parts.query, ""))
 
 
 _ARXIV_ABSTRACT_URL = re.compile(r"^https?://(?:www\.)?arxiv\.org/abs/(?P<paper>[^?#]+)")
+_META_CHARSET = re.compile(
+    rb'<meta[^>]+charset\s*=\s*["\']?\s*([A-Za-z0-9._-]+)',
+    re.IGNORECASE,
+)
 
 
 def _fulltext_url(url: str) -> str:
@@ -195,10 +207,32 @@ def _fulltext_url(url: str) -> str:
 
 
 def _safe_decode(data: bytes, charset: str | None) -> str:
+    if charset:
+        try:
+            return data.decode(charset, errors="replace")
+        except LookupError:
+            pass
     try:
-        return data.decode(charset or "utf-8", errors="ignore")
-    except LookupError:
-        return data.decode("utf-8", errors="ignore")
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    meta = _META_CHARSET.search(data[:4096])
+    if meta:
+        declared = meta.group(1).decode("ascii", errors="ignore").strip()
+        if declared:
+            try:
+                return data.decode(declared, errors="replace")
+            except LookupError:
+                pass
+    try:
+        import chardet
+
+        detected = chardet.detect(data[:32768]).get("encoding")
+        if detected:
+            return data.decode(detected, errors="replace")
+    except Exception:
+        pass
+    return data.decode("utf-8", errors="replace")
 
 
 class ScrapeService:
@@ -256,12 +290,16 @@ class ScrapeService:
     ) -> ScrapedPage:
         normalized_url = _canonicalize_url(url)
         if not normalized_url:
+            try:
+                bad_domain = urlparse(url).netloc or ""
+            except ValueError:
+                bad_domain = ""
             return ScrapedPage(
                 requested_url=url,
                 url=url,
                 title=url,
                 text="",
-                domain=urlparse(url).netloc or "",
+                domain=bad_domain,
                 fetch_error="scrape_failed",
             )
 
@@ -270,16 +308,20 @@ class ScrapeService:
             self._page_cache.move_to_end(normalized_url)
             return cached
 
-        in_flight = self._inflight.get(normalized_url)
-        if in_flight is not None:
-            return await in_flight
+        task = self._inflight.get(normalized_url)
+        if task is None:
+            task = asyncio.create_task(self._do_scrape(normalized_url, session))
+            self._inflight[normalized_url] = task
 
-        task = asyncio.create_task(self._do_scrape(normalized_url, session))
-        self._inflight[normalized_url] = task
-        try:
-            return await task
-        finally:
-            self._inflight.pop(normalized_url, None)
+            def _cleanup(finished: asyncio.Task[ScrapedPage]) -> None:
+                self._inflight.pop(normalized_url, None)
+                if not finished.cancelled():
+                    finished.exception()
+
+            task.add_done_callback(_cleanup)
+        # Shielded so that one caller's cancellation leaves the fetch the
+        # other callers wait on running.
+        return await asyncio.shield(task)
 
     async def _do_scrape(
         self,
@@ -395,7 +437,7 @@ class ScrapeService:
                         ua_index = attempt % len(_USER_AGENTS)
                         headers["User-Agent"] = _USER_AGENTS[ua_index]
 
-                    kwargs: dict[str, object] = {"allow_redirects": False, "headers": headers}
+                    kwargs: dict[str, Any] = {"allow_redirects": False, "headers": headers}
                     if self._proxy:
                         kwargs["proxy"] = self._proxy
 
@@ -406,11 +448,14 @@ class ScrapeService:
                             if hop >= _MAX_REDIRECT_HOPS:
                                 return _error_page("scrape_failed", status, retryable=False)
                             location = response.headers.get("location", "")
-                            next_url = (
-                                _canonicalize_url(urljoin(request_url, location))
-                                if location
-                                else ""
-                            )
+                            try:
+                                next_url = (
+                                    _canonicalize_url(urljoin(request_url, location))
+                                    if location
+                                    else ""
+                                )
+                            except ValueError:
+                                next_url = ""
                             if not next_url:
                                 return _error_page("scrape_failed", status, retryable=False)
                             return next_url
@@ -437,16 +482,19 @@ class ScrapeService:
                             published_at = result.published_at or await asyncio.to_thread(
                                 _extract_published_at, html
                             )
+                            fetch_error: str | None
                             if not result.text.strip():
                                 fetch_error = _detect_fetch_error(html, result.text) or "empty_content"
                             else:
                                 fetch_error = _detect_fetch_error(html, result.text)
+                            links = await asyncio.to_thread(_extract_links, html, final_url)
                             page = ScrapedPage(
                                 requested_url=url,
                                 url=final_url,
                                 title=result.title or final_url,
                                 text=result.text,
                                 blocks=result.blocks,
+                                links=links,
                                 domain=urlparse(final_url).netloc,
                                 site_name=result.site_name,
                                 published_at=published_at,
@@ -525,7 +573,9 @@ class ScrapeService:
                             if data is None:
                                 return _error_page("non_text_content", status, retryable=False)
                             try:
-                                result = await asyncio.to_thread(_parse_csv, data)
+                                result = await asyncio.to_thread(
+                                    _parse_csv, data, getattr(response, "charset", None)
+                                )
                             except _ParseError as exc:
                                 return _error_page(exc.fetch_error, status, retryable=False)
                             page = ScrapedPage(
@@ -545,7 +595,9 @@ class ScrapeService:
                             if data is None:
                                 return _error_page("non_text_content", status, retryable=False)
                             try:
-                                result = await asyncio.to_thread(_parse_plaintext, data)
+                                result = await asyncio.to_thread(
+                                    _parse_plaintext, data, getattr(response, "charset", None)
+                                )
                             except _ParseError as exc:
                                 return _error_page(exc.fetch_error, status, retryable=False)
                             page = ScrapedPage(

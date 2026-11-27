@@ -14,10 +14,12 @@ from unittest import mock
 import pytest
 
 from shandu.services.scrape import ScrapeService
+from shandu.services.scrape.constants import _MAX_DOWNLOAD_BYTES
 from shandu.services.scrape.extraction import (
     _detect_fetch_error,
     _extract_html,
     _extract_published_at,
+    _extract_site_name,
     _extract_with_bs4,
     _extract_with_readability,
     _extract_with_trafilatura,
@@ -139,6 +141,36 @@ def test_trafilatura_extracts_title_date_and_blocks_in_one_pass() -> None:
 
 
 
+def test_extract_html_takes_a_latexml_title_without_its_author_footnote() -> None:
+    body = " ".join(["The outage began when one content update reached every sensor."] * 12)
+    html = (
+        "<html><head><title>Channel File 291: An Engineering Analysis</title></head><body>"
+        '<article class="ltx_document"><h1 class="ltx_title ltx_title_document">'
+        "Channel File 291: An Engineering Analysis"
+        '<span class="ltx_pubnotes"><span class="ltx_role_thanks">'
+        "Thanks: The author is with Purdue University.</span></span></h1>"
+        f"<p>{body}</p></article></body></html>"
+    )
+    assert _extract_html(html).title == "Channel File 291: An Engineering Analysis"
+
+
+def test_extract_html_keeps_the_spaces_where_a_latexml_title_breaks_lines() -> None:
+    body = " ".join(["Query visibility changes how compression methods rank."] * 12)
+    html = (
+        "<html><head><title>How Query Visibility ChangesKV-Cache Rankings:A Matched Audit"
+        '</title></head><body><article class="ltx_document">'
+        '<h1 class="ltx_title ltx_title_document">How Query Visibility Changes\n'
+        '<br class="ltx_break">KV-Cache Rankings:<br class="ltx_break">A Matched\N{ZERO WIDTH SPACE} Audit'
+        '<span class="ltx_note ltx_role_thanks"><sup>1</sup>Work done at a lab.</span>'
+        ' at <math alttext="z=10"><semantics><mi>z</mi><mo>=</mo><mn>10</mn>'
+        '<annotation encoding="application/x-tex">z=10</annotation></semantics></math></h1>'
+        f"<p>{body}</p></article></body></html>"
+    )
+    assert _extract_html(html).title == (
+        "How Query Visibility Changes KV-Cache Rankings: A Matched Audit at z=10"
+    )
+
+
 def test_parse_pdf_extracts_title_and_text() -> None:
     doc = fitz.open()
     page = doc.new_page()
@@ -148,6 +180,17 @@ def test_parse_pdf_extracts_title_and_text() -> None:
     result = _parse_pdf(data)
     assert result.title == "PDF Document Title"
     assert "body text" in result.text
+
+
+def test_parse_pdf_reads_a_long_report_from_the_front() -> None:
+    doc = fitz.open()
+    for number in range(260):
+        doc.new_page().insert_text((72, 72), f"Chapter text on page {number}.")
+
+    result = _parse_pdf(doc.tobytes())
+
+    assert "Chapter text on page 0." in result.text
+    assert "Chapter text on page 259." in result.text
 
 
 def test_parse_pdf_prefers_largest_type_for_title_and_reads_creation_date() -> None:
@@ -161,6 +204,114 @@ def test_parse_pdf_prefers_largest_type_for_title_and_reads_creation_date() -> N
     result = _parse_pdf(doc.tobytes())
     assert result.title == "Lookahead Caching for Long Contexts"
     assert result.published_at == "2025-10-29"
+
+
+def test_parse_pdf_reads_small_caps_titles_whole() -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    # Small caps: capitals at 18 pt, the rest at 14 pt. The word space is set
+    # in another font, so it comes out as a span of its own.
+    for baseline, spans in [
+        (100, [("SCB", 18), ("ENCH", 14), (": KV", 18), (" ", 18), ("C", 18), ("ACHE", 14)]),
+        (121, [("L", 17.6), ("ONG", 14), ("-C", 17.6), ("ONTEXT", 14)]),
+    ]:
+        x = 72.0
+        for text, size in spans:
+            fontname = "tiro" if text == " " else "helv"
+            page.insert_text((x, baseline), text, fontsize=size, fontname=fontname)
+            x += fitz.get_text_length(text, fontsize=size, fontname=fontname)
+    page.insert_text((72, 136), "Yucheng Li, Huiqiang Jiang", fontsize=10)
+    result = _parse_pdf(doc.tobytes())
+    assert result.title == "SCBENCH: KV CACHE LONG-CONTEXT"
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "body", "title"),
+    [
+        (
+            "Cache Compression by Pyra-",
+            "midal Funneling",
+            "Attention narrows in a pyramidal shape across layers.",
+            "Cache Compression by Pyramidal Funneling",
+        ),
+        (
+            "Retrieval-",
+            "augmented Generation at Scale",
+            "Retrieval-augmented generation grounds answers in documents.",
+            "Retrieval-augmented Generation at Scale",
+        ),
+        (
+            "Cache Compression: A Mini-",
+            "Review of Methods",
+            "This is the body text of the paper.",
+            "Cache Compression: A Mini-Review of Methods",
+        ),
+    ],
+)
+def test_parse_pdf_joins_title_lines_broken_at_a_hyphen(
+    first: str, second: str, body: str, title: str
+) -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), first, fontsize=18)
+    page.insert_text((72, 121), second, fontsize=18)
+    page.insert_text((72, 160), body)
+    assert _parse_pdf(doc.tobytes()).title == title
+
+
+def test_parse_pdf_skips_a_small_caps_heading_whose_capitals_outsize_the_title() -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 88), "External Technical Root Cause Analysis", fontsize=16)
+    x = 72.0
+    for text, size in [("I", 18), ("NTRODUCTION", 14.5)]:
+        page.insert_text((x, 200), text, fontsize=size)
+        x += fitz.get_text_length(text, fontsize=size)
+    page.insert_text((72, 230), "This report elaborates on the information shared earlier.", fontsize=11)
+    assert _parse_pdf(doc.tobytes()).title == "External Technical Root Cause Analysis"
+
+
+def test_parse_pdf_reads_bold_titles_set_at_body_size() -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 50), "Draft version October 29, 2024", fontsize=8)
+    page.insert_text((72, 110), "JWST Validates HST Distance Measurements", fontsize=10, fontname="hebo")
+    page.insert_text((72, 140), "Adam G. Riess, Dan Scolnic", fontsize=9)
+    body = "The distance ladder calibrates type Ia supernovae with Cepheids. " * 6
+    page.insert_textbox(fitz.Rect(72, 420, 540, 700), body, fontsize=10.1)
+    result = _parse_pdf(doc.tobytes())
+    assert result.title == "JWST Validates HST Distance Measurements"
+
+
+def test_parse_pdf_never_takes_a_lower_bold_heading_for_the_title() -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 110), "A Title Set in Regular Type", fontsize=10)
+    page.insert_text((72, 400), "1. Introduction and Motivation", fontsize=10, fontname="hebo")
+    body = "The distance ladder calibrates type Ia supernovae with Cepheids. " * 6
+    page.insert_textbox(fitz.Rect(72, 420, 540, 700), body, fontsize=10.1)
+    assert _parse_pdf(doc.tobytes()).title != "1. Introduction and Motivation"
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "Title",
+        "Title (Use “Title” style here)",
+        "Acknowledgement Title (Trebuchet MS Bold 15 pt)",
+        "July 7, 2020",
+        "Microsoft PowerPoint - EASD25 CVOT Symposium_Lilly Deck_FINAL_18SEP2025",
+        "Microsoft Word - field_trial_v2.docx",
+    ],
+)
+def test_parse_pdf_ignores_template_placeholder_titles(placeholder: str) -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 110), "Heat Pump Field Trial Results", fontsize=18)
+    page.insert_text((72, 150), "This is the body text of the report.")
+    doc.set_metadata({"title": placeholder})
+    result = _parse_pdf(doc.tobytes())
+    assert result.title == "Heat Pump Field Trial Results"
 
 
 def test_parse_docx_extracts_title_and_text() -> None:
@@ -255,6 +406,19 @@ def test_extract_published_at_finds_known_sources(head, expected) -> None:
 
 
 
+def test_site_name_and_published_date_are_read_without_a_beautifulsoup_tree() -> None:
+    html = (
+        '<html><head><meta property="og:site_name" content="Example News">'
+        '<meta property="article:published_time" content="2024-03-01"></head>'
+        "<body></body></html>"
+    )
+    with mock.patch("shandu.services.scrape.extraction.BeautifulSoup") as soup:
+        assert _extract_site_name(html) == "Example News"
+        assert _extract_published_at(html) == "2024-03-01"
+
+    assert soup.call_count == 0
+
+
 def test_detect_fetch_error_detects_paywall() -> None:
     html = '<html><body><div class="paywall">Subscribe to read more.</div></body></html>'
     assert _detect_fetch_error(html, "") == "paywall"
@@ -286,6 +450,32 @@ def test_detect_fetch_error_detects_empty_js_shell() -> None:
     ],
 )
 def test_detect_fetch_error_returns_none_for_benign_pages(html, text) -> None:
+    assert _detect_fetch_error(html, text) is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "EIA - Sorry! Unexpected Error",
+        "Indisponibilité du site Web d’Hydro-Québec à partir de l’étranger | Hydro-Québec",
+        "404 Not Found",
+        "Page not found | Example Utility",
+    ],
+)
+def test_detect_fetch_error_flags_short_error_pages(title) -> None:
+    text = "Our website is temporarily unavailable. Please try again later. " * 8
+    html = f"<html><head><title>{title}</title></head><body><p>{text}</p></body></html>"
+
+    assert _detect_fetch_error(html, text) == "error_page"
+
+
+def test_detect_fetch_error_keeps_long_pages_whose_title_mentions_errors() -> None:
+    text = " ".join(["measured"] * 400)
+    html = (
+        "<html><head><title>Why sizing errors leave heat pumps unavailable at night</title>"
+        f"</head><body><p>{text}</p></body></html>"
+    )
+
     assert _detect_fetch_error(html, text) is None
 
 
@@ -480,7 +670,7 @@ def test_scrape_service_rejects_oversized_html_before_decoding() -> None:
         def get(self, *args, **kwargs):
             class FakeResponse:
                 url = "https://example.com"
-                headers = {"content-type": "text/html", "content-length": str(11 * 1024 * 1024)}
+                headers = {"content-type": "text/html", "content-length": str(_MAX_DOWNLOAD_BYTES + 1)}
                 status = 200
                 async def __aenter__(self):
                     return self
@@ -589,3 +779,63 @@ def test_fetch_acquires_scheduler_slot_for_hop_domain() -> None:
     )
 
     assert acquired == ["hop.example"]
+
+
+def test_extract_links_leads_with_other_hosts_and_skips_site_chrome() -> None:
+    from shandu.services.scrape.extraction import _extract_links
+
+    html = """<html><body>
+    <nav><a href="https://other.org/menu">Menu item</a></nav>
+    <main><p>See <a href="/docs/spec">the spec page</a> and
+    <a href="https://arxiv.org/abs/1">the paper</a>, <a href="#top">back to top</a>,
+    <a href="mailto:a@b.org">mail us</a>, <a href="https://arxiv.org/abs/1#s2">same paper</a>,
+    <a href="https://x.org/y">ok</a>, <a href="https://example.com:443/about">about the site</a></p></main>
+    <footer><a href="https://other.org/legal">Legal notice</a></footer>
+    </body></html>"""
+
+    links = _extract_links(html, "https://example.com/post")
+
+    assert [(link.url, link.text) for link in links] == [
+        ("https://arxiv.org/abs/1", "the paper"),
+        ("https://example.com/docs/spec", "the spec page"),
+        ("https://example.com:443/about", "about the site"),
+    ]
+
+
+def test_malformed_urls_do_not_crash_scrape_links_or_contracts() -> None:
+    from shandu.contracts import ResearchRequest
+    from shandu.services.scrape.extraction import _extract_links
+    from shandu.services.scrape.service import _canonicalize_url
+    from shandu.services.search import _host_matches
+
+    assert _canonicalize_url("http://[invalid") == ""
+    assert _canonicalize_url("  HTTPS://Example.COM/Path#frag ") == "https://example.com/Path"
+    assert _host_matches("http://[invalid", ["example.com"]) is False
+    links = _extract_links(
+        '<html><body><a href="http://[invalid">bad</a><a href="https://good.example/a">Good link</a></body></html>',
+        "https://base.example/",
+    )
+    assert [link.url for link in links] == ["https://good.example/a"]
+    req = ResearchRequest(
+        query="q",
+        include_domains=["https://nature.com/login?next=https://evil.com"],
+    )
+    assert req.include_domains == ["nature.com"]
+
+
+def test_extraction_latexml_xml_declaration_empty_time_and_captcha_order() -> None:
+    from shandu.services.scrape.extraction import _latexml_title
+    from shandu.services.scrape.service import _safe_decode
+
+    xhtml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<html><head><title>ChangesKV-Cache</title></head>'
+        '<body><h1 class="ltx_title_document">Changes<br/>KV-Cache</h1></body></html>'
+    )
+    assert _latexml_title(xhtml) == "Changes KV-Cache"
+    html_time = '<html><body><time datetime=""></time><time datetime="2025-04-01"></time></body></html>'
+    assert _extract_published_at(html_time) == "2025-04-01"
+    big_captcha = '<html><body>' + ("x" * 9000) + '<div class="cf-turnstile"></div></body></html>'
+    assert _detect_fetch_error(big_captcha, "verify human") == "captcha"
+    latin1 = "caf\xe9".encode("latin-1")
+    assert "café" in _safe_decode(latin1, None)

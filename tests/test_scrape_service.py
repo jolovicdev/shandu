@@ -136,6 +136,36 @@ def test_scrape_does_not_close_caller_session() -> None:
     assert session.closed is False
 
 
+def test_cancelling_one_scraper_leaves_the_shared_fetch_to_the_others() -> None:
+    service = ScrapeService()
+    fetched: list[str] = []
+
+    async def fake_do_scrape(url: str, session: object = None) -> ScrapedPage:
+        fetched.append(url)
+        await asyncio.sleep(0.05)
+        return ScrapedPage(requested_url=url, url=url, title=url, text="t", domain="d")
+
+    service._do_scrape = fake_do_scrape  # type: ignore[assignment]
+
+    async def run_all() -> tuple[asyncio.Task, list[ScrapedPage]]:
+        first = asyncio.create_task(service.scrape("https://example.com/a"))
+        second = asyncio.create_task(service.scrape("https://example.com/a"))
+        await asyncio.sleep(0.01)
+        first.cancel()
+        third = asyncio.create_task(service.scrape("https://example.com/a"))
+        pages = await asyncio.gather(second, third)
+        await asyncio.gather(first, return_exceptions=True)
+        await asyncio.sleep(0)
+        return first, pages
+
+    first, pages = asyncio.run(run_all())
+
+    assert first.cancelled()
+    assert [page.text for page in pages] == ["t", "t"]
+    assert fetched == ["https://example.com/a"]
+    assert service._inflight == {}
+
+
 def test_page_cache_evicts_oldest() -> None:
     from shandu.services.scrape.service import _PAGE_CACHE_MAX
 
@@ -148,3 +178,41 @@ def test_page_cache_evicts_oldest() -> None:
     assert len(service._page_cache) == _PAGE_CACHE_MAX
     assert "k0" not in service._page_cache
     assert f"k{_PAGE_CACHE_MAX + 9}" in service._page_cache
+
+
+def test_proxy_ssrf_blocks_mixed_public_and_private_dns(monkeypatch) -> None:
+    import ipaddress
+
+    from shandu.services.scrape.service import _ip_is_public, _proxy_target_blocked
+
+    class MixedResolver:
+        async def resolve(self, host: str, port: int):
+            del host, port
+            return [{"host": "93.184.216.34"}, {"host": "127.0.0.1"}]
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("shandu.services.scrape.service.aiohttp.DefaultResolver", MixedResolver)
+    assert asyncio.run(_proxy_target_blocked("https://dual.example.com/")) is True
+    assert _ip_is_public(ipaddress.ip_address("fec0::1")) is False
+
+
+def test_domain_scheduler_release_survives_cancellation() -> None:
+    from shandu.services.scrape.scheduler import _DomainScheduler
+
+    async def run() -> None:
+        sched = _DomainScheduler(max_concurrent_per_domain=1, base_delay=0.0)
+        await sched.acquire("example.com")
+        await sched.release("example.com")
+        await asyncio.wait_for(sched.acquire("example.com"), timeout=1.0)
+        await sched.release("example.com")
+
+    asyncio.run(run())
+
+
+def test_scrape_service_handles_malformed_url_in_scrape_many() -> None:
+    service = ScrapeService()
+    pages, missed = asyncio.run(service.scrape_many(["http://[invalid"]))
+    assert pages == [] and missed == 0
+    asyncio.run(service.aclose())

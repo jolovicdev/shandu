@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
-from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
 from shandu.contracts import (
+    Claim,
+    ResearchBrief,
     CitationEntry,
     CoverageAssessment,
     EvidenceRecord,
@@ -16,15 +16,18 @@ from shandu.contracts import (
     SubagentTask,
 )
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
-from shandu.services.memory import MemoryService
+from shandu.services.run_store import RunStore
 from shandu.services.report import ReportService
 
 
 class FakeLeadAgent:
     fallback_count = 0
 
+    async def create_brief(self, request):
+        return ResearchBrief(scope=request.query, sub_questions=[request.query])
+
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         del request, prior_summaries, memory_context
         return IterationPlan(
@@ -42,7 +45,7 @@ class FakeLeadAgent:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         del request, iteration_evidence, prior_summaries
         return IterationSynthesis(
@@ -54,7 +57,7 @@ class FakeLeadAgent:
         )
 
     async def build_final_report(
-        self, request, iteration_summaries, evidence_payload, citations_payload
+        self, request, iteration_summaries, evidence_payload, citations_payload, brief=None
     ):
         del request, evidence_payload, citations_payload
         from shandu.contracts import FinalReportDraft, ReportSection
@@ -72,7 +75,7 @@ class FakeLeadAgent:
 
 
 class FakeSearchSubagent:
-    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
         del run_scope, request, progress_callback, extracted_urls
         return [
             EvidenceRecord(
@@ -148,13 +151,12 @@ class FilteringReportService(ReportService):
         )
 
 
-def test_orchestrator_returns_report_normalized_citation_ledger() -> None:
-    memory_service = MemoryService(InMemoryMemoryStore())
+def test_orchestrator_returns_report_normalized_citation_ledger(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=ExtraCitationAgent(),
-        memory_service=memory_service,
+        run_store=RunStore(tmp_path),
         report_service=FilteringReportService(),
     )
 
@@ -169,7 +171,7 @@ def test_orchestrator_returns_report_normalized_citation_ledger() -> None:
 
 class ParallelLeadAgent(FakeLeadAgent):
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         del request, prior_summaries, memory_context
         if iteration > 0:
@@ -213,7 +215,7 @@ class ParallelLeadAgent(FakeLeadAgent):
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         del request, iteration_evidence, prior_summaries
         return IterationSynthesis(
@@ -226,7 +228,7 @@ class ParallelLeadAgent(FakeLeadAgent):
 
 
 class SlowSearchSubagent(FakeSearchSubagent):
-    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
         del run_scope, request, progress_callback, extracted_urls
         await asyncio.sleep(0.2)
         return [
@@ -249,7 +251,7 @@ class TrackingSearchSubagent(FakeSearchSubagent):
         self.peak = 0
 
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         self.active += 1
         self.peak = max(self.peak, self.active)
@@ -266,13 +268,13 @@ class TrackingSearchSubagent(FakeSearchSubagent):
         )
 
 
-def _peak_concurrency(parallelism: int) -> int:
+def _peak_concurrency(parallelism: int, store: RunStore) -> int:
     subagent = TrackingSearchSubagent()
     orchestrator = LeadOrchestrator(
         lead_agent=ParallelLeadAgent(),
         search_subagent=subagent,
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=store,
         report_service=FakeReportService(),
     )
     asyncio.run(
@@ -285,17 +287,17 @@ def _peak_concurrency(parallelism: int) -> int:
     return subagent.peak
 
 
-def test_orchestrator_parallelism_controls_task_concurrency() -> None:
-    assert _peak_concurrency(1) == 1
-    assert _peak_concurrency(2) == 2
+def test_orchestrator_parallelism_controls_task_concurrency(tmp_path) -> None:
+    assert _peak_concurrency(1, RunStore(tmp_path)) == 1
+    assert _peak_concurrency(2, RunStore(tmp_path)) == 2
 
 
-def test_orchestrator_emits_task_level_search_progress_events() -> None:
+def test_orchestrator_emits_task_level_search_progress_events(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=ParallelLeadAgent(),
         search_subagent=SlowSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="parallel-test", max_iterations=1, parallelism=2)
@@ -311,12 +313,12 @@ def test_orchestrator_emits_task_level_search_progress_events() -> None:
     assert any(message == "Task task-4 completed" for message in search_messages)
 
 
-def test_orchestrator_emits_live_model_call_count() -> None:
+def test_orchestrator_emits_live_model_call_count(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="model-call-test", max_iterations=1, parallelism=1)
@@ -338,7 +340,7 @@ def test_orchestrator_emits_live_model_call_count() -> None:
 
 
 class TraceSearchSubagent(FakeSearchSubagent):
-    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
         del run_scope, extracted_urls
         if progress_callback is not None:
             await progress_callback(
@@ -356,12 +358,12 @@ class TraceSearchSubagent(FakeSearchSubagent):
         return await super().execute_task("x", task, request, progress_callback=None)
 
 
-def test_orchestrator_forwards_subagent_trace_events() -> None:
+def test_orchestrator_forwards_subagent_trace_events(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=ParallelLeadAgent(),
         search_subagent=TraceSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="parallel-test", max_iterations=1, parallelism=2)
@@ -388,13 +390,13 @@ def test_orchestrator_forwards_subagent_trace_events() -> None:
     )
 
 
-def test_run_persists_effective_settings_to_scope() -> None:
-    memory_service = MemoryService(InMemoryMemoryStore())
+def test_run_persists_effective_settings(tmp_path) -> None:
+    store = RunStore(tmp_path)
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=memory_service,
+        run_store=store,
         report_service=FakeReportService(),
         runtime_settings={"model": "m", "max_tokens": 4096},
     )
@@ -404,11 +406,10 @@ def test_run_persists_effective_settings_to_scope() -> None:
         )
     )
 
-    stored = memory_service.read(f"run:{result.run_id}", "settings")
-    assert stored == {"model": "m", "max_tokens": 4096}
+    assert store.settings(result.run_id) == {"model": "m", "max_tokens": 4096}
 
 
-def test_orchestrator_adds_cost_stats_when_available() -> None:
+def test_orchestrator_adds_cost_stats_when_available(tmp_path) -> None:
     lead = FakeLeadAgent()
     lead.last_llm_usage = {
         "prompt_tokens": 2000,
@@ -422,25 +423,25 @@ def test_orchestrator_adds_cost_stats_when_available() -> None:
         lead_agent=lead,
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="cost-test", max_iterations=1, parallelism=1)
     result = asyncio.run(orchestrator.run(request))
 
-    assert result.run_stats["agent_model_calls"] == 3
-    assert result.run_stats["metered_calls"] == 6
+    assert result.run_stats["agent_model_calls"] == 4
+    assert result.run_stats["metered_calls"] == 8
     assert result.run_stats["cost_coverage"] == "full"
-    assert result.run_stats["llm_tokens"] == 9000
-    assert result.run_stats["usd_spent"] == 0.06
+    assert result.run_stats["llm_tokens"] == 12000
+    assert result.run_stats["usd_spent"] == 0.08
 
 
-def test_run_stats_include_source_class_and_dated_summary() -> None:
+def test_run_stats_include_source_class_and_dated_summary(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="quality-test", max_iterations=1, parallelism=1)
@@ -563,36 +564,23 @@ def test_compact_evidence_gives_small_corpus_full_text() -> None:
     large = LeadAgent._compact_evidence(payload(150), [])
 
     assert {len(record["extracted_text"]) for record in small} == {9000}
-    assert {len(record["extracted_text"]) for record in large} == {2200}
+    assert max(len(record["extracted_text"]) for record in large) == 2200
 
 
-def test_adaptive_loop_weighs_credibility() -> None:
-    coverage = SimpleNamespace(
-        coverage_score=0.7,
-        open_question_severity=0.3,
-        contradiction_count=0,
-        should_continue=False,
+def test_adaptive_continues_while_sub_questions_are_open_or_sources_conflict() -> None:
+    confident = CoverageAssessment(coverage_score=0.9, should_continue=False)
+    should = LeadOrchestrator._adaptive_should_continue
+
+    assert should(IterationSynthesis(summary="s", coverage=confident)) is False
+    assert should(IterationSynthesis(summary="s", coverage=None)) is False
+    assert (
+        should(IterationSynthesis(summary="s", coverage=confident, open_sub_questions=[2]))
+        is True
     )
-    weak = [
-        EvidenceRecord(
-            evidence_id=f"e{i}",
-            task_id="t",
-            query="q",
-            requested_url=f"https://d{i}.example/a",
-            domain=f"d{i}.example",
-            title="T",
-            snippet="s",
-            extracted_text="x",
-            confidence=0.8,
-            credibility_score=0.3,
-        )
-        for i in range(3)
-    ]
-
-    assert LeadOrchestrator._adaptive_should_continue(coverage, weak, 3, 0) is True
-
-    unscored = [ev.model_copy(update={"credibility_score": None}) for ev in weak]
-    assert LeadOrchestrator._adaptive_should_continue(coverage, unscored, 3, 0) is False
+    assert (
+        should(IterationSynthesis(summary="s", coverage=CoverageAssessment(contradiction_count=1)))
+        is True
+    )
 
 
 class CapturingSearchSubagent(FakeSearchSubagent):
@@ -600,7 +588,7 @@ class CapturingSearchSubagent(FakeSearchSubagent):
         self.seen_calls: list[set[str]] = []
 
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         self.seen_calls.append(set(extracted_urls or ()))
         return await super().execute_task(
@@ -612,13 +600,13 @@ class CapturingSearchSubagent(FakeSearchSubagent):
         )
 
 
-def test_orchestrator_passes_already_extracted_urls_per_iteration() -> None:
+def test_orchestrator_passes_already_extracted_urls_per_iteration(tmp_path) -> None:
     subagent = CapturingSearchSubagent()
     orchestrator = LeadOrchestrator(
         lead_agent=FakeLeadAgent(),
         search_subagent=subagent,
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=FakeReportService(),
     )
     request = ResearchRequest(query="q", max_iterations=2, parallelism=1)
@@ -634,7 +622,7 @@ class _StoppingLead(FakeLeadAgent):
         self._coverage = coverage
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         del request, iteration, iteration_evidence, prior_summaries
         return IterationSynthesis(
@@ -649,7 +637,7 @@ class _StoppingLead(FakeLeadAgent):
 
 class _RichSearchSubagent(FakeSearchSubagent):
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         del run_scope, request, progress_callback, extracted_urls
         return [
@@ -663,17 +651,69 @@ class _RichSearchSubagent(FakeSearchSubagent):
                 snippet="s",
                 extracted_text="x",
                 confidence=0.8,
+                credibility_score=0.8,
+                claims=[Claim(statement="the fact", quote="x", sub_question=1)],
             )
             for index in range(3)
         ]
 
 
-def _run_with(lead, subagent, max_iterations: int):
+class _WeakFindingSubagent(FakeSearchSubagent):
+    """Each iteration adds a non-credible page with a new claim for sub-question 1."""
+
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
+    ):
+        del run_scope, request, progress_callback, extracted_urls
+        return [
+            EvidenceRecord(
+                evidence_id=f"e-{task.task_id}",
+                task_id=task.task_id,
+                query=task.focus,
+                requested_url=f"https://example.com/{task.task_id}",
+                title="T",
+                snippet="s",
+                extracted_text="x",
+                confidence=0.8,
+                claims=[
+                    Claim(statement=f"claim {task.task_id}", quote="x", sub_question=1)
+                ],
+            )
+        ]
+
+
+class _LaterCredibleSubagent(FakeSearchSubagent):
+    """One claim for sub-question 1: first on a non-credible page, then on a
+    credible page of one site, which later iterations only repeat."""
+
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
+    ):
+        del run_scope, request, progress_callback, extracted_urls
+        first = task.task_id == "task-0"
+        return [
+            EvidenceRecord(
+                evidence_id=f"e-{task.task_id}",
+                task_id=task.task_id,
+                query=task.focus,
+                requested_url=f"https://example.com/{task.task_id}",
+                domain="first.example" if first else "later.example",
+                title="T",
+                snippet="s",
+                extracted_text="x",
+                confidence=0.8,
+                credibility_score=None if first else 0.8,
+                claims=[Claim(statement="the same fact", quote="x", sub_question=1)],
+            )
+        ]
+
+
+def _run_with(lead, subagent, max_iterations: int, store: RunStore):
     orchestrator = LeadOrchestrator(
         lead_agent=lead,
         search_subagent=subagent,
         citation_agent=FakeCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=store,
         report_service=FakeReportService(),
     )
     return asyncio.run(
@@ -683,7 +723,7 @@ def _run_with(lead, subagent, max_iterations: int):
     )
 
 
-def test_adaptive_ignores_model_stop_on_weak_coverage() -> None:
+def test_adaptive_ignores_model_stop_on_weak_coverage(tmp_path) -> None:
     lead = _StoppingLead(
         CoverageAssessment(
             coverage_score=0.1,
@@ -694,12 +734,12 @@ def test_adaptive_ignores_model_stop_on_weak_coverage() -> None:
         )
     )
 
-    result = _run_with(lead, FakeSearchSubagent(), 3)
+    result = _run_with(lead, _WeakFindingSubagent(), 3, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 3
 
 
-def test_adaptive_stops_on_strong_corpus() -> None:
+def test_adaptive_stops_on_strong_corpus(tmp_path) -> None:
     lead = _StoppingLead(
         CoverageAssessment(
             coverage_score=0.9,
@@ -710,36 +750,40 @@ def test_adaptive_stops_on_strong_corpus() -> None:
         )
     )
 
-    result = _run_with(lead, _RichSearchSubagent(), 5)
+    result = _run_with(lead, _RichSearchSubagent(), 5, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 1
 
 
-def test_adaptive_without_coverage_uses_evidence_signals() -> None:
-    result = _run_with(_StoppingLead(None), FakeSearchSubagent(), 3)
+def test_adaptive_without_coverage_follows_open_sub_questions(tmp_path) -> None:
+    result = _run_with(_StoppingLead(None), _WeakFindingSubagent(), 3, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 3
 
-    strong = [
-        EvidenceRecord(
-            evidence_id=f"e{i}",
-            task_id="t",
-            query="q",
-            requested_url=f"https://d{i}.example/a",
-            domain=f"d{i}.example",
-            title="T",
-            snippet="s",
-            extracted_text="x",
-            confidence=0.8,
-        )
-        for i in range(3)
-    ]
-    assert LeadOrchestrator._adaptive_should_continue(None, strong, 3, 0) is False
+
+def test_adaptive_stops_when_an_iteration_adds_nothing_to_the_checklist(tmp_path) -> None:
+    result = _run_with(_StoppingLead(None), FakeSearchSubagent(), 4, RunStore(tmp_path))
+
+    assert result.run_stats["iterations"] == 2
+
+
+def test_adaptive_stops_without_gain_even_while_sources_conflict(tmp_path) -> None:
+    lead = _StoppingLead(CoverageAssessment(contradiction_count=2))
+
+    result = _run_with(lead, FakeSearchSubagent(), 4, RunStore(tmp_path))
+
+    assert result.run_stats["iterations"] == 2
+
+
+def test_adaptive_counts_a_new_credible_source_as_gain(tmp_path) -> None:
+    result = _run_with(_StoppingLead(None), _LaterCredibleSubagent(), 5, RunStore(tmp_path))
+
+    assert result.run_stats["iterations"] == 3
 
 
 class _PlanStoppingLead(FakeLeadAgent):
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         del request, prior_summaries, memory_context
         return IterationPlan(
@@ -762,7 +806,7 @@ class _CountingSearchSubagent(FakeSearchSubagent):
         self.calls = 0
 
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         self.calls += 1
         return await super().execute_task(
@@ -774,9 +818,9 @@ class _CountingSearchSubagent(FakeSearchSubagent):
         )
 
 
-def test_orchestrator_runs_final_plan_tasks_then_stops() -> None:
+def test_orchestrator_runs_final_plan_tasks_then_stops(tmp_path) -> None:
     subagent = _CountingSearchSubagent()
-    result = _run_with(_PlanStoppingLead(), subagent, 3)
+    result = _run_with(_PlanStoppingLead(), subagent, 3, RunStore(tmp_path))
 
     assert result.run_stats["iterations"] == 2
     assert subagent.calls == 2
@@ -787,7 +831,7 @@ class _ContextCapturingLead(FakeLeadAgent):
         self.contexts: list[list[tuple[str, object]]] = []
 
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         self.contexts.append(list(memory_context))
         return await super().create_iteration_plan(
@@ -795,11 +839,11 @@ class _ContextCapturingLead(FakeLeadAgent):
         )
 
 
-def test_planner_context_lists_prior_focuses_and_queries_only() -> None:
+def test_planner_context_lists_prior_focuses_and_queries_only(tmp_path) -> None:
     import json
 
     lead = _ContextCapturingLead()
-    _run_with(lead, FakeSearchSubagent(), 2)
+    _run_with(lead, FakeSearchSubagent(), 2, RunStore(tmp_path))
 
     assert lead.contexts[0] == [("prior_task_focuses", []), ("queries_run", [])]
     assert lead.contexts[1] == [
@@ -811,18 +855,18 @@ def test_planner_context_lists_prior_focuses_and_queries_only() -> None:
 
 class _RaisingLead(FakeLeadAgent):
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         raise RuntimeError("plan boom")
 
 
-def test_failed_run_persists_failed_status_and_events() -> None:
-    memory_service = MemoryService(InMemoryMemoryStore())
+def test_failed_run_persists_failed_status_and_events(tmp_path) -> None:
+    store = RunStore(tmp_path)
     orchestrator = LeadOrchestrator(
         lead_agent=_RaisingLead(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=memory_service,
+        run_store=store,
         report_service=FakeReportService(),
     )
     seen: dict[str, str] = {}
@@ -841,27 +885,27 @@ def test_failed_run_persists_failed_status_and_events() -> None:
             )
         )
 
-    scope = f"run:{seen['run_id']}"
-    assert memory_service.read(scope, "status") == "failed"
-    events = memory_service.read(scope, "events")
+    status = store.load(seen["run_id"]).status
+    assert status["status"] == "failed"
+    assert "plan boom" in status["error"]
+    events = store.events(seen["run_id"])
     assert events and events[0]["stage"] == "bootstrap"
-    assert "plan boom" in memory_service.read(scope, "error")
 
 
 class _BlockingLead(FakeLeadAgent):
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         await asyncio.sleep(3600)
 
 
-def test_cancelled_run_persists_cancelled_status() -> None:
-    memory_service = MemoryService(InMemoryMemoryStore())
+def test_cancelled_run_persists_cancelled_status(tmp_path) -> None:
+    store = RunStore(tmp_path)
     orchestrator = LeadOrchestrator(
         lead_agent=_BlockingLead(),
         search_subagent=FakeSearchSubagent(),
         citation_agent=FakeCitationAgent(),
-        memory_service=memory_service,
+        run_store=store,
         report_service=FakeReportService(),
     )
     seen: dict[str, str] = {}
@@ -888,6 +932,96 @@ def test_cancelled_run_persists_cancelled_status() -> None:
 
     asyncio.run(main())
 
-    scope = f"run:{seen['run_id']}"
-    assert memory_service.read(scope, "status") == "cancelled"
-    assert memory_service.read(scope, "events")
+    assert store.load(seen["run_id"]).status["status"] == "cancelled"
+    assert store.events(seen["run_id"])
+
+
+class _PartlyMeteredWriter(FakeLeadAgent):
+    last_llm_usage = {"cost_usd": 0.01, "total_tokens": 10}
+    last_call_count = 3
+
+
+def test_unmetered_writer_calls_make_cost_coverage_partial(tmp_path) -> None:
+    orchestrator = LeadOrchestrator(
+        lead_agent=_PartlyMeteredWriter(),
+        search_subagent=FakeSearchSubagent(),
+        citation_agent=FakeCitationAgent(),
+        run_store=RunStore(tmp_path),
+        report_service=FakeReportService(),
+    )
+
+    result = asyncio.run(
+        orchestrator.run(ResearchRequest(query="q", max_iterations=1, parallelism=1))
+    )
+
+    assert result.run_stats["agent_model_calls"] == 6
+    assert result.run_stats["cost_coverage"] == "partial"
+
+
+def test_orchestrator_empty_audit_preserves_citations_and_isolates_callback(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from shandu.agents.auditor import AuditOutcome
+    from shandu.contracts import FinalReportDraft, RunEvent
+
+    class StubLead:
+        fallback_count = 0
+        last_fallback_reason = None
+        last_llm_usage = None
+        last_call_count = 1
+
+        async def create_brief(self, request):
+            return ResearchBrief(scope=request.query, sub_questions=[request.query])
+
+        async def create_iteration_plan(self, **kwargs):
+            del kwargs
+            return IterationPlan(iteration_index=0, subagent_tasks=[], continue_loop=False)
+
+        async def build_final_report(self, **kwargs):
+            del kwargs
+            return FinalReportDraft(
+                title="R",
+                executive_summary="S",
+                sections=[],
+                markdown="# R\n\nUncited body paragraph.",
+            )
+
+    class StubCitation:
+        async def build_citations(self, query, evidence):
+            del query, evidence
+            return [
+                CitationEntry(
+                    citation_id=1,
+                    evidence_ids=["e1"],
+                    url="https://example.com",
+                    title="Example",
+                    publisher="example.com",
+                    accessed_at="2026-11-27",
+                )
+            ]
+
+    class EmptyAuditor:
+        async def audit(self, markdown, citations, evidence):
+            del citations, evidence
+            return AuditOutcome(markdown=markdown, verdicts=[], llm_usage=None, calls=0)
+
+    store = RunStore(tmp_path / "runs")
+    orch = LeadOrchestrator(
+        lead_agent=StubLead(),  # type: ignore[arg-type]
+        search_subagent=SimpleNamespace(),  # type: ignore[arg-type]
+        citation_agent=StubCitation(),
+        run_store=store,
+        report_service=ReportService(),
+        auditor=EmptyAuditor(),
+    )
+
+    def broken_callback(event: RunEvent) -> None:
+        if event.stage == "complete":
+            raise BrokenPipeError("pipe closed")
+
+    result = asyncio.run(
+        orch.run(ResearchRequest(query="q", max_iterations=1, audit=True), progress_callback=broken_callback)
+    )
+    assert len(result.citations) == 1
+    assert "## References" in result.report_markdown
+    assert store.load(result.run_id).status["status"] == "completed"

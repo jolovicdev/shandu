@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+from shandu.agents.lead import LeadAgent, _PlannedTask, _PlanPayload
+from shandu.agents.search_subagent import SearchSubagent, _ExtractionPayload
+from shandu.config import Config, config
+from shandu.contracts import ResearchRequest, SubagentTask
+from shandu.runtime.bootstrap import RuntimeBootstrap
+from shandu.services.scrape import ScrapedPage
+from shandu.services.search import SearchHit
+
+
+class _RecordingDesk:
+    def __init__(self) -> None:
+        self.models: dict[str, str] = {}
+
+    async def arun(self, worker, job):
+        self.models[worker.name] = worker.model
+        if worker.name == "SubagentExtractor":
+            data = _ExtractionPayload(
+                snippet="s",
+                extracted_text="t",
+                confidence=0.5,
+                source_class="unknown",
+                authorship="anonymous",
+                is_promotional=False,
+                self_published=False,
+                summarizes_inaccessible_source=False,
+                claims=[],
+            )
+        else:
+            data = _PlanPayload(
+                goals=[],
+                subagent_tasks=[
+                    _PlannedTask(
+                        task_id="t",
+                        focus="f",
+                        search_queries=[],
+                        expected_output="",
+                        sub_questions=[],
+                        scholarly=False,
+                    )
+                ],
+                continue_loop=True,
+                stop_reason=None,
+            )
+        return SimpleNamespace(status="completed", data=data, metrics={})
+
+
+class _Search:
+    async def search(self, query, max_results):
+        return [SearchHit(query=query, url="https://a.org", title="A", snippet="s")]
+
+
+class _Scrape:
+    async def scrape_many(self, urls):
+        return [
+            ScrapedPage(requested_url=url, url=url, title="A", text="text", domain="a.org")
+            for url in urls
+        ], 0
+
+
+def test_each_role_calls_its_configured_model() -> None:
+    desk = _RecordingDesk()
+    runtime = SimpleNamespace(
+        settings=SimpleNamespace(model="base", role_models={"extractor": "cheap"}),
+        desk=desk,
+    )
+    request = ResearchRequest(query="q")
+
+    asyncio.run(LeadAgent(runtime).create_iteration_plan(request, 0, [], []))
+    asyncio.run(
+        SearchSubagent(runtime, _Search(), _Scrape()).execute_task(
+            "run:r", SubagentTask(task_id="t", focus="f", search_queries=["q"]), request
+        )
+    )
+
+    assert desk.models == {"LeadPlanner": "base", "SubagentExtractor": "cheap"}
+
+
+def test_role_model_env_override_reaches_runtime_settings(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SHANDU_MODEL_WRITER", "anthropic/claude-sonnet")
+    loaded = Config()
+    assert loaded.get("api", "models") == {"writer": "anthropic/claude-sonnet"}
+
+    monkeypatch.setitem(config._config["api"], "models", {"writer": "w", "unknown": "x", "auditor": " "})
+    monkeypatch.setattr(RuntimeBootstrap, "__init__", lambda self, settings: setattr(self, "settings", settings))
+
+    assert RuntimeBootstrap.from_config().settings.role_models == {"writer": "w"}
+
+
+def test_config_and_bootstrap_ignore_null_role_models(tmp_path, monkeypatch) -> None:
+    import json
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    conf_dir = tmp_path / ".shandu"
+    conf_dir.mkdir()
+    (conf_dir / "config.json").write_text(
+        json.dumps({"api": {"model": "deepseek/deepseek-flash", "api_key_env": "DEEPSEEK_API_KEY", "models": {"writer": None}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHANDU_MODEL", "openai/gpt-4o")
+    monkeypatch.delenv("SHANDU_API_KEY_ENV", raising=False)
+    cfg = Config()
+    assert cfg.get_api_key_env_name() == "OPENAI_API_KEY"
+    monkeypatch.setattr("shandu.runtime.bootstrap.config", cfg)
+    boot = RuntimeBootstrap.from_config()
+    try:
+        assert "writer" not in boot.settings.role_models
+    finally:
+        boot.close()

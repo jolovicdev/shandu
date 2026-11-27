@@ -6,6 +6,7 @@ import pytest
 
 from shandu.contracts import AISearchResult, ResearchRequest, ResearchRunResult, RunEvent
 from shandu.engine import ShanduEngine
+from shandu.services.run_store import RunStore
 
 
 class FakeOrchestrator:
@@ -35,11 +36,12 @@ class FakeAISearchService:
         return AISearchResult(query=query, answer_markdown="# answer", sources=[])
 
 
-def test_engine_stream_emits_events() -> None:
+def test_engine_stream_emits_events(tmp_path) -> None:
     engine = ShanduEngine(
         runtime=FakeRuntime(),
         orchestrator=FakeOrchestrator(),
         ai_search_service=FakeAISearchService(),
+        run_store=RunStore(tmp_path),
     )
     request = ResearchRequest(query="q")
 
@@ -53,21 +55,23 @@ def test_engine_stream_emits_events() -> None:
     assert [event.stage for event in events] == ["bootstrap", "complete"]
 
 
-def test_engine_inspect_passthrough() -> None:
+def test_engine_inspect_passthrough(tmp_path) -> None:
     engine = ShanduEngine(
         runtime=FakeRuntime(),
         orchestrator=FakeOrchestrator(),
         ai_search_service=FakeAISearchService(),
+        run_store=RunStore(tmp_path),
     )
     payload = engine.inspect_run("abc")
     assert payload["run_id"] == "abc"
 
 
-def test_engine_ai_search_passthrough() -> None:
+def test_engine_ai_search_passthrough(tmp_path) -> None:
     engine = ShanduEngine(
         runtime=FakeRuntime(),
         orchestrator=FakeOrchestrator(),
         ai_search_service=FakeAISearchService(),
+        run_store=RunStore(tmp_path),
     )
     result = engine.ai_search_sync("markets")
     assert result.query == "markets"
@@ -91,11 +95,12 @@ class BaseErrorOrchestrator:
         raise _Boom()
 
 
-def test_engine_stream_propagates_worker_error() -> None:
+def test_engine_stream_propagates_worker_error(tmp_path) -> None:
     engine = ShanduEngine(
         runtime=FakeRuntime(),
         orchestrator=RaisingOrchestrator(),
         ai_search_service=FakeAISearchService(),
+        run_store=RunStore(tmp_path),
     )
 
     async def collect():
@@ -124,7 +129,7 @@ class BlockingOrchestrator:
             raise
 
 
-def test_engine_run_releases_bootstrap_on_error(monkeypatch) -> None:
+def test_engine_run_releases_bootstrap_on_error(monkeypatch, tmp_path) -> None:
     import shandu.runtime.bootstrap as boot
 
     calls: list[str] = []
@@ -146,6 +151,7 @@ def test_engine_run_releases_bootstrap_on_error(monkeypatch) -> None:
         runtime=FakeRuntime(),
         orchestrator=RaisingOrchestrator(),
         ai_search_service=FakeAISearchService(),
+        run_store=RunStore(tmp_path),
     )
 
     async def main() -> None:
@@ -163,12 +169,13 @@ def test_engine_run_releases_bootstrap_on_error(monkeypatch) -> None:
     assert boot._active_runs == before
 
 
-def test_engine_stream_cancels_worker_on_aclose() -> None:
+def test_engine_stream_cancels_worker_on_aclose(tmp_path) -> None:
     orchestrator = BlockingOrchestrator()
     engine = ShanduEngine(
         runtime=FakeRuntime(),
         orchestrator=orchestrator,
         ai_search_service=FakeAISearchService(),
+        run_store=RunStore(tmp_path),
     )
 
     async def main() -> None:
@@ -187,11 +194,12 @@ def test_engine_stream_cancels_worker_on_aclose() -> None:
     asyncio.run(main())
 
 
-def test_engine_stream_does_not_hang_on_base_exception() -> None:
+def test_engine_stream_does_not_hang_on_base_exception(tmp_path) -> None:
     engine = ShanduEngine(
         runtime=FakeRuntime(),
         orchestrator=BaseErrorOrchestrator(),
         ai_search_service=FakeAISearchService(),
+        run_store=RunStore(tmp_path),
     )
 
     async def collect():

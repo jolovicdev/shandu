@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from .gradio import (
     GuiRunState,
-    _persist_report_markdown,
     _resolved_depth_policy,
     _resolved_detail_level,
     _save_configuration,
@@ -12,7 +11,6 @@ from .gradio import (
 
 __all__ = [
     "GuiRunState",
-    "_persist_report_markdown",
     "_resolved_depth_policy",
     "_resolved_detail_level",
     "_save_configuration",

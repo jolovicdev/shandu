@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +10,7 @@ from blackgeorge import Desk
 from blackgeorge.memory.sqlite import SQLiteMemoryStore
 import litellm
 
-from ..config import DEFAULT_MODEL, config
+from ..config import DEFAULT_MODEL, DEFAULT_STORAGE_DIR, ROLES, config
 from .cost_tracker import CostTracker
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,8 @@ class RuntimeSettings:
     max_tool_calls: int
     num_retries: int
     max_context_messages: int
+    # Per-role model overrides; a role without one uses ``model``.
+    role_models: dict[str, str] = field(default_factory=dict)
 
 
 class RuntimeBootstrap:
@@ -35,23 +37,27 @@ class RuntimeBootstrap:
         self.cost_tracker = CostTracker()
         config.apply_provider_api_key(settings.model)
         litellm.suppress_debug_info = True
-        storage = Path(settings.storage_dir)
+        storage = Path(settings.storage_dir).expanduser()
         storage.mkdir(parents=True, exist_ok=True)
         memory_path = storage / "memory.db"
         self.memory_store = SQLiteMemoryStore(str(memory_path))
-        self.desk = Desk(
-            model=settings.model,
-            temperature=settings.temperature,
-            max_tokens=settings.max_tokens,
-            storage_dir=str(storage),
-            structured_output_retries=settings.structured_output_retries,
-            max_iterations=settings.max_iterations,
-            max_tool_calls=settings.max_tool_calls,
-            num_retries=settings.num_retries,
-            max_context_messages=settings.max_context_messages,
-            respect_context_window=True,
-            memory_store=self.memory_store,
-        )
+        try:
+            self.desk = Desk(
+                model=settings.model,
+                temperature=settings.temperature,
+                max_tokens=settings.max_tokens,
+                storage_dir=str(storage),
+                structured_output_retries=settings.structured_output_retries,
+                max_iterations=settings.max_iterations,
+                max_tool_calls=settings.max_tool_calls,
+                num_retries=settings.num_retries,
+                max_context_messages=settings.max_context_messages,
+                respect_context_window=True,
+                memory_store=self.memory_store,
+            )
+        except BaseException:
+            self.memory_store.close()
+            raise
         try:
             self.desk.event_bus.subscribe("llm.completed", self.cost_tracker.handle_event)
         except Exception:
@@ -68,12 +74,22 @@ class RuntimeBootstrap:
         def lookup(section: str, key: str, default: Any) -> Any:
             return config.get(section, key, default)
 
+        raw_models = lookup("api", "models", {})
+        role_models = (
+            {
+                role: model.strip()
+                for role, model in raw_models.items()
+                if role in ROLES and isinstance(model, str) and model.strip()
+            }
+            if isinstance(raw_models, dict)
+            else {}
+        )
         return cls(
             RuntimeSettings(
                 model=str(lookup("api", "model", DEFAULT_MODEL)),
                 temperature=float(lookup("api", "temperature", 0.2)),
                 max_tokens=int(lookup("api", "max_tokens", 32768)),
-                storage_dir=str(lookup("runtime", "storage_dir", ".blackgeorge")),
+                storage_dir=str(lookup("runtime", "storage_dir", DEFAULT_STORAGE_DIR)),
                 structured_output_retries=int(
                     lookup("runtime", "structured_output_retries", 3)
                 ),
@@ -83,6 +99,7 @@ class RuntimeBootstrap:
                 max_context_messages=int(
                     lookup("runtime", "max_context_messages", 30)
                 ),
+                role_models=role_models,
             )
         )
 
@@ -122,27 +139,7 @@ class RuntimeBootstrap:
                 ],
             }
 
-        scope = f"run:{run_id}"
-        status = self.memory_store.read("status", scope)
-        if status is None:
-            return {"exists": False, "run_id": run_id}
-
-        created_at = self.memory_store.read("created_at", scope)
-        updated_at = self.memory_store.read("updated_at", scope)
-        request_payload = self.memory_store.read("request", scope)
-        result_payload = self.memory_store.read("result", scope)
-        events_payload = self.memory_store.read("events", scope) or []
-        return {
-            "exists": True,
-            "run_id": run_id,
-            "status": status,
-            "created_at": created_at or "",
-            "updated_at": updated_at or created_at or "",
-            "input": request_payload,
-            "output": None,
-            "output_json": result_payload,
-            "events": events_payload if isinstance(events_payload, list) else [],
-        }
+        return {"exists": False, "run_id": run_id}
 
 
 _bootstrap: RuntimeBootstrap | None = None
@@ -169,7 +166,7 @@ def acquire_bootstrap_run() -> None:
 def release_bootstrap_run() -> None:
     global _active_runs
     with _bootstrap_lock:
-        _active_runs -= 1
+        _active_runs = max(0, _active_runs - 1)
         if _active_runs > 0:
             return
         pending = list(_retired)

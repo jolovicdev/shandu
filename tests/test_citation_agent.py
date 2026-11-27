@@ -68,10 +68,9 @@ def test_ledger_merges_same_work_variants_and_unions_ids() -> None:
 
     citations = asyncio.run(agent.build_citations("q", evidence))
 
-    assert [entry.citation_id for entry in citations] == [1, 2]
+    assert [entry.citation_id for entry in citations] == [1]
     assert citations[0].url == "https://arxiv.org/abs/2509.09677"
-    assert set(citations[0].evidence_ids) == {"e1", "e2"}
-    assert citations[1].url == "https://mirror.example/paper"
+    assert set(citations[0].evidence_ids) == {"e1", "e2", "e3"}
 
 
 def test_ledger_short_titles_do_not_merge() -> None:
@@ -128,9 +127,137 @@ def test_ledger_sanitizes_titles() -> None:
     assert by_url["https://example.com/b"].title == "example.com"
 
 
+def test_ledger_strips_markup_and_merges_variants_that_differ_only_by_it() -> None:
+    agent = CitationAgent()
+    evidence = [
+        _record("e1", "https://journal.example/doi/full/1", "Efficacy of <fc>GLP</fc>\u2010 1 agonists in trials"),
+        _record("e2", "https://journal.example/doi/pdf/1", "Efficacy of GLP-1 agonists in trials"),
+    ]
+
+    citations = asyncio.run(agent.build_citations("q", evidence))
+
+    assert [entry.title for entry in citations] == ["Efficacy of GLP\u2010 1 agonists in trials"]
+    assert set(citations[0].evidence_ids) == {"e1", "e2"}
+
+
+def test_ledger_merges_copies_of_one_paper() -> None:
+    evidence = [
+        _record(
+            "e1",
+            "https://www.nature.com/articles/s41591-024-03453-1",
+            "Bioaccumulation of microplastics in decedent human brains - Nature Medicine",
+            site_name="Nature",
+        ),
+        _record("e2", "https://www.nature.com/articles/s41591-024-03453-1.pdf", "Bioaccumulation of microplastics"),
+        _record("e3", "https://www.science.org/doi/full/10.1126/science.adk1234", "Grid inertia in practice"),
+        _record("e4", "https://doi.org/10.1126/science.adk1234", "Science article"),
+        _record("e5", "https://arxiv.org/abs/2401.01234v2", "Paper A abstract page"),
+        _record("e6", "https://arxiv.org/pdf/2401.01234", "Paper A full text"),
+        _record("e7", "https://journal.example/doi/10.1126/science.adk1234/full", "Full text view"),
+        _record("e8", "https://doi.org/10.48550/arXiv.2401.01234", "Paper A record"),
+        _record("e9", "https://data.example/report?id=1", "First data table"),
+        _record("e10", "https://data.example/report?id=2", "Second data table"),
+        _record("e11", "https://docs.vllm.ai/quantized_kvcache", "Quantized KV Cache"),
+        _record("e12", "https://docs.sglang.io/quantized_kv_cache", "Quantized KV Cache"),
+    ]
+
+    citations = asyncio.run(CitationAgent().build_citations("q", evidence))
+
+    assert [entry.evidence_ids for entry in citations] == [
+        ["e1", "e2"],
+        ["e3", "e4", "e7"],
+        ["e5", "e6", "e8"],
+        ["e9"],
+        ["e10"],
+        ["e11"],
+        ["e12"],
+    ]
+
+
+def test_ledger_keeps_works_apart_whose_identifiers_differ() -> None:
+    title = "Coordinated grid inertia estimation across interconnected regions"
+    evidence = [
+        _record("e1", "https://doi.org/10.1126/science.adk1111", title),
+        _record("e2", "https://doi.org/10.1126/science.adk2222", title),
+        _record("e3", "https://arxiv.org/abs/2401.01234v2", title),
+        _record("e4", "https://arxiv.org/abs/2402.04321", title),
+        _record("e5", "https://www.science.org/doi/full/10.1126/science.adk1111", title),
+    ]
+
+    citations = asyncio.run(CitationAgent().build_citations("q", evidence))
+
+    assert [entry.evidence_ids for entry in citations] == [["e1", "e3", "e5"], ["e2"], ["e4"]]
+
+
+def test_ledger_drops_a_title_suffix_that_names_the_publisher() -> None:
+    agent = CitationAgent()
+    evidence = [
+        _record("e1", "https://www.crowdstrike.com/blog/report/", "Falcon Content Update Preliminary Report | CrowdStrike"),
+        _record(
+            "e2",
+            "https://blogs.microsoft.com/blog/help/",
+            "Helping our customers through the outage - The Official Microsoft Blog",
+            site_name="The Official Microsoft Blog",
+        ),
+        _record("e3", "https://learn.microsoft.com/qmr", "Configure quick machine recovery - Windows Server"),
+        _record(
+            "e4",
+            "https://www.nature.com/articles/s41591-024-03453-1",
+            "Bioaccumulation of microplastics in decedent human brains - Nature Medicine",
+            site_name="Nature",
+        ),
+        _record("e5", "https://www.crowdstrike.com/blog/", "Blog | CrowdStrike"),
+        _record("e6", "https://x.com/somebody/status/1", "Thread on chip export rules - Xavier Lee"),
+        _record("e7", "https://www.science.org/content/a", "Why grids lose inertia - Science and society explained"),
+        _record("e8", "https://www.who.int/news/b", "Vaccines reach rural clinics in time - Who benefits?"),
+        _record("e9", "https://www.bbc.co.uk/news/c", "Heatwave closes schools across the north - BBC"),
+        _record("e10", "https://www.biorxiv.org/content/d", "Single-cell maps of the ageing retina | bioRxiv"),
+    ]
+
+    citations = asyncio.run(agent.build_citations("q", evidence))
+
+    assert [entry.title for entry in citations] == [
+        "Falcon Content Update Preliminary Report",
+        "Helping our customers through the outage",
+        "Configure quick machine recovery - Windows Server",
+        "Bioaccumulation of microplastics in decedent human brains",
+        "Blog | CrowdStrike",
+        "Thread on chip export rules - Xavier Lee",
+        "Why grids lose inertia - Science and society explained",
+        "Vaccines reach rural clinics in time - Who benefits?",
+        "Heatwave closes schools across the north",
+        "Single-cell maps of the ageing retina",
+    ]
+
+
+def test_ledger_prefers_the_address_over_a_one_word_section_title() -> None:
+    evidence = [
+        _record("e1", "https://www.eci.com/blog/crowdstrike-incident-what-happened-and-what-now", "Solutions"),
+        _record("e2", "https://en.wikipedia.org/wiki/Microplastics", "Microplastics"),
+        _record("e3", "https://www3.nhk.or.jp/news/tokyo-subway-accident-update", "東京地下鉄事故について"),
+    ]
+
+    citations = asyncio.run(CitationAgent().build_citations("q", evidence))
+
+    assert [entry.title for entry in citations] == [
+        "Crowdstrike incident what happened and what now",
+        "Microplastics",
+        "東京地下鉄事故について",
+    ]
+
+
+def test_ledger_names_an_untitled_document_after_its_file() -> None:
+    agent = CitationAgent()
+    url = "https://gov.example/Documents/2025/Informe-no-confidencial-Comite-28A.pdf"
+
+    citations = asyncio.run(agent.build_citations("q", [_record("e1", url, "gov.example")]))
+
+    assert citations[0].title == "Informe no confidencial Comite 28A"
+
+
 def test_ledger_caps_lede_length_titles() -> None:
     agent = CitationAgent()
-    lede = "A british tokamak just came apart after many plasma pulses " * 6
+    lede = "Grid operators estimate inertia across interconnected regions in real time " * 6
     evidence = [_record("e1", "https://example.com/a", lede)]
 
     citations = asyncio.run(agent.build_citations("q", evidence))
@@ -138,6 +265,8 @@ def test_ledger_caps_lede_length_titles() -> None:
     title = citations[0].title
     assert len(title) <= 160
     assert title.endswith("...")
+    kept = title.removesuffix("...").split()
+    assert lede.split()[: len(kept)] == kept
 
 
 def test_ledger_prefers_site_name_for_publisher() -> None:
@@ -163,3 +292,70 @@ def test_empty_evidence_yields_empty_ledger() -> None:
     agent = CitationAgent()
 
     assert asyncio.run(agent.build_citations("q", [])) == []
+
+
+def test_ledger_leaves_out_pages_the_extractor_judged_off_topic() -> None:
+    agent = CitationAgent()
+    useful = _record("e1", "https://example.org/study", "Field study of heat pumps", 0.8)
+    off_topic = _record("e2", "https://utility.example/rates", "Electric Supply Rates", 0.6)
+    off_topic.confidence = 0.2
+
+    citations = asyncio.run(agent.build_citations("query", [useful, off_topic]))
+
+    assert [entry.url for entry in citations] == ["https://example.org/study"]
+
+
+def test_ledger_drops_a_documentation_heading_anchor_from_titles() -> None:
+    evidence = [
+        _record("e1", "https://docs.vllm.ai/quantized-kv", "Quantized KV Cache¶"),
+        _record("e2", "https://nvidia.github.io/attention", "Multi-Head, Multi-Query, and Group-Query Attention#"),
+        _record("e3", "https://learn.example/csharp", "Getting started with C#"),
+        _record("e4", "https://nvidia.github.io/blog", "Speed up inference with quantization in TRT-LLM#"),
+    ]
+
+    citations = asyncio.run(CitationAgent().build_citations("q", evidence))
+
+    assert [entry.title for entry in citations] == [
+        "Quantized KV Cache",
+        "Multi-Head, Multi-Query, and Group-Query Attention",
+        "Getting started with C#",
+        "Speed up inference with quantization in TRT-LLM",
+    ]
+
+
+def test_citation_agent_math_title_cjk_title_and_arxiv_doi_merge() -> None:
+    agent = CitationAgent()
+    assert (
+        agent._sanitize_title("Achieving <1% Error with Latency >10ms in Models", "fb")
+        == "Achieving <1% Error with Latency >10ms in Models"
+    )
+    cjk = "研究" * 100
+    sanitized = agent._sanitize_title(cjk, "fb")
+    assert sanitized != "..." and len(sanitized) <= 160
+
+    ev1 = EvidenceRecord(
+        evidence_id="e1",
+        task_id="t1",
+        query="q",
+        requested_url="https://doi.org/10.48550/arXiv.2406.02069v2",
+        final_url="https://arxiv.org/abs/2406.02069v2",
+        title="PyramidKV Paper Title Long Enough",
+        snippet="s",
+        extracted_text="body",
+        confidence=0.9,
+        credibility_score=0.9,
+    )
+    ev2 = EvidenceRecord(
+        evidence_id="e2",
+        task_id="t1",
+        query="q",
+        requested_url="https://arxiv.org/abs/2406.02069v2",
+        title="PyramidKV Paper Title Long Enough",
+        snippet="s",
+        extracted_text="body",
+        confidence=0.9,
+        credibility_score=0.9,
+    )
+    citations = asyncio.run(agent.build_citations("q", [ev1, ev2]))
+    assert len(citations) == 1
+    assert citations[0].publisher == "arxiv.org"

@@ -100,6 +100,68 @@ def test_report_service_normalizes_evidence_id_markers_to_numeric_citations() ->
     assert "[Source](https://energy.example/analysis)" in rendered
 
 
+def test_dropped_markers_take_their_leading_space_with_them() -> None:
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown=(
+            "# Report\n\n## Summary\n\n"
+            "The reply could not be read [99]. Signal depends on size [1] and density [42], mostly.\n"
+            "Size grew\u00a0[99].\n\n"
+            "- An item\n    [99] continues here [1].\n"
+        ),
+    )
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=["e1"],
+            url="https://example.com/a",
+            title="A",
+            publisher="example.com",
+            accessed_at="2026-02-21",
+        )
+    ]
+
+    rendered = ReportService().render(ResearchRequest(query="q"), draft, citations)
+
+    assert "The reply could not be read. Signal depends on size [1] and density, mostly." in rendered
+    assert "Size grew." in rendered
+    assert "- An item\n     continues here [1]." in rendered
+
+
+def test_placeholder_markers_are_removed() -> None:
+    draft = FinalReportDraft(
+        title="Report",
+        executive_summary="Summary",
+        sections=[],
+        markdown=(
+            "# Report\n\n## Summary\n\n"
+            "Ratings put the median at 1.98 [no marker]. A lead [Citation needed], then a fact [1].\n"
+            "Rates rose [no citation], fell [source needed], held [unsourced] and dipped [uncited].\n"
+            "Size fell\u00a0[no marker].\n\n"
+            "- An item\n    [no citation] continues here [1].\n"
+        ),
+    )
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=["e1"],
+            url="https://example.com/a",
+            title="A",
+            publisher="example.com",
+            accessed_at="2026-02-21",
+        )
+    ]
+
+    rendered = ReportService().render(ResearchRequest(query="q"), draft, citations)
+
+    assert "Ratings put the median at 1.98. A lead, then a fact [1]." in rendered
+    assert "Rates rose, fell, held and dipped." in rendered
+    assert "Size fell." in rendered
+    assert "- An item\n     continues here [1]." in rendered
+
+
 def test_report_service_reindexes_citation_numbers_without_gaps() -> None:
     service = ReportService()
     request = ResearchRequest(query="Compare X vs Y")
@@ -529,3 +591,50 @@ def test_bare_references_heading_ends_at_next_heading() -> None:
 
     assert "model-invented reference" not in rendered
     assert "## Conclusions" in rendered
+
+
+def test_report_service_fenced_table_grouped_provenance_bare_sources_and_reindex() -> None:
+    service = ReportService()
+    citations = [
+        CitationEntry(
+            citation_id=1,
+            evidence_ids=["e1"],
+            url="https://example.com/a (1)",
+            title="Alpha\nTitle",
+            publisher="example.com",
+            accessed_at="2026-11-27",
+        ),
+        CitationEntry(
+            citation_id=2,
+            evidence_ids=["e2"],
+            url="https://example.com/b",
+            title="Beta",
+            publisher="example.com",
+            accessed_at="2026-11-27",
+        ),
+    ]
+    md = (
+        "# Report\n\n"
+        "````markdown\n"
+        "```python\n"
+        "x = [99]\n"
+        "```\n"
+        "````\n"
+        "| Model | Score | Sources |\n"
+        "|---|---|---|\n"
+        "| A | 95 | [1, 2] |\n\n"
+        "Sources:\n\n"
+        "- [Old](https://old.example)\n\n"
+        "Important paragraph kept [2].\n"
+    )
+    rendered = service.render_result(
+        ResearchRequest(query="q"),
+        FinalReportDraft(title="R", executive_summary="S", sections=[], markdown=md),
+        citations,
+    )
+    assert "x = [99]" in rendered.markdown
+    assert "| Sources |" not in rendered.markdown
+    assert "| A [1][2] | 95 |" in rendered.markdown
+    assert "Important paragraph kept [2]." in rendered.markdown
+    assert "https://example.com/a%20%281%29" in rendered.markdown
+    assert '"Alpha Title"' in rendered.markdown

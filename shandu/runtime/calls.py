@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+import asyncio
+import re
+from typing import Any, Literal
+
+from ..interfaces import RuntimeExecutionLike
+
+# A structured call returns within a few minutes even on a slow reasoning
+# model. A provider that accepts the request and then stalls would hold the
+# run for the HTTP client's ten-minute timeout on each of its retries, so
+# these calls get a shorter deadline and the caller's fallback takes over.
+STRUCTURED_CALL_SECONDS = 420
+# A long report from a slow reasoning model takes several minutes, so the
+# writer gets more room before its next attempt runs.
+WRITER_CALL_SECONDS = 900
+# An agentic task makes many model calls. A loop that runs past this stops;
+# the pages it read stay in the run and only its memo is lost.
+RESEARCHER_LOOP_SECONDS = 1200
+
+RejectionKind = Literal["key", "model", "credit"]
+
+_REJECTION_SUMMARIES: dict[RejectionKind, str] = {
+    "key": "The model provider rejected the API key",
+    "model": "The model provider does not know this model",
+    "credit": "The model provider account is out of credit",
+}
+# Providers word these replies differently, and some send a rejected key as a
+# bad request, so the reply text is matched rather than the error class. A
+# quota that runs out answers as a rate limit, so credit is matched before
+# rate limits are set aside as passing.
+_CREDIT = re.compile(
+    r"insufficient[ _](?:balance|quota|credit)|payment required|credit balance|more credits"
+    r"|exceeded your current quota|billing hard limit",
+    re.IGNORECASE,
+)
+_RATE_LIMIT = re.compile(r"rate[ _]?limit|too many requests", re.IGNORECASE)
+_KEY = re.compile(
+    r"authenticat|api[ _-]?key|unauthori[sz]ed|no auth credentials|permission[ _]?denied",
+    re.IGNORECASE,
+)
+_MODEL = re.compile(
+    r"llm provider not provided|model[ _]not[ _]found|supported api model names"
+    r"|notfounderror|not a valid model|invalid model|models/[^\s]+ is not found"
+    r"|\bmodel\b[^.]{0,80}\b(?:does not exist|not exist)",
+    re.IGNORECASE,
+)
+_TRANSIENT_LITELLM_ERRORS = frozenset(
+    {
+        "Timeout",
+        "APIConnectionError",
+        "ServiceUnavailableError",
+        "InternalServerError",
+        "BadGatewayError",
+    }
+)
+_PROVIDER_ERROR = re.compile(r"^\s*litellm\.(\w+):\s*")
+_WRAPPED_PROVIDER_ERROR = re.compile(r"<last_exception>\s*litellm\.(\w+):\s*")
+_PROVIDER_MESSAGE = re.compile(r'"message"\s*:\s*"([^"]+)"')
+
+
+class ProviderRejectedError(RuntimeError):
+    """A model call failed in a way no retry fixes: a rejected API key, an
+    unknown model, or an account out of credit. Every later call would fail
+    the same way, so the run stops instead of finishing on fallbacks."""
+
+    def __init__(self, kind: RejectionKind, detail: str) -> None:
+        super().__init__(f"{_REJECTION_SUMMARIES[kind]}: {detail}")
+        self.kind: RejectionKind = kind
+
+
+def _rejection(text: str) -> ProviderRejectedError | None:
+    # Only a provider's reply counts. Other failures, such as a structured
+    # answer that does not validate, can quote page text about API keys.
+    provider_error = _PROVIDER_ERROR.match(text) or _WRAPPED_PROVIDER_ERROR.search(text)
+    if provider_error is None:
+        return None
+    error_class = provider_error.group(1)
+    snippet = text[provider_error.start() :]
+    kind: RejectionKind | None = None
+    if _CREDIT.search(snippet):
+        kind = "credit"
+    elif error_class in _TRANSIENT_LITELLM_ERRORS or _RATE_LIMIT.search(snippet):
+        return None
+    elif _KEY.search(snippet):
+        kind = "key"
+    elif _MODEL.search(snippet):
+        kind = "model"
+    if kind is None:
+        return None
+    message = _PROVIDER_MESSAGE.search(snippet)
+    detail = message.group(1) if message else text[provider_error.end() :].partition("\n")[0]
+    detail = re.sub(r"\s*\(request_id: [^)]*\)", "", detail).strip()
+    return ProviderRejectedError(kind, detail[:200])
+
+
+def _rejection_from_exception(exc: BaseException) -> ProviderRejectedError | None:
+    seen: set[int] = set()
+    candidates: list[BaseException] = [exc]
+    while candidates:
+        current = candidates.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        rejected = _rejection(str(current))
+        if rejected is not None:
+            return rejected
+        failed_attempts = getattr(current, "failed_attempts", None)
+        if isinstance(failed_attempts, list) and failed_attempts:
+            last_exc = getattr(failed_attempts[-1], "exception", None)
+            if isinstance(last_exc, BaseException):
+                candidates.append(last_exc)
+        if isinstance(current.__cause__, BaseException):
+            candidates.append(current.__cause__)
+        if isinstance(current.__context__, BaseException):
+            candidates.append(current.__context__)
+    return None
+
+
+async def _arun(runtime: RuntimeExecutionLike, worker: Any, job: Any, seconds: float) -> Any:
+    try:
+        report = await asyncio.wait_for(runtime.desk.arun(worker, job), seconds)
+    except Exception as exc:
+        rejected = _rejection_from_exception(exc)
+        if rejected is not None:
+            raise rejected from exc
+        raise
+    if getattr(report, "status", None) == "failed":
+        for error in getattr(report, "errors", None) or []:
+            rejected = _rejection(str(error))
+            if rejected is not None:
+                raise rejected
+    return report
+
+
+async def structured_call(runtime: RuntimeExecutionLike, worker: Any, job: Any) -> Any:
+    return await _arun(runtime, worker, job, STRUCTURED_CALL_SECONDS)
+
+
+async def writer_call(runtime: RuntimeExecutionLike, worker: Any, job: Any) -> Any:
+    return await _arun(runtime, worker, job, WRITER_CALL_SECONDS)
+
+
+async def researcher_call(runtime: RuntimeExecutionLike, worker: Any, job: Any) -> Any:
+    return await _arun(runtime, worker, job, RESEARCHER_LOOP_SECONDS)

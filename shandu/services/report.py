@@ -4,10 +4,10 @@ import re
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import datetime
 
-from ..config import config
 from ..contracts import CitationEntry, FinalReportDraft, ResearchRequest
+from .run_store import default_run_store
 
 # Placeholder for a protected segment (fenced code, inline code, link) while
 # the marker passes run. Null bytes cannot appear in model output, and the
@@ -36,29 +36,51 @@ _BANNED_PROVENANCE_HEADERS = {
 }
 
 
+# Writers sometimes print a placeholder where a citation would go.
+_PLACEHOLDER_MARKER = re.compile(
+    r"(?:(?<=\S)[ \t\u00a0]+)?\[(?:no marker|no citation|citation needed|source needed|unsourced|uncited)\]",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RecentReport:
+    run_id: str
+    title: str
+    started_at: str
+    citations: int | None
+    usd_spent: float | None
+    path: str
+
+
+def list_recent_reports() -> list[RecentReport]:
+    reports: list[RecentReport] = []
+    for run in default_run_store().list_runs():
+        if run.report_path is None:
+            continue
+        # Runs are listed by start, so the start is the time shown; it also
+        # tells apart runs of one question on the same day.
+        try:
+            started = datetime.fromisoformat(run.created_at).astimezone()
+        except ValueError:
+            started = datetime.fromtimestamp(run.report_path.stat().st_mtime)
+        reports.append(
+            RecentReport(
+                run_id=run.run_id,
+                title=run.query or run.run_id,
+                started_at=started.strftime("%d %b %Y, %H:%M"),
+                citations=run.citation_count,
+                usd_spent=run.usd_spent,
+                path=str(run.report_path),
+            )
+        )
+    return reports
+
+
 @dataclass(frozen=True, slots=True)
 class RenderedReport:
     markdown: str
     citations: list[CitationEntry]
-
-
-def persist_report_markdown(run_id: str, markdown: str) -> str | None:
-    text = markdown.strip()
-    if not text:
-        return None
-    try:
-        storage = Path(str(config.get("runtime", "storage_dir", ".blackgeorge")))
-        export_dir = storage / "exports"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        safe_run = (
-            "".join(char if char.isalnum() else "_" for char in run_id).strip("_")
-            or "report"
-        )
-        file_path = export_dir / f"{safe_run}.md"
-        file_path.write_text(text, encoding="utf-8")
-        return str(file_path)
-    except Exception:
-        return None
 
 
 class ReportService:
@@ -131,12 +153,22 @@ class ReportService:
         return "\n".join(lines).strip()
 
     def _reference_lines(self, citations: list[CitationEntry]) -> list[str]:
-        return [
-            f"- **[{entry.citation_id}] {entry.publisher}** - "
-            f'"{entry.title}". [Source]({entry.url}) '
-            f"(accessed {entry.accessed_at})"
-            for entry in sorted(citations, key=lambda item: item.citation_id)
-        ]
+        lines: list[str] = []
+        for entry in sorted(citations, key=lambda item: item.citation_id):
+            publisher = " ".join(entry.publisher.split())
+            title = " ".join(entry.title.split())
+            url = (
+                entry.url.strip()
+                .replace(" ", "%20")
+                .replace("(", "%28")
+                .replace(")", "%29")
+            )
+            lines.append(
+                f"- **[{entry.citation_id}] {publisher}** - "
+                f'"{title}". [Source]({url}) '
+                f"(accessed {entry.accessed_at})"
+            )
+        return lines
 
     def _strip_provenance_columns(self, markdown: str) -> str:
         lines = markdown.splitlines()
@@ -183,7 +215,7 @@ class ReportService:
         if any(len(cells) != len(header) for cells in body):
             return rows
 
-        marker_pattern = re.compile(r"\[[A-Za-z0-9_-]{1,64}\]")
+        marker_pattern = re.compile(r"\[(?:[A-Za-z0-9_-]{1,64}|\d+(?:\s*,\s*\d+)+)\]")
 
         def join(cells: list[str]) -> str:
             return "| " + " | ".join(cells) + " |"
@@ -259,6 +291,17 @@ class ReportService:
             boundary = re.match(r"^\s{0,3}(#{1,6})\s+", lines[end])
             if boundary and len(boundary.group(1)) <= level:
                 break
+            if level == 7 and lines[end].strip():
+                resolved = lines[end].strip()
+                for index, segment in enumerate(protected):
+                    token = _PROTECTED_TEMPLATE.format(index)
+                    if token in resolved:
+                        resolved = resolved.replace(token, segment)
+                if not (
+                    self._looks_like_reference_entry(resolved)
+                    or lines[end].startswith((" ", "\t"))
+                ):
+                    break
             end += 1
         return end
 
@@ -298,21 +341,39 @@ class ReportService:
 
         chunks: list[str] = []
         fence: list[str] = []
-        fence_mark = ""
-        in_fence = False
+        fence_char = ""
+        fence_len = 0
+        fence_pattern = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
         for line in markdown.splitlines(keepends=True):
-            stripped = line.strip()
-            if stripped.startswith("```") or stripped.startswith("~~~"):
-                fence.append(line)
-                if in_fence and stripped[:3] == fence_mark:
-                    chunks.append(stash("".join(fence)))
-                    fence = []
-                    in_fence = False
-                elif not in_fence:
-                    fence_mark = stripped[:3]
-                    in_fence = True
-                continue
-            if in_fence:
+            line_body = line.rstrip("\r\n")
+            line_end = line[len(line_body) :]
+            fence_match = fence_pattern.match(line_body)
+            if fence_match:
+                marker, info = fence_match.group(1), fence_match.group(2)
+                if fence_char:
+                    fence.append(line)
+                    if (
+                        marker[0] == fence_char
+                        and len(marker) >= fence_len
+                        and not info.strip()
+                    ):
+                        # Keep the closing line break outside the placeholder so
+                        # a table or heading right after the fence stays at column 0.
+                        block = "".join(fence)
+                        if line_end and block.endswith(line_end):
+                            chunks.append(stash(block[: -len(line_end)]) + line_end)
+                        else:
+                            chunks.append(stash(block))
+                        fence = []
+                        fence_char = ""
+                        fence_len = 0
+                    continue
+                if not (marker[0] == "`" and "`" in info):
+                    fence_char = marker[0]
+                    fence_len = len(marker)
+                    fence.append(line)
+                    continue
+            if fence_char:
                 fence.append(line)
                 continue
             chunks.append(self._stash_line_segments(line, stash))
@@ -392,26 +453,33 @@ class ReportService:
                 if evidence_id:
                     evidence_to_number[evidence_id] = number
 
-        marker_pattern = re.compile(r"\[([A-Za-z0-9_-]{1,64})\]")
+        # A dropped marker takes the spaces before it, so "size [99]." reads
+        # "size." rather than "size .", except at a line start, where they are
+        # indentation. Matching starts only where a run of spaces starts, which
+        # keeps a long run linear.
+        marker_pattern = re.compile(
+            r"(?<![ \t\u00a0])([ \t\u00a0]*)\[([A-Za-z0-9_-]{1,64})\]"
+        )
 
         def replace(match: re.Match[str]) -> str:
-            token = match.group(1).strip()
-            if not token:
-                return ""
+            space, token = match.groups()
+            starts_line = match.start() == 0 or match.string[match.start() - 1] == "\n"
+            dropped = space if starts_line else ""
             if token.isdigit():
                 if token in valid_numbers:
-                    return f"[{int(token)}]"
-                return ""
+                    return f"{space}[{int(token)}]"
+                return dropped
             mapped = evidence_to_number.get(token)
             if mapped:
-                return f"[{mapped}]"
+                return f"{space}[{mapped}]"
             if re.fullmatch(r"[0-9a-fA-F]{32}", token):
-                return ""
+                return dropped
             return match.group(0)
 
         text = marker_pattern.sub(replace, markdown)
         text = re.sub(r"(\[(\d+)\])(?:\s*\[\2\])+", r"[\2]", text)
-        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = _PLACEHOLDER_MARKER.sub("", text)
+        text = re.sub(r"(?<![ \t])[ \t]+\n", "\n", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
@@ -462,10 +530,11 @@ class ReportService:
         citation_by_id = {entry.citation_id: entry for entry in citations}
         kept_entries: list[CitationEntry] = []
         id_map: dict[int, int] = {}
-        for new_id, old_id in enumerate(ordered_used, start=1):
+        for old_id in ordered_used:
             entry = citation_by_id.get(old_id)
             if entry is None:
                 continue
+            new_id = len(kept_entries) + 1
             kept_entries.append(entry.model_copy(update={"citation_id": new_id}))
             id_map[old_id] = new_id
 
@@ -478,6 +547,6 @@ class ReportService:
 
         normalized_body = marker_pattern.sub(replace, body)
         normalized_body = re.sub(r"(\[(\d+)\])(?:\s*\[\2\])+", r"[\2]", normalized_body)
-        normalized_body = re.sub(r"[ \t]+\n", "\n", normalized_body)
+        normalized_body = re.sub(r"(?<![ \t])[ \t]+\n", "\n", normalized_body)
         normalized_body = re.sub(r"\n{3,}", "\n\n", normalized_body).strip()
         return normalized_body, kept_entries

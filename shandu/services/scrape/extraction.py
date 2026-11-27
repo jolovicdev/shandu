@@ -4,22 +4,35 @@ import csv
 import io
 import json
 import re
+import threading
+import warnings
+import zipfile
 from collections.abc import Iterable
 from datetime import datetime
+from html import unescape
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
-from bs4 import BeautifulSoup
+import lxml.etree
+import lxml.html
+from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
 
 from .constants import (
     _CAPTCHA_PATTERNS,
+    _ERROR_PAGE_MAX_WORDS,
+    _ERROR_PAGE_TITLE,
     _MAX_EXTRACTED_CHARS,
-    _MAX_PDF_PAGES,
+    _MAX_PAGE_LINKS,
     _MAX_XLSX_ROWS,
     _MIN_ARTICLE_WORDS,
     _PAYWALL_PATTERNS,
 )
-from .models import ContentBlock, _ExtractionResult, _ParseError
+from .models import ContentBlock, PageLink, _ExtractionResult, _ParseError
+
+# Feeds and other XML sent as text/xml take the HTML path, which reads their
+# title and text; bs4 would warn about each one. The filter covers only the
+# parses here, so an application's own bs4 calls keep the warning.
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning, module=__name__)
 
 
 def _cap_text(text: str) -> str:
@@ -114,7 +127,7 @@ def _trafilatura_xml_to_blocks(xml_str: str) -> list[ContentBlock]:
     return blocks
 
 
-def _soup_to_blocks(soup: BeautifulSoup) -> list[ContentBlock]:
+def _soup_to_blocks(soup: Tag) -> list[ContentBlock]:
     blocks: list[ContentBlock] = []
     for node in soup.find_all(sorted(_HTML_CAPTURED_TAGS)):
         if any(parent.name in _HTML_CAPTURED_TAGS for parent in node.parents):
@@ -160,8 +173,10 @@ def _extract_with_trafilatura(html: str) -> _ExtractionResult | None:
             return None
         # Title and date are attributes of <doc>; the body carries the blocks.
         doc = BeautifulSoup(xml_result, "lxml-xml").find("doc")
-        title = (doc.get("title", "") if doc is not None else "").strip()
-        published_at = (doc.get("date", "") if doc is not None else "").strip() or None
+        raw_title = doc.get("title", "") if doc is not None else ""
+        raw_date = doc.get("date", "") if doc is not None else ""
+        title = raw_title.strip() if isinstance(raw_title, str) else ""
+        published_at = (raw_date.strip() if isinstance(raw_date, str) else "") or None
         blocks = _trafilatura_xml_to_blocks(xml_result)
         text = "\n".join(block.text for block in blocks).strip()
         if len(text.split()) < _MIN_ARTICLE_WORDS:
@@ -227,6 +242,9 @@ _ARXIV_STAMP = re.compile(
 )
 
 
+_TITLE_TAG = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
 def _arxiv_stamp_date(html: str) -> str | None:
     # arXiv HTML papers carry no date metadata, only the version stamp
     # "arXiv:2309.17453v4 [cs.CL] 07 Apr 2024"; without it the date falls to
@@ -248,34 +266,130 @@ def _extract_html(html: str) -> _ExtractionResult:
         result = _extract_with_bs4(html)
     result.site_name = _extract_site_name(html)
     result.published_at = _arxiv_stamp_date(html) or result.published_at
+    if "ltx_title_document" in html:
+        result.title = _latexml_title(html) or result.title
     return result
+
+
+def _latexml_title(html: str) -> str:
+    """The title of a LaTeXML page (arXiv HTML) from its heading.
+
+    The heading carries the author footnotes and each formula's TeX source,
+    which go, and line breaks that the page's <title> drops without a space,
+    as in "ChangesKV-Cache".
+    """
+    document = _parse_html(html)
+    headings = document.find_class("ltx_title_document") if document is not None else []
+    for heading in headings:
+        for note in heading.xpath(
+            './/*[contains(@class, "ltx_note") or contains(@class, "ltx_pubnotes")]'
+            " | .//annotation | .//annotation-xml"
+        ):
+            note.drop_tree()
+        for line_break in heading.iter("br"):
+            line_break.tail = " " + (line_break.tail or "")
+        title = " ".join(heading.text_content().replace("\N{ZERO WIDTH SPACE}", "").split())
+        if title:
+            return title
+    page_title = _TITLE_TAG.search(html)
+    return " ".join(unescape(page_title.group(1)).split()) if page_title else ""
+
+
+_FITZ_BOLD_FLAG = 16
+
+
+def _inked_size(spans: list[dict[str, Any]]) -> float:
+    return max((span["size"] for span in spans if span.get("text", "").strip()), default=0.0)
+
+
+def _body_size(spans: list[dict[str, Any]]) -> float:
+    """Type size weighted by characters, so small caps count at their small size.
+
+    A small-caps section heading sets one capital per word in type larger
+    than the title, which would otherwise outrank the title.
+    """
+    inked = [(span["size"], len(span["text"].strip())) for span in spans if span.get("text", "").strip()]
+    chars = sum(length for _, length in inked)
+    return sum(size * length for size, length in inked) / chars
+
+
+def _horizontal_lines(block: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    # Preprint servers stamp a rotated identifier in the margin in larger type
+    # than the title.
+    return [
+        line.get("spans", [])
+        for line in block.get("lines", [])
+        if tuple(line.get("dir", (1, 0))) == (1, 0) and _inked_size(line.get("spans", []))
+    ]
+
+
+def _title_text(lines: list[list[dict[str, Any]]], page_text: str) -> str:
+    # Word spaces can be spans of their own, so spans join with nothing between.
+    text = "\n".join("".join(span.get("text", "") for span in spans) for spans in lines)
+
+    # A hyphen at a title's line end is usually the compound's own, as in
+    # "Retrieval-augmented". It splits one word only when the page spells
+    # that word whole, as an abstract does with "pyramidal".
+    def join(match: re.Match[str]) -> str:
+        whole = match[1] + match[2]
+        if re.search(rf"\b{re.escape(whole)}\b", page_text, re.IGNORECASE):
+            return whole
+        return f"{match[1]}-{match[2]}"
+
+    title = " ".join(re.sub(r"(\w+)-[ \t]*\n[ \t]*(\w+)", join, text).split())
+    return title if 10 < len(title) < 300 else ""
 
 
 def _pdf_layout_title(page: Any) -> str:
     """Title from the first-page block set in the largest horizontal type.
 
-    Horizontal only: preprint servers stamp a rotated identifier in the margin
-    in larger type than the title.
+    Within that block, every line set near the largest size is kept whole,
+    since small caps put most letters of a title in smaller spans than its
+    capitals.
     """
     best_size = 0.0
-    best_text = ""
+    best_lines: list[list[dict[str, Any]]] = []
     for block in page.get_text("dict").get("blocks", []):
-        spans = [
-            span
-            for line in block.get("lines", [])
-            if tuple(line.get("dir", (1, 0))) == (1, 0)
-            for span in line.get("spans", [])
-            if span.get("text", "").strip()
-        ]
-        if not spans:
+        lines = _horizontal_lines(block)
+        if not lines:
             continue
-        size = max(round(span["size"], 1) for span in spans)
+        size = max(_body_size(spans) for spans in lines)
         if size > best_size:
             best_size = size
-            best_text = " ".join(
-                span["text"].strip() for span in spans if round(span["size"], 1) == size
-            )
-    return best_text if 10 < len(best_text) < 300 else ""
+            best_lines = lines
+    top = max((_inked_size(spans) for spans in best_lines), default=0.0)
+    return _title_text(
+        [spans for spans in best_lines if _inked_size(spans) >= 0.9 * top], page.get_text()
+    )
+
+
+def _pdf_bold_title(page: Any) -> str:
+    """Title from the first mostly bold block in the top third of the page.
+
+    Some journal styles set the title in bold at body size, so the largest
+    type on the page belongs to the body text.
+    """
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("bbox", (0, 0, 0, 0))[1] > page.rect.height / 3:
+            continue
+        lines = _horizontal_lines(block)
+        inked = [span for spans in lines for span in spans if span.get("text", "").strip()]
+        bold = sum(len(span["text"]) for span in inked if span.get("flags", 0) & _FITZ_BOLD_FLAG)
+        if 2 * bold > sum(len(span["text"]) for span in inked):
+            title = _title_text(lines, page.get_text())
+            if title:
+                return title
+    return ""
+
+
+# Document templates leave their placeholders in the PDF title field: the bare
+# word "Title", a style hint, a font note, or only the document date. Office's
+# print to PDF writes the app name and the file name instead.
+_PDF_PLACEHOLDER_TITLE = re.compile(
+    r"^title$|style here\W*\)$|\(\s*[\w ]+\d+(?:\.\d+)?\s*pt\s*\)$|^[a-z]+ \d{1,2}, \d{4}$"
+    r"|^microsoft (?:word|powerpoint|excel) - ",
+    re.IGNORECASE,
+)
 
 
 def _pdf_creation_date(metadata: dict[str, Any]) -> str | None:
@@ -284,37 +398,81 @@ def _pdf_creation_date(metadata: dict[str, Any]) -> str | None:
     return "-".join(match.groups()) if match else None
 
 
+# MuPDF is not thread-safe and pages are parsed in worker threads, so one
+# document is read at a time. Reading several at once needs a process each.
+_PDF_LOCK = threading.Lock()
+
+
 def _parse_pdf(data: bytes) -> _ExtractionResult:
     try:
         import fitz
 
-        doc = fitz.open(stream=data, filetype="pdf")
-        try:
-            if doc.page_count > _MAX_PDF_PAGES:
-                raise _ParseError("non_text_content", f"PDF exceeds {_MAX_PDF_PAGES} pages")
-            metadata = doc.metadata or {}
-            title = (metadata.get("title") or "").strip()
-            if not title and len(doc) > 0:
-                title = _pdf_layout_title(doc[0])
-            full_text: list[str] = []
-            for page in doc:
-                full_text.append(page.get_text())
-            text = _cap_text("\n".join(full_text))
-            if not text:
-                raise _ParseError("pdf_parse_failed", "Empty PDF text")
-            return _ExtractionResult(
-                title=title, text=text, published_at=_pdf_creation_date(metadata)
-            )
-        finally:
-            doc.close()
+        with _PDF_LOCK:
+            doc = fitz.open(stream=data, filetype="pdf")
+            try:
+                metadata = doc.metadata or {}
+                title = (metadata.get("title") or "").strip()
+                if _PDF_PLACEHOLDER_TITLE.search(title):
+                    title = ""
+                if not title and len(doc) > 0:
+                    title = _pdf_layout_title(doc[0]) or _pdf_bold_title(doc[0])
+                # A long report is read from the front until the text cap is
+                # full, which keeps its summary and opening chapters.
+                full_text: list[str] = []
+                length = 0
+                for page in doc:
+                    page_text = page.get_text()
+                    full_text.append(page_text)
+                    length += len(page_text)
+                    if length >= _MAX_EXTRACTED_CHARS:
+                        break
+                text = _cap_text("\n".join(full_text))
+                if not text:
+                    raise _ParseError("pdf_parse_failed", "Empty PDF text")
+                return _ExtractionResult(
+                    title=title, text=text, published_at=_pdf_creation_date(metadata)
+                )
+            finally:
+                doc.close()
     except _ParseError:
         raise
     except Exception as exc:
         raise _ParseError("pdf_parse_failed", str(exc)) from exc
 
 
+_MAX_ZIP_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+
+
+def _check_zip_size(data: bytes) -> None:
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        if sum(info.file_size for info in archive.infolist()) > _MAX_ZIP_UNCOMPRESSED_BYTES:
+            raise _ParseError("non_text_content", "Archive exceeds uncompressed size limit")
+
+
+def _decode_text_bytes(data: bytes, charset: str | None) -> str:
+    if charset:
+        try:
+            return data.decode(charset, errors="replace").lstrip("\ufeff")
+        except LookupError:
+            pass
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        import chardet
+
+        detected = chardet.detect(data[:32768]).get("encoding")
+        if detected:
+            return data.decode(detected, errors="replace").lstrip("\ufeff")
+    except Exception:
+        pass
+    return data.decode("utf-8-sig", errors="replace")
+
+
 def _parse_docx(data: bytes) -> _ExtractionResult:
     try:
+        _check_zip_size(data)
         from docx import Document
         from docx.oxml.ns import qn
 
@@ -367,21 +525,28 @@ def _parse_docx(data: bytes) -> _ExtractionResult:
 
 def _parse_xlsx(data: bytes) -> _ExtractionResult:
     try:
+        _check_zip_size(data)
         from openpyxl import load_workbook
 
         wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
         try:
             rows: list[str] = []
-            row_count = 0
+            non_empty = 0
+            scanned = 0
+            chars = 0
+            max_scan = _MAX_XLSX_ROWS * 4
             for sheet in wb:
                 for row in sheet.iter_rows(values_only=True):
+                    scanned += 1
                     cells = [str(c) for c in row if c is not None]
                     if cells:
-                        rows.append(" | ".join(cells))
-                    row_count += 1
-                    if row_count >= _MAX_XLSX_ROWS:
+                        line = " | ".join(cells)
+                        rows.append(line)
+                        non_empty += 1
+                        chars += len(line) + 1
+                    if non_empty >= _MAX_XLSX_ROWS or chars >= _MAX_EXTRACTED_CHARS or scanned >= max_scan:
                         break
-                if row_count >= _MAX_XLSX_ROWS:
+                if non_empty >= _MAX_XLSX_ROWS or chars >= _MAX_EXTRACTED_CHARS or scanned >= max_scan:
                     break
             text = _cap_text("\n".join(rows))
             if not text:
@@ -396,14 +561,19 @@ def _parse_xlsx(data: bytes) -> _ExtractionResult:
         raise _ParseError("non_text_content", str(exc)) from exc
 
 
-def _parse_csv(data: bytes) -> _ExtractionResult:
+def _parse_csv(data: bytes, charset: str | None = None) -> _ExtractionResult:
     try:
-        text = data.decode("utf-8", errors="ignore")
+        text = _decode_text_bytes(data, charset)
         reader = csv.reader(io.StringIO(text))
         rows: list[str] = []
+        chars = 0
         for row in reader:
             if row:
-                rows.append(" | ".join(row))
+                line = " | ".join(row)
+                rows.append(line)
+                chars += len(line) + 1
+                if chars >= _MAX_EXTRACTED_CHARS:
+                    break
         text = _cap_text("\n".join(rows))
         if not text:
             raise _ParseError("non_text_content", "Empty CSV")
@@ -414,23 +584,85 @@ def _parse_csv(data: bytes) -> _ExtractionResult:
         raise _ParseError("non_text_content", str(exc)) from exc
 
 
-def _parse_plaintext(data: bytes) -> _ExtractionResult:
-    text = _cap_text(data.decode("utf-8", errors="ignore"))
+def _parse_plaintext(data: bytes, charset: str | None = None) -> _ExtractionResult:
+    text = _cap_text(_decode_text_bytes(data, charset))
     if not text:
         raise _ParseError("non_text_content", "Empty text file")
     return _ExtractionResult(title="", text=text)
 
 
-def _extract_published_at(html: str) -> str | None:
-    soup = BeautifulSoup(html, "lxml")
+def _parse_html(html: str) -> lxml.html.HtmlElement | None:
+    # Plain lxml: a second BeautifulSoup tree per page costs about 20 times
+    # more. UTF-8 bytes, because lxml rejects a str that carries an XML
+    # encoding declaration. A fresh parser per call avoids sharing mutable
+    # libxml2 parser state across worker threads.
+    try:
+        return lxml.html.fromstring(
+            html.encode("utf-8"), parser=lxml.html.HTMLParser(encoding="utf-8")
+        )
+    except (ValueError, lxml.etree.ParserError):
+        return None
 
-    og_time = soup.find("meta", attrs={"property": "article:published_time"})
-    if og_time and og_time.get("content"):
-        return str(og_time["content"]).strip()
 
-    for script in soup.select("script[type='application/ld+json']"):
+def _first_meta_content(
+    metas: list[lxml.html.HtmlElement], attribute: str, value: str
+) -> str | None:
+    for meta in metas:
+        if meta.get(attribute) == value:
+            return meta.get("content")
+    return None
+
+
+def _extract_links(html: str, base_url: str) -> list[PageLink]:
+    """Outbound links with their anchor text, links to other hosts first.
+
+    Links to other hosts are where a page cites its sources, so they lead;
+    site chrome is dropped before the scan so menus do not fill the list.
+    """
+    document = _parse_html(html)
+    if document is None:
+        return []
+    for tag in document.xpath("//nav|//header|//footer|//aside|//script|//style"):
+        tag.drop_tree()
+    base_host = (urlsplit(base_url).hostname or "").removeprefix("www.")
+    external: list[PageLink] = []
+    internal: list[PageLink] = []
+    seen = {base_url}
+    for anchor in document.iter("a"):
+        href = anchor.get("href")
+        if not href:
+            continue
         try:
-            data = json.loads(script.string or "")
+            url = urljoin(base_url, href.strip()).split("#", 1)[0]
+            if not url.lower().startswith(("http://", "https://")) or url in seen:
+                continue
+            host = (urlsplit(url).hostname or "").removeprefix("www.")
+        except ValueError:
+            continue
+        text = " ".join(anchor.text_content().split())
+        if len(text) < 3:
+            continue
+        seen.add(url)
+        target = internal if host == base_host else external
+        target.append(PageLink(url=url, text=text[:120]))
+    return (external + internal)[:_MAX_PAGE_LINKS]
+
+
+def _extract_published_at(html: str) -> str | None:
+    document = _parse_html(html)
+    if document is None:
+        return None
+    metas = list(document.iter("meta"))
+
+    og_time = _first_meta_content(metas, "property", "article:published_time")
+    if og_time:
+        return og_time.strip()
+
+    for script in document.iter("script"):
+        if (script.get("type") or "").lower() != "application/ld+json":
+            continue
+        try:
+            data = json.loads(script.text or "")
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(data, dict):
@@ -459,29 +691,38 @@ def _extract_published_at(html: str) -> str | None:
         "uploadDate",
     )
     for meta_name in meta_names:
-        tag = soup.find("meta", attrs={"name": meta_name})
-        if tag and tag.get("content"):
-            return str(tag["content"]).strip()
+        content = _first_meta_content(metas, "name", meta_name)
+        if content:
+            return content.strip()
 
-    time_tag = soup.find("time", attrs={"datetime": True})
-    if time_tag:
-        return str(time_tag["datetime"]).strip()
+    for time_tag in document.iter("time"):
+        stamp = time_tag.get("datetime")
+        if stamp and stamp.strip():
+            return stamp.strip()
 
     return None
 
 
 def _detect_fetch_error(html: str | None, text: str) -> str | None:
     if html:
-        if len(html) > 8000 and len(text.split()) < 40:
-            return "empty_js_shell"
-
-        weak_text = len(text.split()) < 80
-        if weak_text:
+        word_count = len(text.split())
+        if word_count < 80:
             html_lower = html.lower()
             if any(p.search(html_lower) for p in _CAPTCHA_PATTERNS):
                 return "captcha"
             if any(p.search(html_lower) for p in _PAYWALL_PATTERNS):
                 return "paywall"
+
+        if len(html) > 8000 and word_count < 40:
+            return "empty_js_shell"
+
+        title = _TITLE_TAG.search(html)
+        if (
+            title
+            and word_count < _ERROR_PAGE_MAX_WORDS
+            and _ERROR_PAGE_TITLE.search(unescape(title.group(1)))
+        ):
+            return "error_page"
 
     return None
 
@@ -541,9 +782,11 @@ def _guess_format(url: str, content_type: str) -> str:
 
 
 def _extract_site_name(html: str) -> str | None:
-    tag = BeautifulSoup(html, "lxml").find("meta", attrs={"property": "og:site_name"})
-    content = tag.get("content") if tag is not None else None
-    cleaned = " ".join(str(content).split()) if content else ""
+    document = _parse_html(html)
+    if document is None:
+        return None
+    content = _first_meta_content(list(document.iter("meta")), "property", "og:site_name")
+    cleaned = " ".join(content.split()) if content else ""
     return cleaned[:160] or None
 
 

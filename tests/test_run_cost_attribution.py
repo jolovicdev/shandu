@@ -6,15 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 from blackgeorge.core.event import Event
-from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
 from shandu.agents.lead import LeadAgent, _PlanPayload, _SynthesisPayload
 from shandu.agents.search_subagent import SearchSubagent, _ExtractionPayload
-from shandu.contracts import ResearchRequest, SubagentTask
+from shandu.contracts import ResearchBrief, ResearchRequest, SubagentTask
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
 from shandu.runtime.bootstrap import RuntimeBootstrap, RuntimeSettings
 from shandu.services.ai_search import AISearchService
-from shandu.services.memory import MemoryService
+from shandu.services.run_store import RunStore
 from shandu.services.report import ReportService
 from shandu.services.scrape import ScrapedPage
 from shandu.services.search import SearchHit
@@ -47,7 +46,10 @@ class _LeadDesk:
     async def arun(self, worker, job):
         del worker
         schema = getattr(job, "response_schema", None)
-        if schema is _PlanPayload:
+        if schema is ResearchBrief:
+            data = ResearchBrief(scope="s", sub_questions=["q"])
+            content = None
+        elif schema is _PlanPayload:
             data = _PlanPayload(
                 goals=["g"], subagent_tasks=[], continue_loop=False, stop_reason=None
             )
@@ -64,6 +66,7 @@ class _LeadDesk:
                 contradiction_count=0,
                 recency_score=1.0,
                 coverage_should_continue=False,
+                open_sub_questions=[],
             )
             content = None
         else:
@@ -79,7 +82,7 @@ class _LeadDesk:
 
 
 class _EmptySearchSubagent:
-    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None):
+    async def execute_task(self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None):
         del run_scope, task, request, progress_callback, extracted_urls
         return []
 
@@ -90,12 +93,12 @@ class _EmptyCitationAgent:
         return []
 
 
-def test_lead_usage_reaches_completion_events_and_run_stats() -> None:
+def test_lead_usage_reaches_completion_events_and_run_stats(tmp_path) -> None:
     orchestrator = LeadOrchestrator(
         lead_agent=LeadAgent(runtime=_MeteredRuntime(_LeadDesk())),
         search_subagent=_EmptySearchSubagent(),
         citation_agent=_EmptyCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=ReportService(),
     )
     events: list = []
@@ -113,10 +116,10 @@ def test_lead_usage_reaches_completion_events_and_run_stats() -> None:
     assert plan_events[0].metrics.get("llm_usage") == _USAGE
     usage = result.run_stats.get("llm_usage")
     assert usage is not None
-    assert usage["prompt_tokens"] == 240
-    assert usage["completion_tokens"] == 80
-    assert usage["total_tokens"] == 320
-    assert usage["cost_usd"] == pytest.approx(0.025)
+    assert usage["prompt_tokens"] == 360
+    assert usage["completion_tokens"] == 120
+    assert usage["total_tokens"] == 480
+    assert usage["cost_usd"] == pytest.approx(0.0375)
 
 
 class _ExtractionDesk:
@@ -124,7 +127,17 @@ class _ExtractionDesk:
         del worker, job
         return SimpleNamespace(
             status="completed",
-            data=_ExtractionPayload(snippet="s", extracted_text="t" * 60),
+            data=_ExtractionPayload(
+                snippet="s",
+                extracted_text="t" * 60,
+                confidence=0.5,
+                source_class="unknown",
+                authorship="anonymous",
+                is_promotional=False,
+                self_published=False,
+                summarizes_inaccessible_source=False,
+                claims=[],
+            ),
             run_id="bg-1",
             errors=[],
             metrics=dict(_METRICS),
@@ -204,6 +217,14 @@ def test_ai_search_usage_reaches_run_stats() -> None:
     assert result.run_stats.get("llm_usage") == _USAGE
 
 
+def test_collect_leaves_out_a_zero_cost() -> None:
+    from shandu.runtime.costing import collect_llm_usage
+
+    report = SimpleNamespace(metrics={"usage": {"total_tokens": 5}, "cost_usd": 0.0})
+
+    assert collect_llm_usage(report) == {"total_tokens": 5}
+
+
 def test_collect_reads_usage_from_report_metrics() -> None:
     from shandu.runtime.costing import collect_llm_usage
 
@@ -223,8 +244,11 @@ class _UsageLead:
     def last_llm_usage(self) -> dict | None:
         return self.usage
 
+    async def create_brief(self, request):
+        return ResearchBrief(scope=request.query, sub_questions=[request.query])
+
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         from shandu.contracts import IterationPlan, SubagentTask
 
@@ -244,7 +268,7 @@ class _UsageLead:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         from shandu.contracts import IterationSynthesis
 
@@ -252,7 +276,7 @@ class _UsageLead:
         return IterationSynthesis(summary="s")
 
     async def build_final_report(
-        self, request, iteration_summaries, evidence_payload, citations_payload
+        self, request, iteration_summaries, evidence_payload, citations_payload, brief=None
     ):
         from shandu.contracts import FinalReportDraft
 
@@ -260,7 +284,7 @@ class _UsageLead:
         return FinalReportDraft(title="t", executive_summary="s")
 
 
-def test_overlapping_runs_report_independent_costs() -> None:
+def test_overlapping_runs_report_independent_costs(tmp_path) -> None:
     def make_orchestrator(total_tokens: int, cost_usd: float) -> LeadOrchestrator:
         lead = _UsageLead()
         lead.usage = {
@@ -273,7 +297,7 @@ def test_overlapping_runs_report_independent_costs() -> None:
             lead_agent=lead,
             search_subagent=_EmptySearchSubagent(),
             citation_agent=_EmptyCitationAgent(),
-            memory_service=MemoryService(InMemoryMemoryStore()),
+            run_store=RunStore(tmp_path),
             report_service=ReportService(),
         )
 
@@ -292,12 +316,12 @@ def test_overlapping_runs_report_independent_costs() -> None:
 
     first, second = asyncio.run(main())
 
-    assert first.run_stats["metered_calls"] == 3
-    assert first.run_stats["llm_tokens"] == 300
-    assert first.run_stats["usd_spent"] == pytest.approx(0.03)
-    assert second.run_stats["metered_calls"] == 3
-    assert second.run_stats["llm_tokens"] == 600
-    assert second.run_stats["usd_spent"] == pytest.approx(0.06)
+    assert first.run_stats["metered_calls"] == 4
+    assert first.run_stats["llm_tokens"] == 400
+    assert first.run_stats["usd_spent"] == pytest.approx(0.04)
+    assert second.run_stats["metered_calls"] == 4
+    assert second.run_stats["llm_tokens"] == 800
+    assert second.run_stats["usd_spent"] == pytest.approx(0.08)
 
 
 def test_inspect_run_aggregates_usage(tmp_path) -> None:
@@ -342,3 +366,64 @@ def test_inspect_run_aggregates_usage(tmp_path) -> None:
         "llm_calls": 1,
         "cost_events": 1,
     }
+
+
+def test_rewrite_counts_calls_made_after_the_last_iteration(tmp_path) -> None:
+    lead = _UsageLead()
+    lead.usage = {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10, "cost_usd": 0.01}
+    orchestrator = LeadOrchestrator(
+        lead_agent=lead,
+        search_subagent=_EmptySearchSubagent(),
+        citation_agent=_EmptyCitationAgent(),
+        run_store=RunStore(tmp_path),
+        report_service=ReportService(),
+    )
+    first = asyncio.run(
+        orchestrator.run(ResearchRequest(query="a", max_iterations=1, parallelism=1))
+    )
+    rewrite = asyncio.run(orchestrator.rewrite_report(first.run_id))
+
+    assert first.run_stats["agent_model_calls"] == first.run_stats["metered_calls"] == 4
+    assert rewrite.run_stats["metered_calls"] == 5
+    assert rewrite.run_stats["agent_model_calls"] == 5
+
+
+def test_each_rewrite_adds_its_spend_to_the_stored_totals(tmp_path) -> None:
+    lead = _UsageLead()
+    lead.usage = {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10, "cost_usd": 0.01}
+    store = RunStore(tmp_path)
+    orchestrator = LeadOrchestrator(
+        lead_agent=lead,
+        search_subagent=_EmptySearchSubagent(),
+        citation_agent=_EmptyCitationAgent(),
+        run_store=store,
+        report_service=ReportService(),
+    )
+    first = asyncio.run(
+        orchestrator.run(ResearchRequest(query="a", max_iterations=1, parallelism=1))
+    )
+    asyncio.run(orchestrator.rewrite_report(first.run_id))
+    asyncio.run(orchestrator.rewrite_report(first.run_id))
+
+    stored = store.load(first.run_id)
+    assert store.load_result(first.run_id).run_stats["usd_spent"] == pytest.approx(0.06)
+    assert stored.status["llm_totals"]["cost_usd"] == pytest.approx(0.06)
+    assert stored.status["status"] == "completed"
+
+
+def test_costing_derives_total_tokens_and_rejects_non_finite() -> None:
+    from types import SimpleNamespace
+
+    from shandu.runtime.costing import add_usage, collect_llm_usage
+
+    usage = collect_llm_usage(
+        SimpleNamespace(
+            metrics={
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+                "cost_usd": float("inf"),
+            }
+        )
+    )
+    assert usage == {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+    merged = add_usage({"total_tokens": 10, "llm_calls": 1}, {"total_tokens": 20, "llm_calls": 2})
+    assert merged == {"total_tokens": 30, "llm_calls": 3}

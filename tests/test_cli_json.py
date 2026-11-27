@@ -27,19 +27,31 @@ def _isolated_storage(tmp_path):
         config.set("runtime", "storage_dir", previous)
 
 
-def _stub_engine(monkeypatch, emit_event: bool = True) -> None:
+def _fake_engine(run) -> SimpleNamespace:
+    runs_dir = Path(str(config.get("runtime", "storage_dir"))) / "runs"
+    return SimpleNamespace(
+        run=run,
+        close=lambda: None,
+        report_path=lambda run_id: runs_dir / run_id / "report.md",
+    )
+
+
+def _stub_engine(monkeypatch, emit_event: bool = True, markdown: str = "# Report\n\nBody.") -> None:
     async def fake_run(request, progress_callback=None):
         if emit_event and progress_callback is not None:
             progress_callback(
                 RunEvent(stage="search", message="diagnostic event line")
             )
+        report = engine.report_path("run-1")
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(markdown, encoding="utf-8")
         return ResearchRunResult(
             run_id="run-1",
             request=request if isinstance(request, ResearchRequest) else ResearchRequest(query="q"),
-            report_markdown="# Report\n\nBody.",
+            report_markdown=markdown,
         )
 
-    engine = SimpleNamespace(run=fake_run, close=lambda: None)
+    engine = _fake_engine(fake_run)
     monkeypatch.setattr(
         ShanduEngine, "from_config", classmethod(lambda cls: engine)
     )
@@ -58,6 +70,15 @@ def test_run_json_output_stdout_parses_as_json(monkeypatch) -> None:
     assert "diagnostic event line" in result.stderr
 
 
+def test_run_json_output_keeps_every_character_on_a_legacy_encoding(monkeypatch) -> None:
+    _stub_engine(monkeypatch, markdown="# Report\n\nA window of ≥12 h.")
+
+    result = CliRunner(mix_stderr=False, charset="ascii").invoke(cli, ["run", "q", "--json-output"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["report_markdown"] == "# Report\n\nA window of ≥12 h."
+
+
 def test_run_default_output_keeps_diagnostics_on_stdout(monkeypatch) -> None:
     _stub_engine(monkeypatch)
 
@@ -67,17 +88,14 @@ def test_run_default_output_keeps_diagnostics_on_stdout(monkeypatch) -> None:
     assert "diagnostic event line" in result.stdout
 
 
-def test_run_without_output_persists_report_export(monkeypatch, tmp_path) -> None:
+def test_run_without_output_names_saved_report(monkeypatch) -> None:
     _stub_engine(monkeypatch, emit_event=False)
 
     result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
 
     assert result.exit_code == 0, result.output
-    export = tmp_path / "storage" / "exports" / "run_1.md"
-    assert export.exists()
-    assert export.read_text(encoding="utf-8") == "# Report\n\nBody."
     assert "Report saved to" in result.stdout
-    assert "run_1.md" in result.stdout
+    assert "report.md" in result.stdout
 
 
 def test_run_depth_policy_flag_reaches_request(monkeypatch) -> None:
@@ -90,7 +108,7 @@ def test_run_depth_policy_flag_reaches_request(monkeypatch) -> None:
             run_id="run-1", request=request, report_markdown="# Report"
         )
 
-    engine = SimpleNamespace(run=fake_run, close=lambda: None)
+    engine = _fake_engine(fake_run)
     monkeypatch.setattr(
         ShanduEngine, "from_config", classmethod(lambda cls: engine)
     )
@@ -132,7 +150,7 @@ def test_run_ctrl_c_cancels_and_exits_130(monkeypatch) -> None:
         coro.close()
         return future
 
-    engine = SimpleNamespace(run=fake_run, close=lambda: None)
+    engine = _fake_engine(fake_run)
     monkeypatch.setattr(
         ShanduEngine, "from_config", classmethod(lambda cls: engine)
     )
@@ -145,6 +163,73 @@ def test_run_ctrl_c_cancels_and_exits_130(monkeypatch) -> None:
 
     assert result.exit_code == 130, result.output
     assert future.cancel_calls == 1
+    assert "Run cancelled." in result.stdout
+    assert "shandu resume" not in result.stdout
+
+
+def test_run_ctrl_c_names_the_saved_run_and_how_to_continue(monkeypatch) -> None:
+    import asyncio
+    import concurrent.futures
+
+    class InterruptedFuture:
+        interrupted = False
+
+        def cancel(self) -> bool:
+            return True
+
+        def result(self, timeout=None):
+            del timeout
+            if not InterruptedFuture.interrupted:
+                InterruptedFuture.interrupted = True
+                raise KeyboardInterrupt
+            raise concurrent.futures.CancelledError
+
+    async def fake_run(request, progress_callback=None):
+        del request
+        progress_callback(
+            RunEvent(
+                stage="bootstrap",
+                message="Initializing run",
+                metrics={"run_id": "e319d654da6f4c029776307114316e05"},
+            )
+        )
+
+    def fake_submit(coro):
+        asyncio.run(coro)
+        return InterruptedFuture()
+
+    engine = _fake_engine(fake_run)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+    monkeypatch.setattr("shandu.cli.get_async_runner", lambda: SimpleNamespace(submit=fake_submit))
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
+
+    assert result.exit_code == 130, result.output
+    assert "Run cancelled. Progress is saved as run e319d654." in result.stdout
+    assert "Continue with: shandu resume e319d654" in result.stdout
+
+
+def test_run_verbose_adds_raw_metrics_to_the_stream(monkeypatch) -> None:
+    async def fake_run(request, progress_callback=None):
+        progress_callback(
+            RunEvent(
+                stage="search",
+                message="Task t1 query completed",
+                payload={"task_id": "t1"},
+                metrics={"agent_model_calls": 2, "hits": 3},
+            )
+        )
+        return ResearchRunResult(run_id="run-1", request=request, report_markdown="# Report")
+
+    engine = _fake_engine(fake_run)
+    monkeypatch.setattr(ShanduEngine, "from_config", classmethod(lambda cls: engine))
+
+    plain = CliRunner(mix_stderr=False).invoke(cli, ["run", "q"])
+    verbose = CliRunner(mix_stderr=False).invoke(cli, ["run", "q", "--verbose"])
+
+    assert "Subagent 1 query completed  results 3" in plain.stdout
+    assert "agent_model_calls" not in plain.stdout
+    assert "agent_model_calls=2 hits=3" in verbose.stdout
 
 
 def test_info_reports_provider_managed_credentials() -> None:
@@ -160,6 +245,16 @@ def test_info_reports_provider_managed_credentials() -> None:
 
     assert result.exit_code == 0
     assert "provider-managed" in result.output
+
+
+def test_info_labels_are_lowercase_words() -> None:
+    result = CliRunner().invoke(cli, ["info"])
+
+    assert result.exit_code == 0
+    for label in ("max tokens", "storage dir", "default iterations", "default subagents"):
+        assert label in result.output
+    for title_case in ("Max Tokens", "Storage Dir", "Default Iterations", "Default Parallelism"):
+        assert title_case not in result.output
 
 
 def test_cli_loads_dotenv_from_working_directory(tmp_path) -> None:
@@ -183,3 +278,24 @@ def test_cli_loads_dotenv_from_working_directory(tmp_path) -> None:
 
     assert completed.returncode == 0
     assert "probe/x" in completed.stdout
+
+
+def test_cli_json_output_has_no_ansi_under_force_color(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    report = tmp_path / "report.md"
+    report.write_text("# R", encoding="utf-8")
+
+    async def fake_run(request, progress_callback=None):
+        del progress_callback
+        return ResearchRunResult(run_id="r1", request=request, report_markdown="# R")
+
+    engine = SimpleNamespace(
+        run=fake_run,
+        close=lambda: None,
+        report_path=lambda run_id: report,
+    )
+    monkeypatch.setattr("shandu.cli.ShanduEngine.from_config", classmethod(lambda cls: engine))
+    result = CliRunner(mix_stderr=False).invoke(cli, ["run", "q", "--json-output"])
+    assert result.exit_code == 0, result.output
+    assert "\x1b[" not in result.stdout
+    assert json.loads(result.stdout)["run_id"] == "r1"

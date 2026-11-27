@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .contracts import (
@@ -10,6 +10,7 @@ from .contracts import (
     FinalReportDraft,
     IterationPlan,
     IterationSynthesis,
+    ResearchBrief,
     ResearchRequest,
     ResearchRunResult,
     RunEvent,
@@ -76,12 +77,17 @@ class LeadAgentLike(Protocol):
     last_fallback_reason: str | None
     last_llm_usage: dict[str, Any] | None
 
+    async def create_brief(self, request: ResearchRequest) -> ResearchBrief: ...
+
+    async def clarifying_questions(self, query: str) -> list[str]: ...
+
     async def create_iteration_plan(
         self,
         request: ResearchRequest,
         iteration: int,
         prior_summaries: list[IterationSynthesis],
         memory_context: list[tuple[str, Any]],
+        brief: ResearchBrief | None = None,
     ) -> IterationPlan: ...
 
     async def synthesize_iteration(
@@ -90,6 +96,8 @@ class LeadAgentLike(Protocol):
         iteration: int,
         iteration_evidence: list[dict[str, Any]],
         prior_summaries: list[IterationSynthesis],
+        brief: ResearchBrief | None = None,
+        task_memos: list[dict[str, str]] | None = None,
     ) -> IterationSynthesis: ...
 
     async def build_final_report(
@@ -98,6 +106,7 @@ class LeadAgentLike(Protocol):
         iteration_summaries: list[IterationSynthesis],
         evidence_payload: list[dict[str, Any]],
         citations_payload: list[dict[str, Any]],
+        brief: ResearchBrief | None = None,
     ) -> FinalReportDraft: ...
 
 
@@ -108,8 +117,15 @@ class SearchSubagentLike(Protocol):
         task: SubagentTask,
         request: ResearchRequest,
         progress_callback: Callable[[str, dict[str, Any]], Any] | None = None,
-        extracted_urls: Collection[str] | None = None,
-    ) -> list[EvidenceRecord]: ...
+        extracted_urls: set[str] | None = None,
+        brief: ResearchBrief | None = None,
+    ) -> list[EvidenceRecord]:
+        """Gather evidence for one task.
+
+        ``extracted_urls`` is shared by every task of an iteration: it holds
+        the pages earlier iterations read, and each task adds the pages it
+        starts reading so parallel tasks do not extract one page twice.
+        """
 
 
 class CitationAgentLike(Protocol):
@@ -118,6 +134,15 @@ class CitationAgentLike(Protocol):
         query: str,
         evidence: list[EvidenceRecord],
     ) -> list[CitationEntry]: ...
+
+
+class CitationAuditorLike(Protocol):
+    async def audit(
+        self,
+        markdown: str,
+        citations: list[CitationEntry],
+        evidence: list[EvidenceRecord],
+    ) -> Any: ...
 
 
 class ReportServiceLike(Protocol):
@@ -133,9 +158,24 @@ ProgressCallback = Callable[[RunEvent], Any]
 
 
 class OrchestratorLike(Protocol):
+    async def clarifying_questions(self, query: str) -> list[str]: ...
+
     async def run(
         self,
         request: ResearchRequest,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult: ...
+
+    async def resume(
+        self,
+        run_id: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult: ...
+
+    async def rewrite_report(
+        self,
+        run_id: str,
+        overrides: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> ResearchRunResult: ...
 

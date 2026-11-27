@@ -24,8 +24,7 @@ def test_search_backends_pair_engines_with_auto_fallback() -> None:
     assert "lite" not in _TEXT_BACKENDS
     assert "html" not in _TEXT_BACKENDS
     primary = _TEXT_BACKENDS[0].split(",")
-    assert "brave" in primary
-    assert "duckduckgo" in primary
+    assert primary == ["bing", "yahoo"]
     assert _TEXT_BACKENDS[-1] == "auto"
 
 
@@ -74,6 +73,41 @@ def test_search_service_bounds_concurrent_backend_calls() -> None:
     asyncio.run(run_all())
 
     assert 1 < tracker["peak"] <= 4
+
+
+class _SlowClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def text(self, *, query, region, safesearch, max_results, backend):
+        del query, region, safesearch, max_results, backend
+        self.calls += 1
+        time.sleep(0.05)
+        return [{"href": "https://x.example/a", "title": "t", "body": "b"}]
+
+
+def test_cancelling_one_searcher_leaves_the_shared_search_to_the_others() -> None:
+    service = SearchService()
+    client = _SlowClient()
+    service._ddgs = lambda *, timeout: client
+
+    async def run_all() -> tuple[asyncio.Task, list]:
+        first = asyncio.create_task(service.search("q", 3))
+        second = asyncio.create_task(service.search("q", 3))
+        await asyncio.sleep(0.01)
+        first.cancel()
+        third = asyncio.create_task(service.search("q", 3))
+        results = await asyncio.gather(second, third)
+        await asyncio.gather(first, return_exceptions=True)
+        await asyncio.sleep(0)
+        return first, results
+
+    first, results = asyncio.run(run_all())
+
+    assert first.cancelled()
+    assert [[hit.url for hit in hits] for hits in results] == [["https://x.example/a"]] * 2
+    assert client.calls == 1
+    assert service._inflight == {}
 
 
 class _FlakyClient:

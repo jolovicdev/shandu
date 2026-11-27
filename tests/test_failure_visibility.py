@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from types import SimpleNamespace
 
 import pytest
-from blackgeorge.memory.in_memory import InMemoryMemoryStore
 
-from shandu.agents.lead import LeadAgent
+from shandu.agents.lead import _REPORTER_EVIDENCE_BUDGET, LeadAgent
 from shandu.agents.search_subagent import SearchSubagent
 from shandu.contracts import (
+    ResearchBrief,
     IterationPlan,
     IterationSynthesis,
     ResearchRequest,
     SubagentTask,
 )
 from shandu.orchestration.lead_orchestrator import LeadOrchestrator
-from shandu.services.memory import MemoryService
+from shandu.runtime.calls import ProviderRejectedError, _rejection
+from shandu.services.run_store import RunStore
 from shandu.services.report import ReportService
 from shandu.services.scrape import ScrapedPage
 from shandu.services.search import SearchHit, SearchService
@@ -40,12 +42,15 @@ def _request() -> ResearchRequest:
 
 @pytest.mark.parametrize(
     "method",
-    ["create_iteration_plan", "synthesize_iteration", "build_final_report"],
+    ["create_brief", "create_iteration_plan", "synthesize_iteration", "build_final_report"],
 )
 def test_lead_failure_logs_and_exposes_reason(caplog, method) -> None:
     agent = LeadAgent(runtime=_ModelRuntime(_FailedDesk()))
     with caplog.at_level(logging.WARNING, logger="shandu.agents.lead"):
-        if method == "create_iteration_plan":
+        if method == "create_brief":
+            brief = asyncio.run(agent.create_brief(_request()))
+            assert brief.sub_questions == ["q"]
+        elif method == "create_iteration_plan":
             plan = asyncio.run(agent.create_iteration_plan(_request(), 0, [], []))
             assert isinstance(plan, IterationPlan)
         elif method == "synthesize_iteration":
@@ -63,14 +68,15 @@ def test_lead_failure_logs_and_exposes_reason(caplog, method) -> None:
 
 
 class _EmptyThenReportDesk:
-    def __init__(self, empty_calls: int) -> None:
+    def __init__(self, empty_calls: int, filler: str = "") -> None:
         self.calls = 0
         self._empty_calls = empty_calls
+        self._filler = filler
 
     async def arun(self, worker, job):
         del worker, job
         self.calls += 1
-        content = "" if self.calls <= self._empty_calls else "# Title\n\nBody [1]."
+        content = self._filler if self.calls <= self._empty_calls else "# Title\n\nBody [1]."
         return SimpleNamespace(
             status="completed",
             content=content,
@@ -89,6 +95,107 @@ def test_reporter_retries_empty_content_and_sums_usage() -> None:
     assert agent.last_llm_usage == {"total_tokens": 30, "cost_usd": 0.03, "llm_calls": 3}
 
 
+class _RecordingDesk:
+    def __init__(self) -> None:
+        self.inputs: list[str] = []
+
+    async def arun(self, worker, job):
+        del worker
+        self.inputs.append(job.input)
+        return SimpleNamespace(status="completed", content="# Title\n\nBody [1].", metrics={})
+
+
+@pytest.mark.parametrize(
+    ("detail_level", "sources", "limit"),
+    [("auto", 0, 400), ("auto", 2, 600), ("auto", 30, 9000), ("concise", 30, 1200), ("high", 2, 600)],
+)
+def test_report_length_follows_the_cited_sources(detail_level, sources, limit) -> None:
+    # Two copies of each work share one citation, so copies do not add length.
+    evidence = [
+        {"evidence_id": f"e{index}{copy}", "confidence": 0.9, "credibility_score": 0.9}
+        for index in range(sources)
+        for copy in "ab"
+    ]
+    citations = [
+        {"citation_id": index + 1, "evidence_ids": [f"e{index}a", f"e{index}b"]}
+        for index in range(sources)
+    ]
+    desk = _RecordingDesk()
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+    request = ResearchRequest(query="q", detail_level=detail_level)
+
+    asyncio.run(agent.build_final_report(request, [], evidence, citations))
+
+    assert f"Keep the body under {limit} words" in desk.inputs[0]
+
+
+@pytest.mark.parametrize(("records", "chars"), [(1, 130_000), (2, 70_000), (20, 7_000)])
+def test_every_record_of_a_corpus_that_fits_reaches_the_writer(records, chars) -> None:
+    line = 'a "quoted" line of text\n'
+    evidence = [
+        {
+            "evidence_id": f"e{index}",
+            "requested_url": f"https://example.org/{index}",
+            "title": f"Title {index}",
+            "snippet": "snippet " * 20,
+            "extracted_text": (line * (chars // len(line) + 1))[:chars],
+            "confidence": 0.9,
+            "credibility_score": 0.9,
+        }
+        for index in range(records)
+    ]
+    citations = [
+        {"citation_id": index + 1, "evidence_ids": [f"e{index}"]} for index in range(records)
+    ]
+    desk = _RecordingDesk()
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    asyncio.run(agent.build_final_report(_request(), [], evidence, citations))
+
+    job_input = desk.inputs[0]
+    sent = json.loads(job_input.split("Input JSON:\n", 1)[1])["evidence"]
+    assert len(sent) == records
+    assert (
+        sum(len(json.dumps(record, ensure_ascii=False)) for record in sent)
+        <= _REPORTER_EVIDENCE_BUDGET
+    )
+    assert f"Keep the body under {max(400, 300 * records)} words" in job_input
+
+
+@pytest.mark.parametrize(
+    ("entry", "sent"),
+    [
+        ({"confidence": 0.0}, 0.0),
+        ({"confidence": 0.8}, 0.8),
+        ({"confidence": None}, 0.5),
+        ({"confidence": "n/a"}, 0.5),
+        ({}, 0.5),
+    ],
+)
+def test_confidence_reaches_the_writer_as_recorded(entry, sent) -> None:
+    compact = LeadAgent._compact_evidence([{"evidence_id": "e1", **entry}], [])
+
+    assert compact[0]["confidence"] == sent
+
+
+def test_zero_confidence_ranks_last_for_the_evidence_budget() -> None:
+    evidence = [
+        {
+            "evidence_id": f"e{index}",
+            "requested_url": f"https://x.example/{index}",
+            "extracted_text": "x" * 3000,
+            "confidence": 0.0 if index == 0 else 0.3,
+            "credibility_score": 0.9,
+        }
+        for index in range(100)
+    ]
+
+    compact = LeadAgent._compact_evidence(evidence, [])
+
+    assert len(compact) < len(evidence)
+    assert "https://x.example/0" not in [record["url"] for record in compact]
+
+
 def test_reporter_falls_back_after_repeated_empty_content() -> None:
     desk = _EmptyThenReportDesk(empty_calls=99)
     agent = LeadAgent(runtime=_ModelRuntime(desk))
@@ -97,6 +204,82 @@ def test_reporter_falls_back_after_repeated_empty_content() -> None:
 
     assert desk.calls == 3
     assert agent.last_fallback_reason == "reporter returned empty content"
+
+
+class _HangingDesk:
+    async def arun(self, worker, job):
+        del worker, job
+        await asyncio.sleep(3600)
+
+
+def test_planner_falls_back_when_the_model_call_never_returns(monkeypatch) -> None:
+    monkeypatch.setattr("shandu.runtime.calls.STRUCTURED_CALL_SECONDS", 0.01)
+    agent = LeadAgent(runtime=_ModelRuntime(_HangingDesk()))
+
+    plan = asyncio.run(agent.create_iteration_plan(_request(), 0, [], []))
+
+    assert agent.fallback_count == 1
+    assert plan.subagent_tasks
+
+
+class _HangOnceDesk:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def arun(self, worker, job):
+        del worker, job
+        self.calls += 1
+        if self.calls == 1:
+            await asyncio.sleep(3600)
+        return SimpleNamespace(
+            status="completed",
+            content="# Title\n\nBody [1].",
+            metrics={"usage": {"total_tokens": 10}, "cost_usd": 0.01},
+        )
+
+
+def test_reporter_retries_a_call_that_never_returns(monkeypatch) -> None:
+    monkeypatch.setattr("shandu.runtime.calls.WRITER_CALL_SECONDS", 0.01)
+    desk = _HangOnceDesk()
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert draft.markdown == "# Title\n\nBody [1]."
+    assert desk.calls == 2
+
+
+def test_reporter_falls_back_when_every_call_times_out(monkeypatch) -> None:
+    monkeypatch.setattr("shandu.runtime.calls.WRITER_CALL_SECONDS", 0.01)
+    agent = LeadAgent(runtime=_ModelRuntime(_HangingDesk()))
+
+    draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert draft.markdown is None
+    assert agent.last_fallback_reason == "reporter timed out"
+
+
+_REFUSAL = "The request was rejected because it was considered high risk"
+
+
+def test_reporter_retries_a_refusal_returned_in_place_of_the_report() -> None:
+    desk = _EmptyThenReportDesk(empty_calls=1, filler=_REFUSAL)
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert draft.markdown == "# Title\n\nBody [1]."
+    assert desk.calls == 2
+
+
+def test_reporter_falls_back_when_every_attempt_is_a_refusal() -> None:
+    desk = _EmptyThenReportDesk(empty_calls=99, filler=_REFUSAL)
+    agent = LeadAgent(runtime=_ModelRuntime(desk))
+
+    draft = asyncio.run(agent.build_final_report(_request(), [], [], []))
+
+    assert draft.markdown is None
+    assert agent.last_fallback_reason == f"reporter returned no report: {_REFUSAL}"
 
 
 class _AlphaSearch:
@@ -163,8 +346,11 @@ class _FailingLead:
     fallback_count = 0
     last_fallback_reason: str | None = None
 
+    async def create_brief(self, request):
+        return ResearchBrief(scope=request.query, sub_questions=[request.query])
+
     async def create_iteration_plan(
-        self, request, iteration, prior_summaries, memory_context
+        self, request, iteration, prior_summaries, memory_context, brief=None
     ):
         del request, prior_summaries, memory_context
         type(self).fallback_count += 1
@@ -177,12 +363,12 @@ class _FailingLead:
         )
 
     async def synthesize_iteration(
-        self, request, iteration, iteration_evidence, prior_summaries
+        self, request, iteration, iteration_evidence, prior_summaries, brief=None, task_memos=None
     ):
         raise AssertionError("unreachable")
 
     async def build_final_report(
-        self, request, iteration_summaries, evidence_payload, citations_payload
+        self, request, iteration_summaries, evidence_payload, citations_payload, brief=None
     ):
         from shandu.contracts import FinalReportDraft
 
@@ -192,7 +378,7 @@ class _FailingLead:
 
 class _EmptySearchSubagent:
     async def execute_task(
-        self, run_scope, task, request, progress_callback=None, extracted_urls=None
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
     ):
         del run_scope, task, request, progress_callback, extracted_urls
         return []
@@ -204,14 +390,14 @@ class _EmptyCitationAgent:
         return []
 
 
-def test_orchestrator_carries_fallback_reason_in_event_and_stats() -> None:
+def test_orchestrator_carries_fallback_reason_in_event_and_stats(tmp_path) -> None:
     _FailingLead.fallback_count = 0
     _FailingLead.last_fallback_reason = None
     orchestrator = LeadOrchestrator(
         lead_agent=_FailingLead(),
         search_subagent=_EmptySearchSubagent(),
         citation_agent=_EmptyCitationAgent(),
-        memory_service=MemoryService(InMemoryMemoryStore()),
+        run_store=RunStore(tmp_path),
         report_service=ReportService(),
     )
     events: list = []
@@ -273,20 +459,23 @@ class _PlanDesk:
 
 
 def test_planner_success_keeps_short_task_list_unpadded() -> None:
-    from shandu.agents.lead import _PlanPayload
+    from shandu.agents.lead import _PlannedTask, _PlanPayload
 
     desk = _PlanDesk(
         _PlanPayload(
             goals=["g"],
             subagent_tasks=[
-                SubagentTask(
+                _PlannedTask(
                     task_id="t1",
                     focus="physics question",
                     search_queries=["physics q"],
                     expected_output="out",
+                    sub_questions=[],
+                    scholarly=False,
                 )
             ],
             continue_loop=True,
+            stop_reason=None,
         )
     )
     agent = LeadAgent(runtime=_ModelRuntime(desk))
@@ -298,21 +487,24 @@ def test_planner_success_keeps_short_task_list_unpadded() -> None:
 
 
 def test_planner_success_caps_overlong_task_list() -> None:
-    from shandu.agents.lead import _PlanPayload
+    from shandu.agents.lead import _PlannedTask, _PlanPayload
 
     desk = _PlanDesk(
         _PlanPayload(
             goals=["g"],
             subagent_tasks=[
-                SubagentTask(
+                _PlannedTask(
                     task_id=f"t{index}",
                     focus=f"focus {index}",
                     search_queries=[f"q{index}"],
                     expected_output="out",
+                    sub_questions=[],
+                    scholarly=False,
                 )
                 for index in range(5)
             ],
             continue_loop=True,
+            stop_reason=None,
         )
     )
     agent = LeadAgent(runtime=_ModelRuntime(desk))
@@ -352,6 +544,19 @@ def test_normalize_tasks_drops_empty_focus_and_repairs_ids() -> None:
     assert tasks[1].task_id.startswith("iter_1_task_")
 
 
+def test_normalize_tasks_keeps_only_existing_sub_question_indices() -> None:
+    request = ResearchRequest(query="q", max_iterations=2, parallelism=3)
+
+    tasks = LeadAgent._normalize_tasks(
+        [SubagentTask(task_id="t1", focus="lane", sub_questions=[3, 0, 2, 9, 2])],
+        request,
+        0,
+        sub_question_count=3,
+    )
+
+    assert tasks[0].sub_questions == [2, 3]
+
+
 def test_fallback_tasks_cover_parallelism_with_unique_ids() -> None:
     request = ResearchRequest(query="physics question", max_iterations=2, parallelism=3)
 
@@ -386,3 +591,193 @@ def test_extract_summary_reads_executive_section_then_prose() -> None:
     assert LeadAgent._extract_summary("# Only Headings\n\n## Sub") == (
         "Summary unavailable."
     )
+
+
+_REJECTED_KEY = (
+    'litellm.BadRequestError: DeepseekException - {"error":{"message":"Authentication Fails, '
+    'Your api key: ****0000 is invalid (request_id: 35ac)","type":"authentication_error"}}'
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "kind"),
+    [
+        (_REJECTED_KEY, "key"),
+        ("litellm.AuthenticationError: OpenAIException - Incorrect API key provided", "key"),
+        ('litellm.BadRequestError: VertexAIException - {"status": "PERMISSION_DENIED"}', "key"),
+        ("litellm.BadRequestError: AnthropicException - invalid x-api-key", "key"),
+        ("litellm.AuthenticationError: ", "key"),
+        ("litellm.BadRequestError: LLM Provider NOT provided. You passed model=bogus/x", "model"),
+        (
+            'litellm.BadRequestError: DeepseekException - {"error":{"message":"The supported API '
+            'model names are deepseek-flash, but you passed deepseek-x."}}',
+            "model",
+        ),
+        ("litellm.NotFoundError: OpenAIException - The model `gpt-9` does not exist", "model"),
+        ("litellm.RateLimitError: OpenAIException - insufficient_quota", "credit"),
+        ('litellm.APIError: DeepseekException - {"error":{"message":"Insufficient Balance"}}', "credit"),
+        ("litellm.RateLimitError: DeepseekException - Rate limit reached for api key", None),
+        ("litellm.InternalServerError: DeepseekException - Service unavailable", None),
+        ("1 validation error for Payload\n  input_value='Rotate your API key'", None),
+        ("401 Unauthorized", None),
+    ],
+)
+def test_provider_replies_that_no_retry_fixes_are_told_apart(text, kind) -> None:
+    rejected = _rejection(text)
+    assert (rejected.kind if rejected else None) == kind
+
+
+def test_a_rejection_names_the_provider_message_without_request_ids() -> None:
+    rejected = _rejection(_REJECTED_KEY)
+    assert str(rejected) == (
+        "The model provider rejected the API key: "
+        "Authentication Fails, Your api key: ****0000 is invalid"
+    )
+
+
+class _RejectingDesk:
+    async def arun(self, worker, job):
+        del worker, job
+        return SimpleNamespace(status="failed", errors=[_REJECTED_KEY], data=None, metrics={})
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "create_brief",
+        "clarifying_questions",
+        "create_iteration_plan",
+        "synthesize_iteration",
+        "build_final_report",
+    ],
+)
+def test_a_rejected_lead_call_stops_instead_of_falling_back(method) -> None:
+    agent = LeadAgent(runtime=_ModelRuntime(_RejectingDesk()))
+    calls = {
+        "create_brief": lambda: agent.create_brief(_request()),
+        "clarifying_questions": lambda: agent.clarifying_questions("q"),
+        "create_iteration_plan": lambda: agent.create_iteration_plan(_request(), 0, [], []),
+        "synthesize_iteration": lambda: agent.synthesize_iteration(_request(), 0, [], []),
+        "build_final_report": lambda: agent.build_final_report(_request(), [], [], []),
+    }
+    with pytest.raises(ProviderRejectedError):
+        asyncio.run(calls[method]())
+
+
+class _TwoHitSearch:
+    async def search(self, query: str, max_results: int) -> list[SearchHit]:
+        del query, max_results
+        return [
+            SearchHit(query="q", url=f"https://example.com/{name}", title=name, snippet="s")
+            for name in ("a", "b")
+        ]
+
+
+class _RejectsOneWorkerDesk:
+    """Rejects the named worker's calls; any other call fails as an ordinary error."""
+
+    def __init__(self, worker_name: str) -> None:
+        self.worker_name = worker_name
+
+    async def arun(self, worker, job):
+        del job
+        errors = [_REJECTED_KEY if worker.name == self.worker_name else "boom"]
+        return SimpleNamespace(status="failed", errors=errors, data=None, metrics={})
+
+
+@pytest.mark.parametrize(
+    ("search", "worker_name"),
+    [(_AlphaSearch(), "SubagentExtractor"), (_TwoHitSearch(), "SubagentSelector")],
+    ids=["extract", "select"],
+)
+def test_a_rejected_subagent_call_stops_the_task(search, worker_name) -> None:
+    page = ScrapedPage(
+        requested_url="https://example.com/a",
+        url="https://example.com/a",
+        title="Alpha",
+        text="page text body",
+        domain="example.com",
+    )
+    subagent = SearchSubagent(
+        runtime=_ModelRuntime(_RejectsOneWorkerDesk(worker_name)),
+        search_service=search,
+        scrape_service=_SinglePageScrape(page),
+    )
+    task = SubagentTask(task_id="t", focus="focus", search_queries=["q"], expected_output="out")
+    request = ResearchRequest(query="q", max_pages_per_task=1, max_results_per_query=2)
+
+    with pytest.raises(ProviderRejectedError):
+        asyncio.run(subagent.execute_task("run:1", task, request))
+
+
+class _OneTaskLead(_FailingLead):
+    async def create_iteration_plan(
+        self, request, iteration, prior_summaries, memory_context, brief=None
+    ):
+        del request, prior_summaries, memory_context
+        return IterationPlan(
+            iteration_index=iteration,
+            goals=["q"],
+            subagent_tasks=[SubagentTask(task_id="t", focus="f", search_queries=["q"])],
+            continue_loop=False,
+        )
+
+
+class _RejectedSubagent:
+    async def execute_task(
+        self, run_scope, task, request, progress_callback=None, extracted_urls=None, brief=None
+    ):
+        raise ProviderRejectedError("key", "invalid")
+
+
+def test_a_rejected_task_stops_the_run_and_marks_it_failed(tmp_path) -> None:
+    store = RunStore(tmp_path)
+    orchestrator = LeadOrchestrator(
+        lead_agent=_OneTaskLead(),
+        search_subagent=_RejectedSubagent(),
+        citation_agent=_EmptyCitationAgent(),
+        run_store=store,
+        report_service=ReportService(),
+    )
+
+    with pytest.raises(ProviderRejectedError):
+        asyncio.run(orchestrator.run(_request()))
+
+    (run,) = store.list_runs()
+    status = store.load(run.run_id).status
+    assert status["status"] == "failed"
+    assert "rejected the API key" in status["error"]
+
+
+def test_calls_rejection_handles_instructor_wrapper_and_ignores_transient_5xx() -> None:
+    from shandu.runtime.calls import _rejection
+
+    wrapped = (
+        "<failed_attempts>\n<last_exception>\n"
+        "    litellm.AuthenticationError: Invalid API key\n</last_exception>"
+    )
+    rejected = _rejection(wrapped)
+    assert rejected is not None and rejected.kind == "key"
+
+    transient = "litellm.ServiceUnavailableError: Authentication service temporarily unavailable"
+    assert _rejection(transient) is None
+
+    quota = "litellm.RateLimitError: You exceeded your current quota, please check your plan."
+    q_rej = _rejection(quota)
+    assert q_rej is not None and q_rej.kind == "credit"
+
+    openrouter_model = "litellm.BadRequestError: foo/bar is not a valid model ID"
+    m_rej = _rejection(openrouter_model)
+    assert m_rej is not None and m_rej.kind == "model"
+
+
+def test_async_runner_rejects_same_thread_reentry() -> None:
+    from shandu.runtime.async_runner import AsyncRunner
+
+    runner = AsyncRunner()
+
+    async def nested() -> None:
+        with pytest.raises(RuntimeError):
+            runner.run(asyncio.sleep(0))
+
+    runner.run(nested())

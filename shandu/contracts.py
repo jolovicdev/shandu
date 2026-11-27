@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timezone
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 SourceClass = Literal[
     "primary",
@@ -36,15 +38,118 @@ QualityFlag = Literal[
     "unassessed",
 ]
 
+# "auto" sizes a report to its evidence; the other levels also cap its length.
+ReportLength = Literal["auto", "concise", "standard", "high"]
+ResearchDepth = Literal["quick", "standard", "deep", "max"]
+
+
+# Research depth presets. A request that names a depth takes the preset's
+# value for every budget it does not set itself.
+DEPTH_PRESETS: dict[str, dict[str, int]] = {
+    "quick": {
+        "max_iterations": 1,
+        "parallelism": 2,
+        "max_pages_per_task": 3,
+        "max_results_per_query": 6,
+        "max_searches_per_task": 3,
+    },
+    "standard": {
+        "max_iterations": 2,
+        "parallelism": 3,
+        "max_pages_per_task": 6,
+        "max_results_per_query": 8,
+        "max_searches_per_task": 6,
+    },
+    "deep": {
+        "max_iterations": 3,
+        "parallelism": 4,
+        "max_pages_per_task": 6,
+        "max_results_per_query": 8,
+        "max_searches_per_task": 8,
+    },
+    "max": {
+        "max_iterations": 4,
+        "parallelism": 6,
+        "max_pages_per_task": 8,
+        "max_results_per_query": 10,
+        "max_searches_per_task": 10,
+    },
+}
+
+# Dot-separated labels that end in a top-level label of letters, as in
+# nature.com or xn--80ak6aa92e.com.
+_SITE_NAME = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]+)")
+
 
 class ResearchRequest(BaseModel):
     query: str
     max_iterations: int = Field(default=2, ge=1, le=8)
     parallelism: int = Field(default=3, ge=1, le=8)
-    detail_level: Literal["concise", "standard", "high"] = "high"
+    detail_level: ReportLength = "auto"
     depth_policy: Literal["adaptive", "fixed"] = "adaptive"
     max_results_per_query: int = Field(default=8, ge=1, le=20)
     max_pages_per_task: int = Field(default=6, ge=1, le=10)
+    # Answers the user gave to clarifying questions, one "question answer"
+    # line each.
+    clarifications: list[str] = Field(default_factory=list)
+    # Bare hosts; a host also matches its subdomains.
+    include_domains: list[str] = Field(default_factory=list)
+    exclude_domains: list[str] = Field(default_factory=list)
+    # Pages dated entirely before this day are skipped; undated pages stay.
+    since: date | None = None
+    # "pipeline" searches, ranks, then reads in one pass per task; "agentic"
+    # runs each task as a tool loop that searches, reads, and follows links.
+    researcher: Literal["pipeline", "agentic"] = "pipeline"
+    # Check every cited sentence against its sources and drop markers the
+    # sources do not support.
+    audit: bool = True
+    # Research stops before the next iteration once metered spend reaches
+    # this; the report is still written, so a run can end slightly above it.
+    max_cost_usd: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    max_searches_per_task: int = Field(default=6, ge=1, le=12)
+    depth: ResearchDepth = "standard"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _depth_fills_the_budget(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(depth := data.get("depth"), str):
+            return {**DEPTH_PRESETS.get(depth, {}), **data}
+        return data
+
+    @field_validator("query")
+    @classmethod
+    def _asks_something(cls, query: str) -> str:
+        if not query.strip():
+            raise ValueError("give a research question")
+        return query
+
+    @field_validator("include_domains", "exclude_domains")
+    @classmethod
+    def _bare_hosts(cls, domains: list[str]) -> list[str]:
+        hosts: list[str] = []
+        # A list typed into one field or flag arrives as one entry.
+        for domain in re.findall(r"[^\s,;]+", " ".join(domains)):
+            # Hosts are compared without a port, so one given here is dropped.
+            try:
+                host = urlsplit("//" + domain.split("://", 1)[-1]).hostname or ""
+            except ValueError:
+                host = ""
+            # A site's subdomains match it anyway, so a wildcard adds nothing.
+            host = host.removeprefix("*.").removeprefix("www.")
+            if not _SITE_NAME.fullmatch(host):
+                raise ValueError(f"{domain!r} is not a site name; give one like nature.com")
+            if host not in hosts:
+                hosts.append(host)
+        return hosts
+
+
+class ResearchBrief(BaseModel):
+    scope: str
+    sub_questions: list[str] = Field(default_factory=list)
+    time_window: str | None = None
+    region: str | None = None
+    source_types: list[str] = Field(default_factory=list)
+    deliverable: str = ""
 
 
 class SubagentTask(BaseModel):
@@ -52,6 +157,10 @@ class SubagentTask(BaseModel):
     focus: str
     search_queries: list[str] = Field(default_factory=list)
     expected_output: str = ""
+    # 1-based indices into ResearchBrief.sub_questions that this task serves.
+    sub_questions: list[int] = Field(default_factory=list)
+    # Also search arXiv, OpenAlex, and PubMed for this task's queries.
+    scholarly: bool = False
 
 
 class IterationPlan(BaseModel):
@@ -60,6 +169,15 @@ class IterationPlan(BaseModel):
     subagent_tasks: list[SubagentTask] = Field(default_factory=list)
     continue_loop: bool = True
     stop_reason: str | None = None
+
+
+class Claim(BaseModel):
+    statement: str
+    # Verbatim from the page text the extractor read; claims whose quote is
+    # not found there are dropped.
+    quote: str
+    # 1-based index into ResearchBrief.sub_questions, when the claim answers one.
+    sub_question: int | None = None
 
 
 class EvidenceRecord(BaseModel):
@@ -83,8 +201,37 @@ class EvidenceRecord(BaseModel):
     credibility_score: float | None = None
     source_class: SourceClass | None = None
     quality_flags: list[QualityFlag] = Field(default_factory=list)
+    claims: list[Claim] = Field(default_factory=list)
     fetch_error: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Finding(BaseModel):
+    """One claim, merged across every page that states it."""
+
+    statement: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    quotes: list[str] = Field(default_factory=list)
+    domains: list[str] = Field(default_factory=list)
+    # Highest credibility among the supporting pages.
+    confidence: float = 0.0
+    sub_questions: list[int] = Field(default_factory=list)
+
+
+class SubQuestionCoverage(BaseModel):
+    index: int
+    question: str
+    # none: no finding; weak: no credible page; moderate: credible pages from
+    # one site; strong: credible pages from two or more independent sites.
+    strength: Literal["none", "weak", "moderate", "strong"]
+    findings: int = 0
+    credible_sources: int = 0
+
+
+class CitationVerdict(BaseModel):
+    sentence: str
+    url: str
+    verdict: Literal["supported", "partial", "unsupported", "unchecked"]
 
 
 class CitationEntry(BaseModel):
@@ -94,14 +241,6 @@ class CitationEntry(BaseModel):
     title: str
     publisher: str
     accessed_at: str
-
-
-class MemoryNote(BaseModel):
-    key: str
-    scope: str
-    value: Any
-    author: str
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class CoverageAssessment(BaseModel):
@@ -119,6 +258,9 @@ class IterationSynthesis(BaseModel):
     continue_loop: bool = True
     stop_reason: str | None = None
     coverage: CoverageAssessment | None = None
+    # 1-based indices of brief sub-questions the evidence does not yet answer.
+    open_sub_questions: list[int] = Field(default_factory=list)
+    coverage_matrix: list[SubQuestionCoverage] = Field(default_factory=list)
 
 
 class ReportSection(BaseModel):
@@ -167,8 +309,11 @@ class RunEvent(BaseModel):
 class ResearchRunResult(BaseModel):
     run_id: str
     request: ResearchRequest
+    brief: ResearchBrief | None = None
     report_markdown: str
     citations: list[CitationEntry] = Field(default_factory=list)
     evidence: list[EvidenceRecord] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
+    citation_audit: list[CitationVerdict] = Field(default_factory=list)
     iteration_summaries: list[IterationSynthesis] = Field(default_factory=list)
     run_stats: dict[str, Any] = Field(default_factory=dict)

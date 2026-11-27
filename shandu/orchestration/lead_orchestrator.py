@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Awaitable
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from blackgeorge.utils import new_id
 
 from ..contracts import (
+    CitationVerdict,
     EvidenceRecord,
+    IterationPlan,
     IterationSynthesis,
+    ResearchBrief,
     ResearchRequest,
     ResearchRunResult,
     RunEvent,
@@ -19,15 +23,103 @@ from ..contracts import (
 )
 from ..interfaces import (
     CitationAgentLike,
+    CitationAuditorLike,
     LeadAgentLike,
     ProgressCallback,
     ReportServiceLike,
     SearchSubagentLike,
 )
-from ..services.memory import MemoryService
+from ..runtime.calls import ProviderRejectedError
+from ..services.findings import build_findings, coverage_matrix
+from ..services.run_store import CompletedIteration, RunStore, StoredRun
 
 
 logger = logging.getLogger(__name__)
+
+
+def _empty_llm_totals() -> dict[str, Any]:
+    return {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "llm_calls": 0,
+        "cost_events": 0,
+    }
+
+
+@dataclass
+class _RunState:
+    brief: ResearchBrief | None = None
+    evidence: list[EvidenceRecord] = field(default_factory=list)
+    summaries: list[IterationSynthesis] = field(default_factory=list)
+    task_focuses: list[str] = field(default_factory=list)
+    queries_run: list[str] = field(default_factory=list)
+    next_iteration: int = 0
+    research_done: bool = False
+    agent_model_calls: int = 0
+    lead_fallbacks: int = 0
+    extraction_fallbacks: int = 0
+    fallback_reasons: list[str] = field(default_factory=list)
+    llm_totals: dict[str, Any] = field(default_factory=_empty_llm_totals)
+    saw_llm_usage: bool = False
+
+    def counters(self) -> dict[str, Any]:
+        return {
+            "agent_model_calls": self.agent_model_calls,
+            "lead_fallbacks": self.lead_fallbacks,
+            "extraction_fallbacks": self.extraction_fallbacks,
+            "fallback_reasons": list(self.fallback_reasons),
+            "llm_totals": dict(self.llm_totals),
+            "saw_llm_usage": self.saw_llm_usage,
+        }
+
+    def record_plan(self, plan: IterationPlan) -> None:
+        for task in plan.subagent_tasks:
+            self.task_focuses.append(task.focus)
+            for query in task.search_queries:
+                if query not in self.queries_run:
+                    self.queries_run.append(query)
+
+    @classmethod
+    def from_stored(cls, stored: StoredRun, include_partial: bool) -> "_RunState":
+        """Rebuild loop state from a stored run.
+
+        Evidence from an iteration that never reached synthesis is kept only
+        when ``include_partial`` is set: a resumed run re-plans that
+        iteration, while a report rewrite uses everything that was read.
+        """
+        state = cls(brief=stored.brief)
+        completed = {item.index for item in stored.iterations}
+        state.evidence = [
+            record
+            for iteration, record in stored.evidence
+            if include_partial or iteration in completed
+        ]
+        for item in stored.iterations:
+            state.summaries.append(item.synthesis)
+            state.record_plan(item.plan)
+        state.research_done = bool(stored.status.get("research_done"))
+        if stored.iterations:
+            state.next_iteration = stored.iterations[-1].index + 1
+            counters = stored.iterations[-1].counters
+            state.agent_model_calls = int(counters.get("agent_model_calls", 0))
+            state.lead_fallbacks = int(counters.get("lead_fallbacks", 0))
+            state.extraction_fallbacks = int(counters.get("extraction_fallbacks", 0))
+            state.fallback_reasons = list(counters.get("fallback_reasons") or [])
+            state.llm_totals.update(counters.get("llm_totals") or {})
+            state.saw_llm_usage = bool(counters.get("saw_llm_usage"))
+        spend = stored.status.get("llm_totals")
+        if spend:
+            # The status also meters the calls after the last iteration (its
+            # report, or an iteration that never finished), which that
+            # iteration's counters miss.
+            state.agent_model_calls += max(
+                0, int(spend.get("llm_calls", 0)) - int(state.llm_totals["llm_calls"])
+            )
+            state.llm_totals.update(spend)
+            state.saw_llm_usage = True
+        return state
 
 
 class LeadOrchestrator:
@@ -36,18 +128,23 @@ class LeadOrchestrator:
         lead_agent: LeadAgentLike,
         search_subagent: SearchSubagentLike,
         citation_agent: CitationAgentLike,
-        memory_service: MemoryService,
+        run_store: RunStore,
         report_service: ReportServiceLike,
         runtime_settings: dict[str, Any] | None = None,
+        auditor: CitationAuditorLike | None = None,
     ) -> None:
         self._lead = lead_agent
         self._search_subagent = search_subagent
         self._citation = citation_agent
-        self._memory = memory_service
+        self._store = run_store
         self._report = report_service
+        self._auditor = auditor
         self._runtime_settings = (
             dict(runtime_settings) if runtime_settings is not None else None
         )
+
+    async def clarifying_questions(self, query: str) -> list[str]:
+        return await self._lead.clarifying_questions(query)
 
     async def run(
         self,
@@ -55,124 +152,230 @@ class LeadOrchestrator:
         progress_callback: ProgressCallback | None = None,
     ) -> ResearchRunResult:
         run_id = new_id()
-        scope = f"run:{run_id}"
+        self._store.create(run_id, request, self._runtime_settings)
+        return await self._execute(
+            run_id, request, _RunState(), progress_callback, "Initializing run"
+        )
+
+    async def resume(
+        self,
+        run_id: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult:
+        stored = self._store.load(run_id)
+        state = _RunState.from_stored(stored, include_partial=False)
+        # The interrupted iteration runs again from its plan, so the pages it
+        # read before the interruption must not survive into later loads.
+        self._store.drop_evidence_from(run_id, state.next_iteration)
+        return await self._execute(
+            run_id,
+            stored.request,
+            state,
+            progress_callback,
+            f"Resuming run at iteration {state.next_iteration + 1}",
+        )
+
+    async def rewrite_report(
+        self,
+        run_id: str,
+        overrides: dict[str, Any] | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchRunResult:
+        """Write the report again from stored evidence, with request fields
+        such as ``detail_level``, ``writer``, or ``audit`` overridden."""
+        stored = self._store.load(run_id)
+        request = stored.request.model_copy(update=overrides or {})
+        state = _RunState.from_stored(stored, include_partial=True)
+        state.research_done = True
+        return await self._execute(
+            run_id,
+            request,
+            state,
+            progress_callback,
+            "Rewriting report from stored evidence",
+            rewrite=True,
+        )
+
+    async def _execute(
+        self,
+        run_id: str,
+        request: ResearchRequest,
+        state: _RunState,
+        progress_callback: ProgressCallback | None,
+        start_message: str,
+        rewrite: bool = False,
+    ) -> ResearchRunResult:
+        """Research as far as the state allows, then write and audit the report.
+
+        A rewrite leaves the run's status and research progress as stored:
+        rewriting an interrupted run must not stop it from being resumed, and
+        a failed rewrite must not mark a finished run failed.
+        """
         started = time.perf_counter()
-        started_at = datetime.now(timezone.utc).isoformat()
-        event_log: list[dict[str, Any]] = []
 
         async def emit(event: RunEvent) -> None:
-            event_log.append(event.model_dump(mode="json"))
+            self._store.append_event(run_id, event)
             await self._emit(progress_callback, event)
 
         try:
-            self._memory.write(scope, "created_at", started_at, author="orchestrator")
-            self._memory.write(scope, "status", "running", author="orchestrator")
-            if self._runtime_settings is not None:
-                self._memory.write(
-                    scope, "settings", dict(self._runtime_settings), author="orchestrator"
-                )
+            if not rewrite:
+                self._store.set_status(run_id, "running")
             await emit(
                 RunEvent(
                     stage="bootstrap",
-                    message="Initializing run",
+                    message=start_message,
                     metrics={"run_id": run_id},
                 ),
             )
-            self._memory.write(
-                scope, "request", request.model_dump(mode="json"), author="lead"
-            )
 
-            agent_model_calls = 0
-            all_evidence: list[EvidenceRecord] = []
-            iteration_summaries: list[IterationSynthesis] = []
-            prior_task_focuses: list[str] = []
-            queries_run: list[str] = []
-            lead_fallbacks = fallbacks_before = self._lead.fallback_count
-            extraction_fallbacks = 0
-            fallback_reasons: list[str] = []
-            llm_totals: dict[str, Any] = {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "cost_usd": 0.0,
-                "llm_calls": 0,
-                "cost_events": 0,
-            }
-            saw_llm_usage = False
+            lead_seen = self._lead.fallback_count
 
             def absorb_llm_usage(usage: Any) -> dict[str, Any] | None:
-                nonlocal saw_llm_usage
                 if not isinstance(usage, dict) or not usage:
                     return None
-                saw_llm_usage = True
+                state.saw_llm_usage = True
+                llm_totals = state.llm_totals
                 for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
                     value = usage.get(key, 0)
-                    if isinstance(value, (int, float)):
+                    if (
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        and math.isfinite(value)
+                        and value >= 0
+                    ):
                         llm_totals[key] += value
                 cost = usage.get("cost_usd", 0)
-                if isinstance(cost, (int, float)):
+                if (
+                    isinstance(cost, (int, float))
+                    and not isinstance(cost, bool)
+                    and math.isfinite(cost)
+                    and cost >= 0
+                ):
                     llm_totals["cost_usd"] += cost
                 calls = usage.get("llm_calls", 1)
-                if isinstance(calls, int):
+                if isinstance(calls, int) and not isinstance(calls, bool) and calls > 0:
                     llm_totals["llm_calls"] += calls
-                cost_hits = usage.get("cost_events", 1 if "cost_usd" in usage else 0)
-                if isinstance(cost_hits, int):
+                else:
+                    calls = 1
+                cost_hits = usage.get("cost_events", calls if "cost_usd" in usage else 0)
+                if (
+                    isinstance(cost_hits, int)
+                    and not isinstance(cost_hits, bool)
+                    and cost_hits >= 0
+                ):
                     llm_totals["cost_events"] += cost_hits
+                self._store.record_spend(run_id, llm_totals)
                 return usage
 
             def with_model_call_count(
                 metrics: dict[str, Any] | None = None,
+                usage: dict[str, Any] | None = None,
             ) -> dict[str, Any]:
                 updated = dict(metrics or {})
-                if agent_model_calls > 0:
-                    updated["agent_model_calls"] = agent_model_calls
+                if state.agent_model_calls > 0:
+                    updated["agent_model_calls"] = state.agent_model_calls
+                if usage:
+                    updated["llm_usage"] = usage
                 return updated
 
-            for iteration in range(request.max_iterations):
-                memory_context = [
-                    ("prior_task_focuses", list(prior_task_focuses)),
-                    ("queries_run", list(queries_run)),
-                ]
-                agent_model_calls += 1
-                plan = await self._lead.create_iteration_plan(
-                    request=request,
-                    iteration=iteration,
-                    prior_summaries=iteration_summaries,
-                    memory_context=memory_context,
-                )
-                plan_usage = absorb_llm_usage(
-                    getattr(self._lead, "last_llm_usage", None)
-                )
-                if self._lead.fallback_count > lead_fallbacks:
-                    lead_fallbacks = self._lead.fallback_count
+            async def after_lead_call(
+                method: str, fallback_message: str, iteration: int | None = None
+            ) -> dict[str, Any] | None:
+                """Meter the lead's last call and report it if it fell back."""
+                nonlocal lead_seen
+                usage = absorb_llm_usage(getattr(self._lead, "last_llm_usage", None))
+                if self._lead.fallback_count > lead_seen:
+                    state.lead_fallbacks += self._lead.fallback_count - lead_seen
+                    lead_seen = self._lead.fallback_count
                     await emit(
                         RunEvent(
                             stage="error",
-                            message="Lead planner fell back to deterministic plan",
+                            message=fallback_message,
                             iteration=iteration,
-                            payload=self._fallback_payload("create_iteration_plan"),
+                            payload=self._fallback_payload(method),
                         ),
                     )
-                    self._record_fallback_reason(
-                        fallback_reasons, "create_iteration_plan"
+                    self._record_fallback_reason(state.fallback_reasons, method)
+                return usage
+
+            if state.brief is None and not state.research_done:
+                state.agent_model_calls += 1
+                state.brief = await self._lead.create_brief(request)
+                brief_usage = await after_lead_call(
+                    "create_brief", "Lead brief writer fell back to the raw query"
+                )
+                self._store.save_brief(run_id, state.brief)
+                await emit(
+                    RunEvent(
+                        stage="plan",
+                        message="Research brief ready",
+                        metrics=with_model_call_count(
+                            {"sub_questions": len(state.brief.sub_questions)}, brief_usage
+                        ),
+                        payload={"sub_questions": list(state.brief.sub_questions)},
+                    ),
+                )
+
+            budget_stopped = False
+            unpriced_warned = False
+            for iteration in range(
+                state.next_iteration,
+                state.next_iteration if state.research_done else request.max_iterations,
+            ):
+                budget = request.max_cost_usd
+                if (
+                    budget is not None
+                    and not unpriced_warned
+                    and state.llm_totals["llm_calls"] > 0
+                    and state.llm_totals["cost_events"] == 0
+                ):
+                    unpriced_warned = True
+                    await emit(
+                        RunEvent(
+                            stage="error",
+                            message="Cost budget not enforced: the model reports no prices",
+                            iteration=iteration,
+                        ),
                     )
-                self._memory.write(
-                    scope,
-                    f"iteration:{iteration}:plan",
-                    plan.model_dump(mode="json"),
-                    author="lead",
+                if budget is not None and state.llm_totals["cost_usd"] >= budget:
+                    budget_stopped = True
+                    await emit(
+                        RunEvent(
+                            stage="synthesize",
+                            message="Cost budget reached; writing the report",
+                            iteration=iteration,
+                            metrics={
+                                "usd_spent": round(state.llm_totals["cost_usd"], 6),
+                                "max_cost_usd": budget,
+                            },
+                        ),
+                    )
+                    break
+                memory_context = [
+                    ("prior_task_focuses", list(state.task_focuses)),
+                    ("queries_run", list(state.queries_run)),
+                ]
+                state.agent_model_calls += 1
+                plan = await self._lead.create_iteration_plan(
+                    request=request,
+                    iteration=iteration,
+                    prior_summaries=state.summaries,
+                    memory_context=memory_context,
+                    brief=state.brief,
                 )
-                plan_metrics = with_model_call_count(
-                    {"tasks": len(plan.subagent_tasks)}
+                plan_usage = await after_lead_call(
+                    "create_iteration_plan",
+                    "Lead planner fell back to deterministic plan",
+                    iteration,
                 )
-                if plan_usage:
-                    plan_metrics["llm_usage"] = plan_usage
                 await emit(
                     RunEvent(
                         stage="plan",
                         message=f"Iteration {iteration + 1} plan ready",
                         iteration=iteration,
-                        metrics=plan_metrics,
+                        metrics=with_model_call_count(
+                            {"tasks": len(plan.subagent_tasks)}, plan_usage
+                        ),
                     ),
                 )
 
@@ -183,13 +386,14 @@ class LeadOrchestrator:
 
                 # A failed fetch leaves snippet-only evidence; its URL stays
                 # eligible for another attempt.
-                fetched = [item for item in all_evidence if not item.fetch_error]
+                fetched = [item for item in state.evidence if not item.fetch_error]
                 extracted_urls = {item.requested_url for item in fetched}
                 extracted_urls.update(item.final_url for item in fetched if item.final_url)
                 semaphore = asyncio.Semaphore(request.parallelism)
                 task_total = len(plan.subagent_tasks)
                 completed_tasks = 0
                 completed_lock = asyncio.Lock()
+                task_memos: list[dict[str, str]] = []
 
                 async def run_task(
                     task_index: int, task: SubagentTask
@@ -215,40 +419,43 @@ class LeadOrchestrator:
                         trace_type: str,
                         payload: dict[str, Any],
                     ) -> None:
-                        nonlocal agent_model_calls, extraction_fallbacks
-                        if trace_type in ("extract_started", "urls_ranked"):
-                            agent_model_calls += 1
-                        elif trace_type == "extraction_fallback":
-                            extraction_fallbacks += 1
+                        if trace_type in ("extract_started", "urls_ranked", "task_memo"):
+                            state.agent_model_calls += 1
+                        if trace_type == "task_memo" and payload.get("memo"):
+                            task_memos.append(
+                                {
+                                    "task_id": str(payload.get("task_id", "")),
+                                    "focus": str(payload.get("focus", "")),
+                                    "memo": str(payload["memo"]),
+                                }
+                            )
+                        elif trace_type in ("extraction_fallback", "researcher_failed"):
+                            state.extraction_fallbacks += 1
                             trace_reason = payload.get("reason")
                             if trace_reason:
-                                fallback_reasons.append(str(trace_reason)[:300])
+                                state.fallback_reasons.append(str(trace_reason)[:300])
                         trace_usage = absorb_llm_usage(payload.get("llm_usage"))
                         trace_event = self._build_search_trace_event(
                             iteration=iteration,
                             trace_type=trace_type,
                             payload=payload,
                         )
-                        trace_event.metrics = with_model_call_count(trace_event.metrics)
-                        if trace_usage:
-                            trace_event.metrics["llm_usage"] = trace_usage
+                        trace_event.metrics = with_model_call_count(
+                            trace_event.metrics, trace_usage
+                        )
                         await emit(trace_event)
 
                     try:
                         async with semaphore:
                             evidence = await self._search_subagent.execute_task(
-                                scope,
+                                f"run:{run_id}",
                                 task,
                                 request,
                                 progress_callback=on_search_trace,
                                 extracted_urls=extracted_urls,
+                                brief=state.brief,
                             )
-                        self._memory.write(
-                            scope,
-                            f"iteration:{iteration}:task:{task.task_id}:evidence_count",
-                            len(evidence),
-                            author=task.task_id,
-                        )
+                        self._store.append_evidence(run_id, iteration, evidence)
                         async with completed_lock:
                             completed_tasks += 1
                             finished = completed_tasks
@@ -278,28 +485,55 @@ class LeadOrchestrator:
                         )
                         raise
 
-                results: list[list[EvidenceRecord] | BaseException] = await asyncio.gather(
-                    *(
-                        run_task(index, task)
-                        for index, task in enumerate(plan.subagent_tasks, start=1)
-                    ),
-                    return_exceptions=True,
-                )
+                running_tasks = [
+                    asyncio.create_task(run_task(index, task))
+                    for index, task in enumerate(plan.subagent_tasks, start=1)
+                ]
+                pending = set(running_tasks)
+                fatal_error: BaseException | None = None
+                try:
+                    while pending:
+                        done, pending = await asyncio.wait(
+                            pending, return_when=asyncio.FIRST_COMPLETED
+                        )
+                        for finished_task in done:
+                            if finished_task.cancelled():
+                                continue
+                            exc = finished_task.exception()
+                            if exc is not None and (
+                                isinstance(exc, ProviderRejectedError)
+                                or not isinstance(exc, Exception)
+                            ):
+                                fatal_error = exc
+                                for sibling in pending:
+                                    sibling.cancel()
+                                break
+                        if fatal_error is not None:
+                            break
+                finally:
+                    if pending:
+                        for sibling in pending:
+                            sibling.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+
+                if fatal_error is not None:
+                    raise fatal_error
 
                 iteration_evidence: list[EvidenceRecord] = []
                 task_errors = 0
-                for task_result in results:
-                    if isinstance(task_result, list):
-                        iteration_evidence.extend(task_result)
-                    else:
+                for finished_task in running_tasks:
+                    if finished_task.cancelled():
+                        raise asyncio.CancelledError()
+                    exc = finished_task.exception()
+                    if exc is not None:
+                        if isinstance(exc, ProviderRejectedError) or not isinstance(exc, Exception):
+                            raise exc
                         task_errors += 1
+                    else:
+                        iteration_evidence.extend(finished_task.result())
 
-                all_evidence.extend(iteration_evidence)
-                prior_task_focuses.extend(task.focus for task in plan.subagent_tasks)
-                for task in plan.subagent_tasks:
-                    for query in task.search_queries:
-                        if query not in queries_run:
-                            queries_run.append(query)
+                state.evidence.extend(iteration_evidence)
+                state.record_plan(plan)
                 await emit(
                     RunEvent(
                         stage="search",
@@ -314,37 +548,42 @@ class LeadOrchestrator:
                     ),
                 )
 
-                agent_model_calls += 1
+                state.agent_model_calls += 1
                 synthesis = await self._lead.synthesize_iteration(
                     request=request,
                     iteration=iteration,
                     iteration_evidence=[
                         item.model_dump(mode="json") for item in iteration_evidence
                     ],
-                    prior_summaries=iteration_summaries,
+                    prior_summaries=state.summaries,
+                    brief=state.brief,
+                    task_memos=task_memos,
                 )
-                synthesis_usage = absorb_llm_usage(
-                    getattr(self._lead, "last_llm_usage", None)
+                synthesis_usage = await after_lead_call(
+                    "synthesize_iteration",
+                    "Lead synthesizer fell back to deterministic synthesis",
+                    iteration,
                 )
-                if self._lead.fallback_count > lead_fallbacks:
-                    lead_fallbacks = self._lead.fallback_count
-                    await emit(
-                        RunEvent(
-                            stage="error",
-                            message="Lead synthesizer fell back to deterministic synthesis",
-                            iteration=iteration,
-                            payload=self._fallback_payload("synthesize_iteration"),
-                        ),
+                if state.brief is not None:
+                    matrix = coverage_matrix(state.brief, state.evidence)
+                    gaps = {item.index for item in matrix if item.strength != "strong"}
+                    synthesis = synthesis.model_copy(
+                        update={
+                            "coverage_matrix": matrix,
+                            "open_sub_questions": sorted(
+                                gaps | set(synthesis.open_sub_questions)
+                            ),
+                        }
                     )
-                    self._record_fallback_reason(
-                        fallback_reasons, "synthesize_iteration"
-                    )
-                iteration_summaries.append(synthesis)
-                self._memory.write(
-                    scope,
-                    f"iteration:{iteration}:synthesis",
-                    synthesis.model_dump(mode="json"),
-                    author="lead",
+                state.summaries.append(synthesis)
+                self._store.save_iteration(
+                    run_id,
+                    CompletedIteration(
+                        index=iteration,
+                        plan=plan,
+                        synthesis=synthesis,
+                        counters=state.counters(),
+                    ),
                 )
                 synthesis_metrics = with_model_call_count(
                     {
@@ -353,10 +592,9 @@ class LeadOrchestrator:
                         if synthesis.coverage
                         else None,
                         "depth_policy": request.depth_policy,
-                    }
+                    },
+                    synthesis_usage,
                 )
-                if synthesis_usage:
-                    synthesis_metrics["llm_usage"] = synthesis_usage
                 await emit(
                     RunEvent(
                         stage="synthesize",
@@ -373,16 +611,15 @@ class LeadOrchestrator:
                     break
 
                 if request.depth_policy == "adaptive":
-                    if iteration + 1 >= request.max_iterations:
-                        break
-                    if not self._adaptive_should_continue(
-                        synthesis.coverage, all_evidence, request.max_iterations, iteration
-                    ):
+                    previous = state.summaries[-2] if len(state.summaries) > 1 else None
+                    if not self._adaptive_should_continue(synthesis, previous):
                         break
                 elif not synthesis.continue_loop:
                     break
+            if not rewrite:
+                self._store.mark_research_done(run_id)
 
-            citations = await self._citation.build_citations(request.query, all_evidence)
+            citations = await self._citation.build_citations(request.query, state.evidence)
             citation_metrics = with_model_call_count({"citations": len(citations)})
             await emit(
                 RunEvent(
@@ -392,55 +629,87 @@ class LeadOrchestrator:
                 ),
             )
 
-            agent_model_calls += 1
             draft = await self._lead.build_final_report(
                 request=request,
-                iteration_summaries=iteration_summaries,
-                evidence_payload=[item.model_dump(mode="json") for item in all_evidence],
+                iteration_summaries=state.summaries,
+                evidence_payload=[item.model_dump(mode="json") for item in state.evidence],
                 citations_payload=[entry.model_dump(mode="json") for entry in citations],
+                brief=state.brief,
             )
-            if self._lead.fallback_count > lead_fallbacks:
-                lead_fallbacks = self._lead.fallback_count
-                await emit(
-                    RunEvent(
-                        stage="error",
-                        message="Lead reporter fell back to deterministic report",
-                        payload=self._fallback_payload("build_final_report"),
-                    ),
-                )
-                self._record_fallback_reason(fallback_reasons, "build_final_report")
+            report_usage = await after_lead_call(
+                "build_final_report", "Lead reporter fell back to deterministic report"
+            )
+            # Writing takes one call, or several when an attempt is retried.
+            writer_calls = getattr(self._lead, "last_call_count", None)
+            state.agent_model_calls += (
+                writer_calls if isinstance(writer_calls, int) and writer_calls > 0 else 1
+            )
             rendered_report = self._report.render_result(request, draft, citations)
-            report_markdown = rendered_report.markdown
-            report_citations = rendered_report.citations
-            report_usage = absorb_llm_usage(
-                getattr(self._lead, "last_llm_usage", None)
-            )
-            report_metrics = with_model_call_count(
-                {"report_words": len(report_markdown.split())}
-            )
-            if report_usage:
-                report_metrics["llm_usage"] = report_usage
             await emit(
                 RunEvent(
                     stage="report",
                     message="Lead researcher completed final report draft",
-                    metrics=report_metrics,
+                    metrics=with_model_call_count(
+                        {"report_words": len(rendered_report.markdown.split())}, report_usage
+                    ),
                 ),
             )
 
+            citation_audit: list[CitationVerdict] = []
+            if self._auditor is not None and request.audit and rendered_report.citations:
+                outcome = await self._auditor.audit(
+                    rendered_report.markdown, rendered_report.citations, state.evidence
+                )
+                state.agent_model_calls += outcome.calls
+                audit_usage = absorb_llm_usage(outcome.llm_usage)
+                citation_audit = outcome.verdicts
+                for failure in getattr(outcome, "failures", ()):
+                    state.fallback_reasons.append(f"citation_audit: {failure}"[:300])
+                    await emit(
+                        RunEvent(
+                            stage="error",
+                            message="Citation audit left a batch unchecked",
+                            payload={"method": "citation_audit", "reason": failure},
+                        ),
+                    )
+                # Re-rendering drops references that lost their last marker
+                # and renumbers the rest. Only re-render when the audit actually
+                # checked markers; an empty audit means the body had no markers
+                # to remove and must not wipe fallback citations.
+                if citation_audit:
+                    rendered_report = self._report.render_result(
+                        request,
+                        draft.model_copy(update={"markdown": outcome.markdown}),
+                        rendered_report.citations
+                        if any(verdict.verdict != "unsupported" for verdict in citation_audit)
+                        else [],
+                    )
+                await emit(
+                    RunEvent(
+                        stage="report",
+                        message="Citation audit completed",
+                        metrics=with_model_call_count(
+                            {"citation_audit": self._audit_counts(citation_audit)}, audit_usage
+                        ),
+                    ),
+                )
+            report_markdown = rendered_report.markdown
+            report_citations = rendered_report.citations
+
+            llm_totals = state.llm_totals
             elapsed = time.perf_counter() - started
             run_stats: dict[str, Any] = {
                 "elapsed_seconds": round(elapsed, 2),
-                "iterations": len(iteration_summaries),
-                "evidence_count": len(all_evidence),
+                "iterations": len(state.summaries),
+                "evidence_count": len(state.evidence),
                 "candidate_citation_count": len(citations),
                 "citation_count": len(report_citations),
-                "agent_model_calls": agent_model_calls,
-                "agent_fallbacks": lead_fallbacks - fallbacks_before + extraction_fallbacks,
+                "agent_model_calls": state.agent_model_calls,
+                "agent_fallbacks": state.lead_fallbacks + state.extraction_fallbacks,
             }
-            if fallback_reasons:
-                run_stats["fallback_reasons"] = list(fallback_reasons)
-            if saw_llm_usage:
+            if state.fallback_reasons:
+                run_stats["fallback_reasons"] = list(state.fallback_reasons)
+            if state.saw_llm_usage:
                 run_stats["llm_usage"] = dict(llm_totals)
             if llm_totals["llm_calls"] > 0:
                 run_stats["metered_calls"] = llm_totals["llm_calls"]
@@ -458,68 +727,57 @@ class LeadOrchestrator:
                     run_stats["cost_coverage"] = "partial"
                 else:
                     run_stats["cost_coverage"] = "full"
-            run_stats.update(self._quality_summary(all_evidence))
+            run_stats.update(self._quality_summary(state.evidence))
+            findings = build_findings(state.evidence)
+            run_stats["findings"] = len(findings)
+            if budget_stopped:
+                run_stats["stopped_at_cost_budget"] = True
+            if citation_audit:
+                run_stats["citation_audit"] = self._audit_counts(citation_audit)
+            final_matrix = state.summaries[-1].coverage_matrix if state.summaries else []
+            if final_matrix:
+                strengths: list[str] = [item.strength for item in final_matrix]
+                run_stats["sub_question_coverage"] = {
+                    level: strengths.count(level)
+                    for level in ("strong", "moderate", "weak", "none")
+                }
 
             result = ResearchRunResult(
                 run_id=run_id,
                 request=request,
+                brief=state.brief,
                 report_markdown=report_markdown,
                 citations=report_citations,
-                evidence=all_evidence,
-                iteration_summaries=iteration_summaries,
+                evidence=state.evidence,
+                findings=findings,
+                citation_audit=citation_audit,
+                iteration_summaries=state.summaries,
                 run_stats=run_stats,
             )
 
-            complete_event = RunEvent(
-                stage="complete",
-                message="Run completed",
-                metrics=result.run_stats,
-                payload={"run_id": run_id},
+            self._store.save_report(
+                run_id, report_markdown, report_citations, run_stats, citation_audit
             )
-            event_log.append(complete_event.model_dump(mode="json"))
-            self._memory.write(scope, "status", "completed", author="orchestrator")
-            self._memory.write(
-                scope,
-                "updated_at",
-                datetime.now(timezone.utc).isoformat(),
-                author="orchestrator",
+            if not rewrite:
+                self._store.set_status(run_id, "completed")
+            await emit(
+                RunEvent(
+                    stage="complete",
+                    message="Run completed",
+                    metrics=result.run_stats,
+                    payload={"run_id": run_id},
+                )
             )
-            self._memory.write(scope, "events", event_log, author="orchestrator")
-            self._memory.write(
-                scope,
-                "result",
-                {
-                    "run_id": result.run_id,
-                    "run_stats": result.run_stats,
-                    "report_preview": result.report_markdown[:1800],
-                    "citation_count": len(result.citations),
-                    "evidence_count": len(result.evidence),
-                },
-                author="orchestrator",
-            )
-            await self._emit(progress_callback, complete_event)
-
             return result
         except BaseException as exc:
+            if rewrite:
+                raise
             terminal_status = (
                 "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
             )
             try:
-                self._memory.write(
-                    scope, "status", terminal_status, author="orchestrator"
-                )
-                self._memory.write(
-                    scope,
-                    "updated_at",
-                    datetime.now(timezone.utc).isoformat(),
-                    author="orchestrator",
-                )
-                self._memory.write(scope, "events", event_log, author="orchestrator")
-                self._memory.write(
-                    scope,
-                    "error",
-                    f"{type(exc).__name__}: {exc}"[:300],
-                    author="orchestrator",
+                self._store.set_status(
+                    run_id, terminal_status, f"{type(exc).__name__}: {exc}"[:300]
                 )
             except Exception:
                 logger.warning(
@@ -534,9 +792,12 @@ class LeadOrchestrator:
     ) -> None:
         if callback is None:
             return
-        result = callback(event)
-        if isinstance(result, Awaitable):
-            await result
+        try:
+            result = callback(event)
+            if isinstance(result, Awaitable):
+                await result
+        except Exception:
+            logger.warning("Progress callback failed on %s event", event.stage, exc_info=True)
 
     def _fallback_payload(self, method: str) -> dict[str, Any]:
         payload: dict[str, Any] = {"method": method}
@@ -554,54 +815,28 @@ class LeadOrchestrator:
 
     @staticmethod
     def _adaptive_should_continue(
-        coverage: object,
-        cumulative_evidence: list[Any],
-        max_iterations: int,
-        iteration: int,
+        synthesis: IterationSynthesis, previous: IterationSynthesis | None = None
     ) -> bool:
-        if iteration + 1 >= max_iterations:
-            return False
+        # The brief's checklist decides: keep going while any sub-question
+        # lacks two independent credible sources, or while sources conflict,
+        # but only while an iteration still moves the checklist. Claims
+        # without a sub-question tag and pages that yield no claims leave it
+        # where it was.
+        if previous is not None and previous.coverage_matrix:
+            if not any(
+                now.findings > then.findings or now.credible_sources > then.credible_sources
+                for then, now in zip(previous.coverage_matrix, synthesis.coverage_matrix)
+            ):
+                return False
+        contradictions = synthesis.coverage.contradiction_count if synthesis.coverage else 0
+        return bool(synthesis.open_sub_questions) or contradictions > 0
 
-        domains: set[str] = set()
-        high_conf = 0
-        for ev in cumulative_evidence:
-            d = getattr(ev, "domain", None)
-            if d and isinstance(d, str):
-                domains.add(d)
-            conf = getattr(ev, "confidence", 0.0) or 0.0
-            cred = getattr(ev, "credibility_score", None)
-            if conf >= 0.7 and (cred is None or cred >= 0.6):
-                high_conf += 1
-
-        # No coverage (deterministic synthesis fallback): the model's vote
-        # is missing, so the evidence signals alone decide.
-        if coverage is None:
-            if len(domains) < 3:
-                return True
-            if high_conf < 2:
-                return True
-            return False
-
-        cov = getattr(coverage, "coverage_score", 0.5)
-        severity = getattr(coverage, "open_question_severity", 0.5)
-        contradictions = getattr(coverage, "contradiction_count", 0)
-        should = getattr(coverage, "should_continue", True)
-
-        if should:
-            return True
-
-        if float(cov) < 0.6:
-            return True
-        if float(severity) > 0.5:
-            return True
-        if int(contradictions) > 0:
-            return True
-        if len(domains) < 3:
-            return True
-        if high_conf < 2:
-            return True
-
-        return False
+    @staticmethod
+    def _audit_counts(verdicts: list[CitationVerdict]) -> dict[str, int]:
+        return {
+            verdict: sum(1 for item in verdicts if item.verdict == verdict)
+            for verdict in ("supported", "partial", "unsupported", "unchecked")
+        }
 
     @staticmethod
     def _quality_summary(evidence: list[EvidenceRecord]) -> dict[str, Any]:
@@ -687,6 +922,20 @@ class LeadOrchestrator:
             )
             if "url" in payload:
                 metrics["url"] = payload["url"]
+        elif trace_type == "researcher_failed":
+            stage = "error"
+            message = (
+                f"Task {task_id} researcher stopped without a memo"
+                if task_id
+                else "Researcher stopped without a memo"
+            )
+        elif trace_type == "task_memo":
+            message = (
+                f"Task {task_id} researcher finished" if task_id else "Researcher finished"
+            )
+            for key in ("searches", "reads"):
+                if key in payload:
+                    metrics[key] = payload[key]
         elif trace_type == "search_failed":
             stage = "error"
             message = (

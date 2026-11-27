@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import math
 import os
+import tempfile
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 from dotenv import find_dotenv, load_dotenv
 
@@ -55,8 +59,46 @@ def infer_api_key_env_name(model: str) -> str:
     return f"{normalized}_API_KEY"
 
 
+def api_key_env_to_keep(api_key_env: str, previous_model: str, model: str) -> str:
+    # A variable that only named the previous model's usual key would carry
+    # that key over to a new model's provider.
+    if model != previous_model and api_key_env == infer_api_key_env_name(previous_model):
+        return ""
+    return api_key_env
+
+
 DEFAULT_MODEL = "deepseek/deepseek-flash"
-_LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+DEFAULT_STORAGE_DIR = "~/.shandu/storage"
+# Research roles that can each run on their own model.
+Role = Literal["planner", "researcher", "extractor", "synthesizer", "writer", "auditor"]
+ROLES: tuple[Role, ...] = get_args(Role)
+# Releases before 3.2 saved the whole config, so their config.json holds that
+# release's defaults beside the user's choices. In a file of that shape these
+# values load as unset. The last column marks values that load as unset in any
+# file.
+_LEGACY_DEFAULTS: tuple[tuple[str, str, Any, bool], ...] = (
+    ("api", "model", "deepseek/deepseek-chat", False),
+    ("api", "model", "deepseek/deepseek-v4-flash", True),
+    ("api", "max_tokens", 8192, False),
+    ("api", "max_tokens", 16384, False),
+    ("runtime", "storage_dir", ".blackgeorge", False),
+    ("orchestration", "max_results_per_query", 5, False),
+    ("orchestration", "max_pages_per_task", 3, False),
+    ("orchestration", "detail_level", "high", False),
+)
+# Every release that saved the whole config wrote these runtime keys. Neither
+# `shandu configure` nor the GUI writes that section.
+_WHOLE_CONFIG_RUNTIME_KEYS = frozenset(
+    {"storage_dir", "structured_output_retries", "max_iterations", "max_tool_calls"}
+)
+
+
+def _is_legacy_default(section: str, key: str, value: Any, whole_config: bool) -> bool:
+    return any(
+        (legacy_section, legacy_key, legacy_value) == (section, key, value)
+        and (whole_config or in_any_file)
+        for legacy_section, legacy_key, legacy_value, in_any_file in _LEGACY_DEFAULTS
+    )
 
 
 DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
@@ -68,9 +110,12 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "max_tokens": 32768,
         "api_key_env": "",
         "api_key": "",
+        # Optional per-role models: planner, researcher, extractor,
+        # synthesizer, writer, auditor. A role without one uses "model".
+        "models": {},
     },
     "runtime": {
-        "storage_dir": ".blackgeorge",
+        "storage_dir": DEFAULT_STORAGE_DIR,
         "structured_output_retries": 3,
         "max_iterations": 12,
         "max_tool_calls": 24,
@@ -82,10 +127,12 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "parallelism": 3,
         "max_results_per_query": 8,
         "max_pages_per_task": 6,
-        "detail_level": "high",
+        "detail_level": "auto",
         "depth_policy": "adaptive",
     },
     "search": {
+        # "ddgs", or a search API: tavily, brave, exa, searxng.
+        "backend": "ddgs",
         "region": "wt-wt",
         "safesearch": "moderate",
     },
@@ -99,9 +146,8 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
 
 class Config:
     def __init__(self) -> None:
-        self._config: dict[str, dict[str, Any]] = {
-            section: values.copy() for section, values in DEFAULT_CONFIG.items()
-        }
+        self._lock = threading.RLock()
+        self._config: dict[str, dict[str, Any]] = copy.deepcopy(DEFAULT_CONFIG)
         self._overlay: dict[str, dict[str, Any]] = {}
         self._exported_api_keys: dict[str, str] = {}
         self._path = Path(os.path.expanduser("~/.shandu/config.json"))
@@ -111,7 +157,7 @@ class Config:
         self.apply_provider_api_key()
 
     def _normalize_storage_dir(self) -> None:
-        raw = str(self._config["runtime"].get("storage_dir", ".blackgeorge") or ".blackgeorge")
+        raw = str(self._config["runtime"].get("storage_dir") or DEFAULT_STORAGE_DIR)
         self._config["runtime"]["storage_dir"] = str(
             Path(raw).expanduser().resolve()
         )
@@ -122,6 +168,10 @@ class Config:
         try:
             with self._path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
+            runtime = payload.get("runtime")
+            whole_config = (
+                isinstance(runtime, dict) and _WHOLE_CONFIG_RUNTIME_KEYS <= runtime.keys()
+            )
             for section, values in payload.items():
                 if not isinstance(values, dict):
                     continue
@@ -129,11 +179,7 @@ class Config:
                 for key, value in values.items():
                     if key in defaults and defaults[key] == value:
                         continue
-                    if (
-                        section == "api"
-                        and key == "model"
-                        and value == _LEGACY_DEFAULT_MODEL
-                    ):
+                    if _is_legacy_default(section, key, value, whole_config):
                         continue
                     self._overlay.setdefault(section, {})[key] = value
                     self._config.setdefault(section, {})[key] = value
@@ -144,86 +190,130 @@ class Config:
             return
 
     def _load_env(self) -> None:
-        model = os.getenv("SHANDU_MODEL") or os.getenv("OPENAI_MODEL_NAME")
+        previous_model = str(self._config["api"].get("model") or "")
+        model = (os.getenv("SHANDU_MODEL") or os.getenv("OPENAI_MODEL_NAME") or "").strip()
         if model:
             self._config["api"]["model"] = model
-
-        if os.getenv("SHANDU_TEMPERATURE"):
-            try:
-                self._config["api"]["temperature"] = float(
-                    os.getenv("SHANDU_TEMPERATURE", "0.2")
+            if not (os.getenv("SHANDU_API_KEY_ENV") or "").strip():
+                saved_env = str(self._config["api"].get("api_key_env") or "").strip()
+                self._config["api"]["api_key_env"] = api_key_env_to_keep(
+                    saved_env, previous_model, model
                 )
+
+        for role in ROLES:
+            role_model = (os.getenv(f"SHANDU_MODEL_{role.upper()}") or "").strip()
+            if role_model:
+                existing = self._config["api"].get("models")
+                models = dict(existing) if isinstance(existing, dict) else {}
+                models[role] = role_model
+                self._config["api"]["models"] = models
+
+        raw_temp = (os.getenv("SHANDU_TEMPERATURE") or "").strip()
+        if raw_temp:
+            try:
+                parsed_temp = float(raw_temp)
+                if math.isfinite(parsed_temp) and parsed_temp >= 0.0:
+                    self._config["api"]["temperature"] = parsed_temp
             except ValueError:
                 pass
 
-        if os.getenv("SHANDU_MAX_TOKENS"):
+        raw_tokens = (os.getenv("SHANDU_MAX_TOKENS") or "").strip()
+        if raw_tokens:
             try:
-                self._config["api"]["max_tokens"] = int(
-                    os.getenv("SHANDU_MAX_TOKENS", "32768")
-                )
+                parsed_tokens = int(raw_tokens)
+                if parsed_tokens > 0:
+                    self._config["api"]["max_tokens"] = parsed_tokens
             except ValueError:
                 pass
 
-        if os.getenv("SHANDU_API_KEY_ENV"):
-            self._config["api"]["api_key_env"] = os.getenv("SHANDU_API_KEY_ENV", "")
+        api_key_env = (os.getenv("SHANDU_API_KEY_ENV") or "").strip()
+        if api_key_env:
+            self._config["api"]["api_key_env"] = api_key_env
 
-        if os.getenv("SHANDU_API_KEY"):
-            self._config["api"]["api_key"] = os.getenv("SHANDU_API_KEY", "")
+        api_key = (os.getenv("SHANDU_API_KEY") or "").strip()
+        if api_key:
+            self._config["api"]["api_key"] = api_key
 
-        if os.getenv("SHANDU_STORAGE_DIR"):
-            self._config["runtime"]["storage_dir"] = os.getenv("SHANDU_STORAGE_DIR")
+        storage_dir = (os.getenv("SHANDU_STORAGE_DIR") or "").strip()
+        if storage_dir:
+            self._config["runtime"]["storage_dir"] = storage_dir
 
-        if os.getenv("SHANDU_PROXY"):
-            self._config["scraper"]["proxy"] = os.getenv("SHANDU_PROXY")
+        search_backend = (os.getenv("SHANDU_SEARCH_BACKEND") or "").strip()
+        if search_backend:
+            self._config["search"]["backend"] = search_backend
+
+        proxy = (os.getenv("SHANDU_PROXY") or "").strip()
+        if proxy:
+            self._config["scraper"]["proxy"] = proxy
 
     def get_api_key_env_name(self, model: str | None = None) -> str:
-        configured = str(self.get("api", "api_key_env", "")).strip()
+        with self._lock:
+            configured = str(self.get("api", "api_key_env", "")).strip()
+            configured_model = str(self.get("api", "model", "")).strip()
+        selected_model = model.strip() if model is not None else configured_model
         if configured:
-            return configured
-        selected_model = model if model is not None else str(self.get("api", "model", ""))
+            kept = api_key_env_to_keep(configured, configured_model, selected_model)
+            if kept:
+                return kept
         return infer_api_key_env_name(selected_model)
 
     def apply_provider_api_key(self, model: str | None = None) -> None:
-        env_name = self.get_api_key_env_name(model)
-        if not env_name:
-            return
-        configured_key = str(self.get("api", "api_key", "")).strip()
-        if not configured_key:
-            return
-        if _is_placeholder_api_key(configured_key):
-            logger.warning(
-                "Ignoring placeholder value for %s; set a real API key", env_name
-            )
-            return
-        existing = os.getenv(env_name)
-        if existing and self._exported_api_keys.get(env_name) != existing:
-            return
-        os.environ[env_name] = configured_key
-        self._exported_api_keys[env_name] = configured_key
+        with self._lock:
+            env_name = self.get_api_key_env_name(model)
+            if not env_name:
+                return
+            configured_key = str(self.get("api", "api_key", "")).strip()
+            if not configured_key:
+                return
+            if _is_placeholder_api_key(configured_key):
+                logger.warning(
+                    "Ignoring placeholder value for %s; set a real API key", env_name
+                )
+                return
+            existing = os.getenv(env_name)
+            if existing and self._exported_api_keys.get(env_name) != existing:
+                return
+            os.environ[env_name] = configured_key
+            self._exported_api_keys[env_name] = configured_key
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
-        return self._config.get(section, {}).get(key, default)
+        with self._lock:
+            return self._config.get(section, {}).get(key, default)
 
     def set(self, section: str, key: str, value: Any) -> None:
-        self._overlay.setdefault(section, {})[key] = value
-        self._config.setdefault(section, {})[key] = value
+        with self._lock:
+            self._overlay.setdefault(section, {})[key] = value
+            self._config.setdefault(section, {})[key] = value
 
     def save(self) -> None:
-        payload: dict[str, dict[str, Any]] = {}
-        for section, values in self._overlay.items():
-            defaults = DEFAULT_CONFIG.get(section, {})
-            kept = {
-                key: value
-                for key, value in values.items()
-                if key not in defaults or defaults[key] != value
-            }
-            if kept:
-                payload[section] = kept
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
-        os.chmod(self._path, 0o600)
+        with self._lock:
+            payload: dict[str, dict[str, Any]] = {}
+            for section, values in self._overlay.items():
+                defaults = DEFAULT_CONFIG.get(section, {})
+                kept = {
+                    key: value
+                    for key, value in values.items()
+                    if key not in defaults or defaults[key] != value
+                }
+                if kept:
+                    payload[section] = kept
+            serialized = json.dumps(payload, indent=2)
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                dir=self._path.parent, prefix=f".{self._path.name}.", suffix=".tmp"
+            )
+            try:
+                os.chmod(tmp_name, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(serialized)
+                os.replace(tmp_name, self._path)
+                os.chmod(self._path, 0o600)
+            except BaseException:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
 
 
 config = Config()

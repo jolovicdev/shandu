@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
+from shandu.runtime.calls import ProviderRejectedError
 from shandu.services.ai_search import AISearchService
 from shandu.services.search import SearchHit
 from shandu.services.scrape import ScrapedPage
@@ -117,3 +120,21 @@ def test_ai_search_attaches_scraped_excerpt_for_noncanonical_hit_url() -> None:
 
     result = asyncio.run(service.search("home"))
     assert result.sources[0].text_excerpt.startswith("Body text")
+
+
+class RejectingDesk:
+    async def arun(self, worker, job):
+        del worker, job
+        raise RuntimeError("litellm.BadRequestError: LLM Provider NOT provided")
+
+
+def test_ai_search_stops_on_an_unknown_model() -> None:
+    runtime = FakeRuntime("")
+    runtime.desk = RejectingDesk()
+    service = AISearchService(
+        runtime=runtime,
+        search_service=FakeSearchService(),
+        scrape_service=FakeScrapeService(),
+    )
+    with pytest.raises(ProviderRejectedError):
+        asyncio.run(service.search("test query"))

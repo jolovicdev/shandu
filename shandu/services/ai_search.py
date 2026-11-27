@@ -7,6 +7,7 @@ from blackgeorge import Job, Worker
 from ..contracts import AISearchResult, AISearchSource
 from ..interfaces import DetailLevel, RuntimeExecutionLike, ScrapeServiceLike, SearchServiceLike
 from ..prompts import aisearch_expected_output, aisearch_instructions, aisearch_job
+from ..runtime.calls import ProviderRejectedError, writer_call
 from ..runtime.costing import collect_llm_usage
 from .scrape.service import _canonicalize_url
 
@@ -44,7 +45,7 @@ class AISearchService:
             seen.add(hit.url)
             page = scraped_by_url.get(_canonicalize_url(hit.url))
             excerpt = ""
-            if page is not None:
+            if page is not None and page.fetch_error is None:
                 excerpt = page.text[:1400].strip()
             snippet = hit.snippet.strip() if hit.snippet.strip() else excerpt[:300]
             sources.append(
@@ -57,15 +58,15 @@ class AISearchService:
             )
 
         if not sources:
-            stats: dict[str, object] = {"sources": 0, "scraped_pages": 0}
+            empty_stats: dict[str, object] = {"sources": 0, "scraped_pages": 0}
             search_error = getattr(self._search, "last_error", None)
             if search_error:
-                stats["search_error"] = search_error
+                empty_stats["search_error"] = search_error
             return AISearchResult(
                 query=query,
                 answer_markdown=f"# {query}\n\nNo search results were returned for this query.",
                 sources=[],
-                run_stats=stats,
+                run_stats=empty_stats,
             )
 
         min_words = self._word_target(detail_level)
@@ -84,28 +85,31 @@ class AISearchService:
             expected_output=aisearch_expected_output(),
         )
         llm_usage = None
+        successful_pages = max(0, len(scraped_pages) - scrape_missed)
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await writer_call(self._runtime, worker, job)
             llm_usage = collect_llm_usage(report)
             content = getattr(report, "content", None)
             if report.status == "completed" and isinstance(content, str) and content.strip():
-                stats: dict[str, object] = {
+                answer_stats: dict[str, object] = {
                     "sources": len(sources),
-                    "scraped_pages": len(scraped_pages),
+                    "scraped_pages": successful_pages,
                     "scrape_missed": scrape_missed,
                 }
                 if llm_usage:
-                    stats["llm_usage"] = llm_usage
+                    answer_stats["llm_usage"] = llm_usage
                 return AISearchResult(
                     query=query,
                     answer_markdown=content.strip(),
                     sources=sources,
-                    run_stats=stats,
+                    run_stats=answer_stats,
                 )
             errors = getattr(report, "errors", None) or []
             detail = "; ".join(str(item) for item in errors if str(item).strip())
             reason = detail[:300] if detail else f"status={getattr(report, 'status', 'unknown')}"
             logger.warning("AI search call did not complete: %s", reason)
+        except ProviderRejectedError:
+            raise
         except Exception:
             reason = "aisearch raised before completing"
             logger.warning("AI search call failed", exc_info=True)
@@ -119,10 +123,10 @@ class AISearchService:
             fallback_lines.append("")
         fallback_lines.extend(["## Sources", ""])
         for idx, source in enumerate(sources, start=1):
-            fallback_lines.append(f"[{idx}] {source.title} - {source.url}")
+            fallback_lines.append(f"- [{idx}] {source.title} - {source.url}")
         fallback_stats: dict[str, object] = {
             "sources": len(sources),
-            "scraped_pages": len(scraped_pages),
+            "scraped_pages": successful_pages,
             "scrape_missed": scrape_missed,
             "fallback_reason": reason,
         }

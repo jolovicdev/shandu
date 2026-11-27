@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import math
+import os
 from dataclasses import dataclass
 from typing import cast
 
-from ...config import DEFAULT_MODEL, config, infer_api_key_env_name
-from ...interfaces import DepthPolicy, DetailLevel
+from ...config import DEFAULT_MODEL, api_key_env_to_keep, config, infer_api_key_env_name
+from ...contracts import ReportLength
+from ...interfaces import DepthPolicy
 from ...runtime import reset_bootstrap
-from ...services.report import persist_report_markdown as persist_report_markdown
 from .constants import DEPTH_POLICIES, DETAIL_LEVELS
 
 
 # Only these config values feed RuntimeBootstrap. Orchestration values are
 # read per-request, so saving them must not tear down the shared runtime:
-# reset_bootstrap() closes SQLite stores that any in-flight run still holds,
-# and the GUI saves configuration at the start of every run.
+# reset_bootstrap() closes SQLite stores that any in-flight run still holds.
 _RUNTIME_KEYS: tuple[tuple[str, str], ...] = (
     ("api", "model"),
     ("api", "api_key_env"),
@@ -50,7 +51,7 @@ def load_defaults() -> GuiDefaults:
         max_tokens=int(config.get("api", "max_tokens", 32768)),
         max_iterations=int(config.get("orchestration", "max_iterations", 2)),
         parallelism=int(config.get("orchestration", "parallelism", 3)),
-        detail_level=str(config.get("orchestration", "detail_level", "high")),
+        detail_level=str(config.get("orchestration", "detail_level", "auto")),
         depth_policy=str(config.get("orchestration", "depth_policy", "adaptive")),
         max_results_per_query=int(
             config.get("orchestration", "max_results_per_query", 8)
@@ -59,11 +60,11 @@ def load_defaults() -> GuiDefaults:
     )
 
 
-def resolved_detail_level(value: object) -> DetailLevel:
-    text = str(value or "high")
+def resolved_detail_level(value: object) -> ReportLength:
+    text = str(value or "auto")
     if text in DETAIL_LEVELS:
-        return cast(DetailLevel, text)
-    return "high"
+        return cast(ReportLength, text)
+    return "auto"
 
 
 def resolved_depth_policy(value: object) -> DepthPolicy:
@@ -71,6 +72,29 @@ def resolved_depth_policy(value: object) -> DepthPolicy:
     if text in DEPTH_POLICIES:
         return cast(DepthPolicy, text)
     return "adaptive"
+
+
+def _clamped_float(value: object, default: float, low: float, high: float) -> float:
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        parsed = float(str(value))
+    except ValueError:
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return max(low, min(high, parsed))
+
+
+def _clamped_int(value: object, default: int, low: int, high: int | None = None) -> int:
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        parsed = int(float(str(value)))
+    except ValueError:
+        return default
+    parsed = max(low, parsed)
+    return min(high, parsed) if high is not None else parsed
 
 
 def save_configuration(
@@ -90,48 +114,42 @@ def save_configuration(
     env_text = str(api_key_env or "").strip()
     key_text = str(api_key_value or "").strip()
 
+    env_text = api_key_env_to_keep(env_text, str(config.get("api", "model", "")), model_text)
     resolved_env = env_text or infer_api_key_env_name(model_text)
     runtime_before = _runtime_snapshot()
     config.set("api", "model", model_text)
     config.set("api", "api_key_env", env_text)
     if key_text:
         config.set("api", "api_key", key_text)
-    config.set(
-        "api", "temperature", float(temperature) if temperature is not None else 0.2
-    )
-    config.set(
-        "api", "max_tokens", int(max_tokens) if max_tokens is not None else 32768
-    )
-    config.set(
-        "orchestration",
-        "max_iterations",
-        int(max_iterations) if max_iterations is not None else 2,
-    )
-    config.set(
-        "orchestration",
-        "parallelism",
-        int(parallelism) if parallelism is not None else 3,
-    )
+    config.set("api", "temperature", _clamped_float(temperature, 0.2, 0.0, 2.0))
+    config.set("api", "max_tokens", _clamped_int(max_tokens, 32768, 1))
+    config.set("orchestration", "max_iterations", _clamped_int(max_iterations, 2, 1, 8))
+    config.set("orchestration", "parallelism", _clamped_int(parallelism, 3, 1, 8))
     config.set("orchestration", "detail_level", resolved_detail_level(detail_level))
     config.set("orchestration", "depth_policy", resolved_depth_policy(depth_policy))
     config.set(
         "orchestration",
         "max_results_per_query",
-        int(max_results_per_query) if max_results_per_query is not None else 8,
+        _clamped_int(max_results_per_query, 8, 1, 20),
     )
     config.set(
         "orchestration",
         "max_pages_per_task",
-        int(max_pages_per_task) if max_pages_per_task is not None else 6,
+        _clamped_int(max_pages_per_task, 6, 1, 10),
     )
     config.save()
     if _runtime_snapshot() != runtime_before:
         reset_bootstrap()
     config.apply_provider_api_key()
-    return f"Saved configuration: model {model_text}, env key {resolved_env}."
+    if not resolved_env:
+        return f"Saved. Model {model_text}; its provider manages the key."
+    if os.getenv(resolved_env, "").strip():
+        return f"Saved. Model {model_text}; the API key is in {resolved_env}."
+    return (
+        f"Saved. Model {model_text}; no API key yet. Paste one above or set {resolved_env}."
+    )
 
 
 _resolved_detail_level = resolved_detail_level
 _resolved_depth_policy = resolved_depth_policy
 _save_configuration = save_configuration
-_persist_report_markdown = persist_report_markdown

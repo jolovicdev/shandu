@@ -68,3 +68,45 @@ def test_save_configuration_resets_on_new_api_key(monkeypatch) -> None:
     settings.save_configuration(**{**_ARGS, "api_key_value": "sk-new"})
 
     assert len(resets) == 2
+
+
+def test_a_new_model_drops_the_previous_models_usual_key_variable(monkeypatch) -> None:
+    store = _isolate_config(monkeypatch)
+    monkeypatch.setattr(settings, "reset_bootstrap", lambda: None)
+    settings.save_configuration(**_ARGS)
+    assert store[("api", "api_key_env")] == "DEEPSEEK_API_KEY"
+
+    settings.save_configuration(**{**_ARGS, "model": "openrouter/minimax/minimax-m2.5"})
+
+    assert store[("api", "api_key_env")] == ""
+
+
+def test_save_says_whether_the_key_is_in_place(monkeypatch) -> None:
+    _isolate_config(monkeypatch)
+    monkeypatch.setattr(settings, "reset_bootstrap", lambda: None)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    missing = settings.save_configuration(**_ARGS)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    found = settings.save_configuration(**_ARGS)
+
+    assert missing.endswith("no API key yet. Paste one above or set DEEPSEEK_API_KEY.")
+    assert found.endswith("the API key is in DEEPSEEK_API_KEY.")
+
+
+def test_gradio_save_action_clears_key_and_syncs_env(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from shandu.ui.gradio import layout as gradio_layout
+
+    monkeypatch.setattr(gradio_layout, "save_configuration", lambda **kwargs: "Saved.")
+    defaults = SimpleNamespace(model="openai/gpt-4o", api_key_env="")
+    monkeypatch.setattr(gradio_layout, "load_defaults", lambda: defaults)
+    msg, masthead, env_update, key_value = gradio_layout._save_action(
+        "openai/gpt-4o", "DEEPSEEK_API_KEY", "sk-secret", 0.2, 1000, 2, 3, "auto", "adaptive", 8, 6
+    )
+    assert msg == "Saved."
+    assert "openai/gpt-4o" in masthead
+    assert env_update["value"] == ""
+    assert env_update["placeholder"] == "OPENAI_API_KEY"
+    assert key_value == ""

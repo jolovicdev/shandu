@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import logging
-from collections.abc import Awaitable, Callable, Collection, Sequence
+import re
+from collections.abc import Awaitable, Callable
+from datetime import date
 from itertools import zip_longest
 from typing import Any, Literal
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from blackgeorge import Job, Worker
 from blackgeorge.utils import new_id
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from ..contracts import EvidenceRecord, ResearchRequest, SourceClass, SubagentTask
+from ..contracts import (
+    Claim,
+    EvidenceRecord,
+    QualityFlag,
+    ResearchBrief,
+    ResearchRequest,
+    SourceClass,
+    SubagentTask,
+)
 from ..interfaces import (
     RuntimeExecutionLike,
     ScrapedPageLike,
@@ -24,7 +35,11 @@ from ..prompts import (
     selector_instructions,
     selector_job,
 )
+from ..runtime.calls import ProviderRejectedError, structured_call
 from ..runtime.costing import collect_llm_usage
+from ..runtime.roles import role_model
+from ..services.findings import verified_claims
+from ..services.search import _host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +47,52 @@ SearchTraceCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 _SNIPPET_FALLBACK_METHOD = "search_snippet_fallback"
 _SNIPPET_ONLY_CREDIBILITY = 0.20
-_MAX_QUERIES_PER_TASK = 6
 _EXTRACTION_CONCURRENCY = 8
+# One scrape of the top candidates, then up to two rounds that replace the
+# pages that could not be read.
+_SCRAPE_ROUNDS = 3
+
+
+# Search engines list an arXiv page under its <title>, "[2406.02069] PyramidKV: ...".
+_ARXIV_ID_PREFIX = re.compile(r"^\[\d{4}\.\d{4,5}(?:v\d+)?\]\s*")
+
+
+def _cased_title(page_title: str, hit_title: str) -> str:
+    """Some PDFs set the title in capitals, which also hides words the title
+    breaks across lines. The search hit that led to the page names the paper
+    in its own casing and reads better when it names mostly the same words; a
+    preprint's hit can word the title a little differently from its PDF."""
+    def words(title: str) -> set[str]:
+        return set(re.sub(r"[\W_]+", " ", title.casefold()).split())
+
+    def mostly_capitals(title: str) -> bool:
+        letters = [char for char in title if char.isalpha()]
+        return bool(letters) and sum(char.isupper() for char in letters) >= 0.8 * len(letters)
+
+    hit = _ARXIV_ID_PREFIX.sub("", hit_title).strip()
+    if mostly_capitals(page_title) and hit and not mostly_capitals(hit):
+        page_words, hit_words = words(page_title), words(hit)
+        if len(page_words & hit_words) >= 0.6 * len(page_words | hit_words):
+            return hit
+    return page_title
+
+
+def _dated_before(published_at: str | None, since: date) -> bool:
+    """True only when the whole period a date names ends before ``since``.
+
+    A bare year counts as its last day and a year-month as the month's last
+    day, so a coarse date never excludes a page that may fall in range.
+    """
+    match = re.match(r"(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?", (published_at or "").strip())
+    if match is None:
+        return False
+    year = int(match.group(1))
+    month = int(match.group(2) or 12)
+    try:
+        day = int(match.group(3) or calendar.monthrange(year, month)[1])
+        return date(year, month, day) < since
+    except ValueError:
+        return False
 
 
 def _report_reason(report: Any) -> str:
@@ -44,18 +103,31 @@ def _report_reason(report: Any) -> str:
     return f"status={getattr(report, 'status', 'unknown')}"
 
 
+class _ExtractedClaim(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    statement: str
+    quote: str
+    sub_question: int | None
+
+
+# Every field is required: a provider that fills only required fields would
+# otherwise leave confidence at a constant and the source unclassified, and
+# the credibility score built from them would be noise.
 class _ExtractionPayload(BaseModel):
     snippet: str
     extracted_text: str
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    source_class: SourceClass = "unknown"
-    authorship: Literal["named", "organizational", "anonymous"] = "anonymous"
-    is_promotional: bool = False
-    summarizes_inaccessible_source: bool = False
+    confidence: float = Field(ge=0.0, le=1.0)
+    source_class: SourceClass
+    authorship: Literal["named", "organizational", "anonymous"]
+    is_promotional: bool
+    self_published: bool
+    summarizes_inaccessible_source: bool
+    claims: list[_ExtractedClaim]
 
 
 class _SelectionPayload(BaseModel):
-    ranked_ids: list[int] = Field(default_factory=list)
+    ranked_ids: list[int]
 
 
 def assess_source_quality(
@@ -64,13 +136,17 @@ def assess_source_quality(
     is_promotional: bool,
     summarizes_inaccessible_source: bool,
     has_publish_date: bool,
-) -> tuple[float, list[str]]:
+    self_published: bool = False,
+) -> tuple[float, list[QualityFlag]]:
     """Score an assessed source from its provenance signals.
 
     The score starts from a per-class tier and loses small amounts for missing
     date, missing author, promotional intent, and secondhand summaries. Every
     credibility constant lives here. Callers handle the non-assessed buckets
     (snippet-only, unassessed) directly.
+
+    A publisher writing about itself is the primary record of its own facts, so
+    that is flagged for the writer to attribute rather than scored down.
     """
     tiers: dict[str, float] = {
         "peer_reviewed": 0.92,
@@ -95,7 +171,7 @@ def assess_source_quality(
     }
 
     score = tiers[source_class]
-    flags: list[str] = []
+    flags: list[QualityFlag] = []
     if not has_publish_date:
         score -= 0.10
         flags.append("undated")
@@ -108,7 +184,7 @@ def assess_source_quality(
     if summarizes_inaccessible_source:
         score -= 0.15
         flags.append("secondhand")
-    if source_class in self_published_classes:
+    if self_published or source_class in self_published_classes:
         flags.append("self_published")
 
     return max(0.0, min(1.0, score)), flags
@@ -120,10 +196,12 @@ class SearchSubagent:
         runtime: RuntimeExecutionLike,
         search_service: SearchServiceLike,
         scrape_service: ScrapeServiceLike,
+        scholarly_service: SearchServiceLike | None = None,
     ) -> None:
         self._runtime = runtime
         self._search = search_service
         self._scrape = scrape_service
+        self._scholarly = scholarly_service
         self._extract_semaphore = asyncio.Semaphore(_EXTRACTION_CONCURRENCY)
 
     async def execute_task(
@@ -132,59 +210,41 @@ class SearchSubagent:
         task: SubagentTask,
         request: ResearchRequest,
         progress_callback: SearchTraceCallback | None = None,
-        extracted_urls: Collection[str] | None = None,
+        extracted_urls: set[str] | None = None,
+        brief: ResearchBrief | None = None,
     ) -> list[EvidenceRecord]:
         del run_scope
-        queries = (task.search_queries or [task.focus])[:_MAX_QUERIES_PER_TASK]
+        planned = (task.search_queries or [task.focus])[: request.max_searches_per_task]
+        searches: list[tuple[str, SearchServiceLike, str]] = [
+            (query, self._search, "web")
+            for query in self._scoped_queries(planned, request)[: request.max_searches_per_task]
+        ]
+        # A paper query carries every included site, so each planned query runs
+        # once and the paper service picks the indexes that can serve them.
+        if task.scholarly and self._scholarly is not None:
+            searches += [
+                (self._paper_query(query, request), self._scholarly, "scholarly")
+                for query in planned
+            ]
+        outcomes = await asyncio.gather(
+            *(
+                self._traced_search(service, query, source, task, request, progress_callback)
+                for query, service, source in searches
+            )
+        )
 
-        async def run_query(query: str) -> Sequence[Any]:
-            await self._emit_trace(
-                progress_callback,
-                "query_started",
-                {
-                    "task_id": task.task_id,
-                    "focus": task.focus,
-                    "query": query,
-                    "max_results": request.max_results_per_query,
-                },
-            )
-            hits = await self._search.search(query, request.max_results_per_query)
-            error_for = getattr(self._search, "last_error_for", None)
-            search_error = (
-                error_for(query, request.max_results_per_query) if error_for else None
-            )
-            if search_error:
-                await self._emit_trace(
-                    progress_callback,
-                    "search_failed",
-                    {
-                        "task_id": task.task_id,
-                        "query": query,
-                        "reason": search_error,
-                    },
-                )
-            await self._emit_trace(
-                progress_callback,
-                "query_completed",
-                {
-                    "task_id": task.task_id,
-                    "query": query,
-                    "hits": len(hits),
-                    "urls": [hit.url for hit in hits[:8]],
-                },
-            )
-            return hits
-
-        query_hits = await asyncio.gather(*(run_query(query) for query in queries))
+        def page_key(url: str) -> str:
+            return self._canonicalize_url(url) or url
 
         per_query: list[list[dict[str, str]]] = []
         seen: set[str] = set()
-        for query, hits in zip(queries, query_hits):
+        for (query, _, _), (hits, _) in zip(searches, outcomes):
             entries: list[dict[str, str]] = []
             for hit in hits:
-                if hit.url in seen:
+                hit_key = page_key(hit.url)
+                if hit_key in seen:
                     continue
-                seen.add(hit.url)
+                seen.add(hit_key)
                 entries.append(
                     {
                         "url": hit.url,
@@ -196,42 +256,88 @@ class SearchSubagent:
             per_query.append(entries)
 
         # Round-robin across queries so later queries survive the page cap.
-        # Already-extracted URLs rank last so a new iteration prefers unseen
-        # sources.
         interleaved: list[dict[str, str]] = []
         for round_hits in zip_longest(*per_query):
             for entry in round_hits:
                 if entry is not None:
                     interleaved.append(entry)
-        known = {self._canonicalize_url(url) or url for url in extracted_urls or ()}
-        unseen = [
-            entry
-            for entry in interleaved
-            if (self._canonicalize_url(entry["url"]) or entry["url"]) not in known
-        ]
-        already_seen = [
-            entry
-            for entry in interleaved
-            if (self._canonicalize_url(entry["url"]) or entry["url"]) in known
-        ]
+
+        # Pages read in earlier iterations, or claimed by a sibling task, are
+        # never read again; siblings claim pages while this task ranks, so
+        # the claims are checked once more after ranking.
+        read = {page_key(url) for url in extracted_urls or ()}
+        unseen = [entry for entry in interleaved if page_key(entry["url"]) not in read]
         unseen = await self._rank_candidates(
             task, unseen, request.max_pages_per_task, progress_callback
         )
-        all_hits = unseen + already_seen
+        read = {page_key(url) for url in extracted_urls or ()}
+        all_hits = [entry for entry in unseen if page_key(entry["url"]) not in read]
 
-        urls = [entry["url"] for entry in all_hits[: request.max_pages_per_task]]
-        canonical_urls = {url: self._canonicalize_url(url) or url for url in urls}
-        await self._emit_trace(
-            progress_callback,
-            "scrape_started",
-            {
-                "task_id": task.task_id,
-                "url_count": len(urls),
-                "urls": urls,
-            },
-        )
-        pages, scrape_missed = await self._scrape.scrape_many(urls)
-        successful_pages = [p for p in pages if p.fetch_error is None]
+        since = request.since
+        queue = [entry["url"] for entry in all_hits]
+        urls: list[str] = []
+        pages: list[ScrapedPageLike] = []
+        scrape_missed = 0
+        successful_pages: list[ScrapedPageLike] = []
+        too_old: list[ScrapedPageLike] = []
+        out_of_scope_redirects: list[ScrapedPageLike] = []
+        # A blocked, empty, or too-old page gives the task nothing to read, so
+        # the next-ranked candidates take its place until the task has its
+        # pages, the candidates run out, or the rounds are spent.
+        for _ in range(_SCRAPE_ROUNDS):
+            batch: list[str] = []
+            batch_keys: set[str] = set()
+            while queue and len(batch) < request.max_pages_per_task - len(successful_pages):
+                url = queue.pop(0)
+                key = page_key(url)
+                if key in batch_keys:
+                    continue
+                if extracted_urls is None or key not in extracted_urls:
+                    batch.append(url)
+                    batch_keys.add(key)
+            if not batch:
+                break
+            if extracted_urls is not None:
+                extracted_urls.update(batch_keys)
+            await self._emit_trace(
+                progress_callback,
+                "scrape_started",
+                {
+                    "task_id": task.task_id,
+                    "url_count": len(batch),
+                    "urls": batch,
+                },
+            )
+            batch_pages, batch_missed = await self._scrape.scrape_many(batch)
+            if extracted_urls is not None:
+                for page in batch_pages:
+                    if page.fetch_error is None:
+                        extracted_urls.add(page_key(page.url))
+            urls.extend(batch)
+            pages.extend(batch_pages)
+            scrape_missed += batch_missed
+            too_old = [
+                page
+                for page in pages
+                if page.fetch_error is None
+                and since is not None
+                and _dated_before(page.published_at, since)
+            ]
+            out_of_scope_redirects = [
+                page
+                for page in pages
+                if page.fetch_error is None
+                and page not in too_old
+                and not self._in_scope(page.url, None, request)
+            ]
+            successful_pages = [
+                page
+                for page in pages
+                if page.fetch_error is None
+                and page not in too_old
+                and page not in out_of_scope_redirects
+            ]
+        canonical_urls = {url: page_key(url) for url in urls}
         missed_pages = [p for p in pages if p.fetch_error is not None]
         missed_count = max(scrape_missed, len(missed_pages), max(0, len(urls) - len(pages)))
         await self._emit_trace(
@@ -241,6 +347,7 @@ class SearchSubagent:
                 "task_id": task.task_id,
                 "scraped": len(successful_pages),
                 "missed": missed_count,
+                "dated_before_since": len(too_old),
                 "urls": [page.url for page in successful_pages],
             },
         )
@@ -252,108 +359,17 @@ class SearchSubagent:
             if canonical_hit_url:
                 hits_by_url.setdefault(canonical_hit_url, entry)
 
-        async def process_page(page: ScrapedPageLike) -> EvidenceRecord:
-            if page.fetch_error is not None:
-                hit_payload = hits_by_url.get(page.requested_url)
-                snippet = str(hit_payload.get("snippet", "") if hit_payload else "").strip()
-                title = str(hit_payload.get("title", "") if hit_payload else page.title).strip() or page.url
-                await self._emit_trace(
-                    progress_callback,
-                    "fallback_evidence",
-                    {
-                        "task_id": task.task_id,
-                        "url": page.url,
-                        "title": title,
-                        "confidence": 0.33,
-                        "fetch_error": page.fetch_error,
-                    },
-                )
-                credibility, quality_flags = _SNIPPET_ONLY_CREDIBILITY, ["snippet_only"]
-                return EvidenceRecord(
-                    evidence_id=new_id(),
-                    task_id=task.task_id,
-                    query=task.focus,
-                    search_query=hit_payload.get("query") if hit_payload else None,
-                    requested_url=page.requested_url,
-                    domain=page.domain,
-                    title=title,
-                    site_name=page.site_name,
-                    snippet=snippet or title,
-                    extracted_text=snippet or title,
-                    confidence=0.33,
-                    source_type="search_snippet",
-                    extraction_method=_SNIPPET_FALLBACK_METHOD,
-                    relevance_score=0.33,
-                    credibility_score=credibility,
-                    quality_flags=quality_flags,
-                    fetch_error=page.fetch_error,
-                )
-
-            await self._emit_trace(
-                progress_callback,
-                "extract_started",
-                {
-                    "task_id": task.task_id,
-                    "url": page.url,
-                    "title": page.title,
-                },
-            )
-            extraction, assessed, extract_usage = await self._extract(
-                task, page.url, page.title, page.text, progress_callback
-            )
-            source_type, extraction_method = self._source_metadata(page.content_type, page.url)
-            if assessed:
-                source_class = extraction.source_class
-                credibility, quality_flags = assess_source_quality(
-                    extraction.source_class,
-                    extraction.authorship,
-                    extraction.is_promotional,
-                    extraction.summarizes_inaccessible_source,
-                    page.published_at is not None,
-                )
-            else:
-                source_class = None
-                credibility, quality_flags = None, ["unassessed"]
-            completed_payload: dict[str, Any] = {
-                "task_id": task.task_id,
-                "url": page.url,
-                "title": page.title,
-                "confidence": extraction.confidence,
-                "credibility": credibility,
-            }
-            if extract_usage:
-                completed_payload["llm_usage"] = extract_usage
-            await self._emit_trace(
-                progress_callback,
-                "extract_completed",
-                completed_payload,
-            )
-            extracted_hit = hits_by_url.get(page.requested_url)
-            return EvidenceRecord(
-                evidence_id=new_id(),
-                task_id=task.task_id,
-                query=task.focus,
-                search_query=extracted_hit.get("query") if extracted_hit else None,
-                requested_url=page.requested_url,
-                final_url=page.url,
-                domain=page.domain,
-                title=page.title,
-                site_name=page.site_name,
-                snippet=extraction.snippet,
-                extracted_text=extraction.extracted_text,
-                confidence=extraction.confidence,
-                fetched_at=page.fetched_at,
-                published_at=page.published_at,
-                source_type=source_type,
-                extraction_method=extraction_method,
-                relevance_score=extraction.confidence,
-                credibility_score=credibility,
-                source_class=source_class,
-                quality_flags=quality_flags,
-            )
-
+        skipped_pages = set(id(page) for page in too_old) | set(
+            id(page) for page in out_of_scope_redirects
+        )
         evidence: list[EvidenceRecord] = await asyncio.gather(
-            *(process_page(page) for page in pages)
+            *(
+                self._page_evidence(
+                    task, page, hits_by_url.get(page.requested_url), progress_callback, brief
+                )
+                for page in pages
+                if id(page) not in skipped_pages
+            )
         )
 
         for url in urls:
@@ -366,7 +382,8 @@ class SearchSubagent:
             snippet = str(hit_payload.get("snippet", "")).strip()
             title = str(hit_payload.get("title", "")).strip() or url
             extracted_text = snippet or title
-            credibility, quality_flags = _SNIPPET_ONLY_CREDIBILITY, ["snippet_only"]
+            credibility: float = _SNIPPET_ONLY_CREDIBILITY
+            quality_flags: list[QualityFlag] = ["snippet_only"]
             evidence.append(
                 EvidenceRecord(
                     evidence_id=new_id(),
@@ -401,14 +418,217 @@ class SearchSubagent:
         return evidence
 
     @staticmethod
+    def _scoped_queries(queries: list[str], request: ResearchRequest) -> list[str]:
+        """Each query scoped to each included domain, one domain at a time, so a
+        search cap keeps every query on the first domain before any gets a second."""
+        if not request.include_domains:
+            return list(queries)
+        return [
+            f"{query} site:{domain}" for domain in request.include_domains for query in queries
+        ]
+
+    @staticmethod
+    def _paper_query(query: str, request: ResearchRequest) -> str:
+        """The query with every included site as a site: operator."""
+        return " ".join([query, *(f"site:{domain}" for domain in request.include_domains)])
+
+    @staticmethod
+    def _in_scope(url: str, published_at: str | None, request: ResearchRequest) -> bool:
+        """Whether a source passes the request's domain and date filters."""
+        if request.include_domains and not _host_matches(url, request.include_domains):
+            return False
+        if _host_matches(url, request.exclude_domains):
+            return False
+        return request.since is None or not _dated_before(published_at, request.since)
+
+    async def _traced_search(
+        self,
+        service: SearchServiceLike,
+        query: str,
+        source: str,
+        task: SubagentTask,
+        request: ResearchRequest,
+        progress_callback: SearchTraceCallback | None,
+    ) -> tuple[list[Any], str | None]:
+        """Run one search with its trace events; return in-scope hits and any error."""
+        await self._emit_trace(
+            progress_callback,
+            "query_started",
+            {
+                "task_id": task.task_id,
+                "focus": task.focus,
+                "query": query,
+                "source": source,
+                "max_results": request.max_results_per_query,
+            },
+        )
+        hits = await service.search(query, request.max_results_per_query)
+        error_for = getattr(service, "last_error_for", None)
+        error = error_for(query, request.max_results_per_query) if error_for else None
+        if error:
+            await self._emit_trace(
+                progress_callback,
+                "search_failed",
+                {"task_id": task.task_id, "query": query, "reason": error},
+            )
+        kept = [
+            hit
+            for hit in hits
+            if self._in_scope(hit.url, getattr(hit, "published_at", None), request)
+        ]
+        await self._emit_trace(
+            progress_callback,
+            "query_completed",
+            {
+                "task_id": task.task_id,
+                "query": query,
+                "hits": len(kept),
+                "urls": [hit.url for hit in kept[:8]],
+            },
+        )
+        return kept, error
+
+    async def _page_evidence(
+        self,
+        task: SubagentTask,
+        page: ScrapedPageLike,
+        hit_payload: dict[str, str] | None,
+        progress_callback: SearchTraceCallback | None,
+        brief: ResearchBrief | None = None,
+    ) -> EvidenceRecord:
+        """Turn a scraped page into evidence through extraction and source scoring.
+
+        A page that failed to fetch keeps its search snippet as weak evidence.
+        """
+        if page.fetch_error is not None:
+            snippet = str(hit_payload.get("snippet", "") if hit_payload else "").strip()
+            title = str(hit_payload.get("title", "") if hit_payload else page.title).strip() or page.url
+            await self._emit_trace(
+                progress_callback,
+                "fallback_evidence",
+                {
+                    "task_id": task.task_id,
+                    "url": page.url,
+                    "title": title,
+                    "confidence": 0.33,
+                    "fetch_error": page.fetch_error,
+                },
+            )
+            credibility_val: float = _SNIPPET_ONLY_CREDIBILITY
+            snippet_flags: list[QualityFlag] = ["snippet_only"]
+            return EvidenceRecord(
+                evidence_id=new_id(),
+                task_id=task.task_id,
+                query=task.focus,
+                search_query=hit_payload.get("query") if hit_payload else None,
+                requested_url=page.requested_url,
+                domain=page.domain,
+                title=title,
+                site_name=page.site_name,
+                snippet=snippet or title,
+                extracted_text=snippet or title,
+                confidence=0.33,
+                source_type="search_snippet",
+                extraction_method=_SNIPPET_FALLBACK_METHOD,
+                relevance_score=0.33,
+                credibility_score=credibility_val,
+                quality_flags=snippet_flags,
+                fetch_error=page.fetch_error,
+            )
+
+        await self._emit_trace(
+            progress_callback,
+            "extract_started",
+            {
+                "task_id": task.task_id,
+                "url": page.url,
+                "title": page.title,
+            },
+        )
+        extraction, assessed, extract_usage = await self._extract(
+            task, page.url, page.title, page.text, progress_callback, brief
+        )
+        source_type, extraction_method = self._source_metadata(page.content_type, page.url)
+        credibility: float | None
+        quality_flags: list[QualityFlag]
+        if assessed:
+            source_class = extraction.source_class
+            credibility, quality_flags = assess_source_quality(
+                extraction.source_class,
+                extraction.authorship,
+                extraction.is_promotional,
+                extraction.summarizes_inaccessible_source,
+                page.published_at is not None,
+                self_published=extraction.self_published,
+            )
+        else:
+            source_class = None
+            credibility, quality_flags = None, ["unassessed"]
+        completed_payload: dict[str, Any] = {
+            "task_id": task.task_id,
+            "url": page.url,
+            "title": page.title,
+            "confidence": extraction.confidence,
+            "credibility": credibility,
+        }
+        if extract_usage:
+            completed_payload["llm_usage"] = extract_usage
+        await self._emit_trace(
+            progress_callback,
+            "extract_completed",
+            completed_payload,
+        )
+        claims = [
+            Claim(
+                statement=claim.statement,
+                quote=claim.quote,
+                sub_question=claim.sub_question,
+            )
+            for claim in extraction.claims
+        ]
+        return EvidenceRecord(
+            evidence_id=new_id(),
+            task_id=task.task_id,
+            query=task.focus,
+            search_query=hit_payload.get("query") if hit_payload else None,
+            requested_url=page.requested_url,
+            final_url=page.url,
+            domain=page.domain,
+            title=_cased_title(page.title, hit_payload.get("title", "") if hit_payload else ""),
+            site_name=page.site_name,
+            snippet=extraction.snippet,
+            extracted_text=extraction.extracted_text,
+            confidence=extraction.confidence,
+            fetched_at=page.fetched_at,
+            published_at=page.published_at,
+            source_type=source_type,
+            extraction_method=extraction_method,
+            relevance_score=extraction.confidence,
+            credibility_score=credibility,
+            source_class=source_class,
+            quality_flags=quality_flags,
+            claims=verified_claims(
+                claims,
+                page.text,
+                len(brief.sub_questions) if brief is not None else 0,
+            ),
+        )
+
+    @staticmethod
     def _canonicalize_url(url: str) -> str:
-        if not url or not url.startswith(("http://", "https://")):
+        cleaned = (url or "").strip()
+        if not cleaned or not cleaned.lower().startswith(("http://", "https://")):
             return ""
-        parts = urlsplit(url.strip())
-        if parts.scheme not in ("http", "https") or not parts.netloc:
+        try:
+            parts = urlsplit(cleaned)
+        except ValueError:
+            return ""
+        scheme = parts.scheme.lower()
+        netloc = parts.netloc.lower()
+        if scheme not in ("http", "https") or not netloc:
             return ""
         path = parts.path or "/"
-        return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+        return urlunsplit((scheme, netloc, path, parts.query, ""))
 
     @staticmethod
     def _source_metadata(content_type: str | None, url: str) -> tuple[str, str]:
@@ -471,14 +691,14 @@ class SearchSubagent:
         }
         worker = Worker(
             name="SubagentSelector",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "researcher"),
             instructions=selector_instructions(),
         )
         job = Job(input=selector_job(payload), response_schema=_SelectionPayload)
         ranked = candidates
         llm_usage: dict[str, Any] | None = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await structured_call(self._runtime, worker, job)
             llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _SelectionPayload):
                 picked = [
@@ -498,6 +718,8 @@ class SearchSubagent:
                     task.task_id,
                     _report_reason(report),
                 )
+        except ProviderRejectedError:
+            raise
         except Exception:
             logger.warning("URL selection failed for %s", task.task_id, exc_info=True)
 
@@ -518,17 +740,24 @@ class SearchSubagent:
         title: str,
         text: str,
         progress_callback: SearchTraceCallback | None = None,
+        brief: ResearchBrief | None = None,
     ) -> tuple[_ExtractionPayload, bool, dict[str, Any] | None]:
         payload = {
             "task_focus": task.focus,
             "task_expected_output": task.expected_output,
+            "sub_questions": [
+                {"index": index, "question": question}
+                for index, question in enumerate(
+                    brief.sub_questions if brief is not None else [], start=1
+                )
+            ],
             "url": url,
             "title": title,
             "text": text,
         }
         worker = Worker(
             name="SubagentExtractor",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "extractor"),
             instructions=extractor_instructions(),
         )
         job = Job(
@@ -538,12 +767,14 @@ class SearchSubagent:
         llm_usage: dict[str, Any] | None = None
         try:
             async with self._extract_semaphore:
-                report = await self._runtime.desk.arun(worker, job)
+                report = await structured_call(self._runtime, worker, job)
             llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _ExtractionPayload):
                 return report.data, True, llm_usage
             reason = _report_reason(report)
             logger.warning("Extraction call did not complete for %s: %s", url, reason)
+        except ProviderRejectedError:
+            raise
         except Exception:
             reason = "extractor raised before completing"
             logger.warning("Extraction call failed for %s", url, exc_info=True)
@@ -554,8 +785,6 @@ class SearchSubagent:
             "title": title,
             "reason": reason,
         }
-        if llm_usage:
-            fallback_payload["llm_usage"] = llm_usage
         await self._emit_trace(
             progress_callback,
             "extraction_fallback",
@@ -569,6 +798,12 @@ class SearchSubagent:
                 snippet=fallback_snippet or title,
                 extracted_text=fallback_body or title,
                 confidence=0.45,
+                source_class="unknown",
+                authorship="anonymous",
+                is_promotional=False,
+                self_published=False,
+                summarizes_inaccessible_source=False,
+                claims=[],
             ),
             False,
             llm_usage,

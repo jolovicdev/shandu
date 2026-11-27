@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
+from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
@@ -14,11 +16,16 @@ from ..contracts import (
     IterationPlan,
     IterationSynthesis,
     ReportSection,
+    ResearchBrief,
     ResearchRequest,
     SubagentTask,
 )
 from ..interfaces import RuntimeExecutionLike
 from ..prompts import (
+    brief_instructions,
+    brief_job,
+    clarifier_instructions,
+    clarifier_job,
     planner_instructions,
     planner_job,
     reporter_expected_output,
@@ -27,32 +34,34 @@ from ..prompts import (
     synthesizer_instructions,
     synthesizer_job,
 )
-from ..runtime.costing import collect_llm_usage
+from ..runtime.calls import ProviderRejectedError, structured_call, writer_call
+from ..runtime.costing import add_usage, collect_llm_usage
+from ..runtime.roles import role_model
 
 logger = logging.getLogger(__name__)
 
 # Reporter evidence budget in characters (~30k tokens), leaving room for
 # instructions, prior summaries, and output inside typical context windows.
 _REPORTER_EVIDENCE_BUDGET = 120_000
+_SYNTHESIS_EVIDENCE_BUDGET = 80_000
+_UNSET: Any = object()
 # Floor for one record's extracted text. A record gets an equal share of the
 # budget when that is larger, so a small corpus reaches the reporter whole.
 _MIN_EVIDENCE_TEXT_CHARS = 2200
+# Report length follows the evidence. Reports that read well carry 100 to 215
+# words per cited source; reports padded past their evidence ran 660 to 1,050.
+# 300 per source leaves the first untouched and stops the second.
+_WORDS_PER_SOURCE = 300
+# A report with one citable source or none still states its answer and limits.
+_MIN_REPORT_WORDS = 400
+# A detail level other than "auto" also caps the length.
+_LENGTH_CEILINGS = {"concise": 1200, "standard": 2200, "high": 3600}
 # A reasoning model sometimes drafts the whole report inside its reasoning
 # channel and then stops, so the call completes with empty content. The report
 # is the one call a run cannot do without, so that case is retried.
 _REPORTER_ATTEMPTS = 3
-
-
-def _add_usage(
-    total: dict[str, Any] | None, usage: dict[str, Any] | None
-) -> dict[str, Any] | None:
-    if not usage:
-        return total
-    merged = dict(total or {})
-    for key, value in usage.items():
-        merged[key] = merged.get(key, 0) + value
-    merged["llm_calls"] = (total or {}).get("llm_calls", 0) + 1
-    return merged
+_MAX_SUB_QUESTIONS = 8
+_MAX_CLARIFYING_QUESTIONS = 3
 
 
 def _failure_reason(report: Any, label: str) -> str:
@@ -63,32 +72,198 @@ def _failure_reason(report: Any, label: str) -> str:
     return f"{label} status={getattr(report, 'status', 'unknown')}"
 
 
+# The schemas a model fills carry no defaults: some providers fill only the
+# fields a schema marks required, and a default would turn every omission into
+# a plausible value (no search queries, a 0.5 score) that nothing downstream
+# can tell from a real answer.
+class _BriefPayload(BaseModel):
+    scope: str
+    sub_questions: list[str]
+    time_window: str | None
+    region: str | None
+    source_types: list[str]
+    deliverable: str
+
+
+class _PlannedTask(BaseModel):
+    task_id: str
+    focus: str
+    search_queries: list[str]
+    expected_output: str
+    sub_questions: list[int]
+    scholarly: bool
+
+
 class _PlanPayload(BaseModel):
-    goals: list[str] = Field(default_factory=list)
-    subagent_tasks: list[SubagentTask] = Field(default_factory=list)
-    continue_loop: bool = True
-    stop_reason: str | None = None
+    goals: list[str]
+    subagent_tasks: list[_PlannedTask]
+    continue_loop: bool
+    stop_reason: str | None
+
+
+class _ClarifierPayload(BaseModel):
+    questions: list[str]
 
 
 class _SynthesisPayload(BaseModel):
     summary: str
-    key_findings: list[str] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
-    continue_loop: bool = True
-    stop_reason: str | None = None
-    coverage_score: float = Field(default=0.5, ge=0.0, le=1.0)
-    open_question_severity: float = Field(default=0.5, ge=0.0, le=1.0)
-    contradiction_count: int = Field(default=0, ge=0)
-    recency_score: float = Field(default=0.5, ge=0.0, le=1.0)
-    coverage_should_continue: bool = True
+    key_findings: list[str]
+    open_questions: list[str]
+    continue_loop: bool
+    stop_reason: str | None
+    coverage_score: float = Field(ge=0.0, le=1.0)
+    open_question_severity: float = Field(ge=0.0, le=1.0)
+    contradiction_count: int = Field(ge=0)
+    recency_score: float = Field(ge=0.0, le=1.0)
+    coverage_should_continue: bool
+    open_sub_questions: list[int]
+
+
+def _brief_payload(brief: ResearchBrief | None) -> dict[str, Any] | None:
+    return brief.model_dump(mode="json") if brief is not None else None
+
+
+def _record_size(record: dict[str, Any]) -> int:
+    return len(json.dumps(record, ensure_ascii=False, default=str))
 
 
 class LeadAgent:
-    def __init__(self, runtime: RuntimeExecutionLike) -> None:
+    def __init__(
+        self, runtime: RuntimeExecutionLike, writer_model: str | None = None
+    ) -> None:
         self._runtime = runtime
-        self.fallback_count = 0
-        self.last_fallback_reason: str | None = None
-        self.last_llm_usage: dict[str, Any] | None = None
+        self._writer_model = writer_model
+        tag = id(self)
+        self._fallback_count_default = 0
+        self._last_fallback_reason_default: str | None = None
+        self._last_llm_usage_default: dict[str, Any] | None = None
+        self._last_call_count_default = 0
+        self._fallback_count_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+            f"lead_fallback_count_{tag}", default=_UNSET
+        )
+        self._last_fallback_reason_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+            f"lead_last_fallback_reason_{tag}", default=_UNSET
+        )
+        self._last_llm_usage_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+            f"lead_last_llm_usage_{tag}", default=_UNSET
+        )
+        # Writing calls made by the last build_final_report, including calls
+        # that reported no usage, which last_llm_usage cannot count.
+        self._last_call_count_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+            f"lead_last_call_count_{tag}", default=_UNSET
+        )
+
+    @property
+    def fallback_count(self) -> int:
+        value = self._fallback_count_var.get()
+        return self._fallback_count_default if value is _UNSET else int(value)
+
+    @fallback_count.setter
+    def fallback_count(self, value: int) -> None:
+        self._fallback_count_default = value
+        self._fallback_count_var.set(value)
+
+    @property
+    def last_fallback_reason(self) -> str | None:
+        value = self._last_fallback_reason_var.get()
+        return self._last_fallback_reason_default if value is _UNSET else value
+
+    @last_fallback_reason.setter
+    def last_fallback_reason(self, value: str | None) -> None:
+        self._last_fallback_reason_default = value
+        self._last_fallback_reason_var.set(value)
+
+    @property
+    def last_llm_usage(self) -> dict[str, Any] | None:
+        value = self._last_llm_usage_var.get()
+        return self._last_llm_usage_default if value is _UNSET else value
+
+    @last_llm_usage.setter
+    def last_llm_usage(self, value: dict[str, Any] | None) -> None:
+        self._last_llm_usage_default = value
+        self._last_llm_usage_var.set(value)
+
+    @property
+    def last_call_count(self) -> int:
+        value = self._last_call_count_var.get()
+        return self._last_call_count_default if value is _UNSET else int(value)
+
+    @last_call_count.setter
+    def last_call_count(self, value: int) -> None:
+        self._last_call_count_default = value
+        self._last_call_count_var.set(value)
+
+    async def create_brief(self, request: ResearchRequest) -> ResearchBrief:
+        payload = {
+            "query": request.query,
+            "clarifications": request.clarifications,
+            "since": request.since.isoformat() if request.since else None,
+            "include_domains": request.include_domains,
+            "exclude_domains": request.exclude_domains,
+            "today": date.today().isoformat(),
+        }
+        worker = Worker(
+            name="LeadBriefWriter",
+            model=role_model(self._runtime.settings, "planner"),
+            instructions=brief_instructions(),
+        )
+        job = Job(input=brief_job(payload), response_schema=_BriefPayload)
+        self.last_llm_usage = None
+        try:
+            report = await structured_call(self._runtime, worker, job)
+            self.last_llm_usage = collect_llm_usage(report)
+            if report.status == "completed" and isinstance(
+                report.data, (_BriefPayload, ResearchBrief)
+            ):
+                sub_questions = [
+                    question.strip()
+                    for question in report.data.sub_questions
+                    if question.strip()
+                ][:_MAX_SUB_QUESTIONS]
+                if sub_questions:
+                    return ResearchBrief(
+                        scope=report.data.scope,
+                        sub_questions=sub_questions,
+                        time_window=report.data.time_window,
+                        region=report.data.region,
+                        source_types=list(report.data.source_types),
+                        deliverable=report.data.deliverable,
+                    )
+                reason = "brief writer returned no sub-questions"
+            else:
+                reason = _failure_reason(report, "brief writer")
+            logger.warning("Lead brief call did not complete: %s", reason)
+        except ProviderRejectedError:
+            raise
+        except Exception:
+            reason = "brief writer raised before completing"
+            logger.warning("Lead brief call failed", exc_info=True)
+
+        self.fallback_count += 1
+        self.last_fallback_reason = reason
+        return ResearchBrief(scope=request.query, sub_questions=[request.query])
+
+    async def clarifying_questions(self, query: str) -> list[str]:
+        worker = Worker(
+            name="LeadClarifier",
+            model=role_model(self._runtime.settings, "planner"),
+            instructions=clarifier_instructions(),
+        )
+        job = Job(input=clarifier_job(query), response_schema=_ClarifierPayload)
+        try:
+            report = await structured_call(self._runtime, worker, job)
+        except ProviderRejectedError:
+            raise
+        except Exception:
+            logger.warning("Clarifier call failed", exc_info=True)
+            return []
+        if report.status != "completed" or not isinstance(report.data, _ClarifierPayload):
+            logger.warning(
+                "Clarifier call did not complete: %s", _failure_reason(report, "clarifier")
+            )
+            return []
+        questions = [item.strip() for item in report.data.questions if item.strip()]
+        return questions[:_MAX_CLARIFYING_QUESTIONS]
 
     async def create_iteration_plan(
         self,
@@ -96,9 +271,11 @@ class LeadAgent:
         iteration: int,
         prior_summaries: list[IterationSynthesis],
         memory_context: list[tuple[str, Any]],
+        brief: ResearchBrief | None = None,
     ) -> IterationPlan:
         payload = {
             "query": request.query,
+            "brief": _brief_payload(brief),
             "iteration": iteration + 1,
             "max_iterations": request.max_iterations,
             "parallelism": request.parallelism,
@@ -108,7 +285,7 @@ class LeadAgent:
         }
         worker = Worker(
             name="LeadPlanner",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "planner"),
             instructions=planner_instructions(),
         )
         job = Job(
@@ -117,13 +294,14 @@ class LeadAgent:
         )
         self.last_llm_usage = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await structured_call(self._runtime, worker, job)
             self.last_llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _PlanPayload):
                 tasks = self._normalize_tasks(
                     report.data.subagent_tasks,
                     request=request,
                     iteration=iteration,
+                    sub_question_count=len(brief.sub_questions) if brief else 0,
                 )
                 # An empty plan is the planner's stop signal; tasks that all
                 # lack a focus are a malformed plan.
@@ -139,6 +317,8 @@ class LeadAgent:
             else:
                 reason = _failure_reason(report, "planner")
             logger.warning("Lead planner call did not complete: %s", reason)
+        except ProviderRejectedError:
+            raise
         except Exception:
             reason = "planner raised before completing"
             logger.warning("Lead planner call failed", exc_info=True)
@@ -160,18 +340,25 @@ class LeadAgent:
         iteration: int,
         iteration_evidence: list[dict[str, Any]],
         prior_summaries: list[IterationSynthesis],
+        brief: ResearchBrief | None = None,
+        task_memos: list[dict[str, str]] | None = None,
     ) -> IterationSynthesis:
+        compacted_evidence = self._compact_evidence(
+            iteration_evidence, [], budget=_SYNTHESIS_EVIDENCE_BUDGET
+        )
         payload = {
             "query": request.query,
+            "brief": _brief_payload(brief),
+            "task_memos": task_memos or [],
             "iteration": iteration + 1,
             "max_iterations": request.max_iterations,
             "detail_level": request.detail_level,
-            "iteration_evidence": iteration_evidence,
+            "iteration_evidence": compacted_evidence,
             "prior_summaries": [summary.model_dump(mode="json") for summary in prior_summaries],
         }
         worker = Worker(
             name="LeadSynthesizer",
-            model=self._runtime.settings.model,
+            model=role_model(self._runtime.settings, "synthesizer"),
             instructions=synthesizer_instructions(),
         )
         job = Job(
@@ -180,7 +367,7 @@ class LeadAgent:
         )
         self.last_llm_usage = None
         try:
-            report = await self._runtime.desk.arun(worker, job)
+            report = await structured_call(self._runtime, worker, job)
             self.last_llm_usage = collect_llm_usage(report)
             if report.status == "completed" and isinstance(report.data, _SynthesisPayload):
                 return IterationSynthesis(
@@ -196,9 +383,18 @@ class LeadAgent:
                         recency_score=report.data.recency_score,
                         should_continue=report.data.coverage_should_continue,
                     ),
+                    open_sub_questions=sorted(
+                        {
+                            index
+                            for index in report.data.open_sub_questions
+                            if brief is not None and 1 <= index <= len(brief.sub_questions)
+                        }
+                    ),
                 )
             reason = _failure_reason(report, "synthesizer")
             logger.warning("Lead synthesizer call did not complete: %s", reason)
+        except ProviderRejectedError:
+            raise
         except Exception:
             reason = "synthesizer raised before completing"
             logger.warning("Lead synthesizer call failed", exc_info=True)
@@ -222,47 +418,28 @@ class LeadAgent:
         iteration_summaries: list[IterationSynthesis],
         evidence_payload: list[dict[str, Any]],
         citations_payload: list[dict[str, Any]],
+        brief: ResearchBrief | None = None,
     ) -> FinalReportDraft:
+        self.last_llm_usage = None
+        self.last_call_count = 0
+        evidence = self._compact_evidence(evidence_payload, citations_payload)
         payload = {
             "query": request.query,
+            "brief": _brief_payload(brief),
             "detail_level": request.detail_level,
             "iterations": [summary.model_dump(mode="json") for summary in iteration_summaries],
-            "evidence": self._compact_evidence(evidence_payload, citations_payload),
+            "evidence": evidence,
             "citations": self._compact_citations(citations_payload),
             "today": date.today().isoformat(),
         }
-        target_words = self._word_target(request.detail_level)
-        worker = Worker(
-            name="LeadReporter",
-            model=self._runtime.settings.model,
-            instructions=reporter_instructions(),
+        sources = len({record["citation_id"] for record in evidence} - {None})
+        max_words = self._word_limit(request.detail_level, sources)
+        markdown, reason = await self._markdown_call(
+            "LeadReporter", "reporter", reporter_instructions(), reporter_job(payload, max_words)
         )
-        job_input = reporter_job(payload, target_words)
-        self.last_llm_usage = None
-        try:
-            for _ in range(_REPORTER_ATTEMPTS):
-                job = Job(input=job_input, expected_output=reporter_expected_output())
-                report = await self._runtime.desk.arun(worker, job)
-                self.last_llm_usage = _add_usage(
-                    self.last_llm_usage, collect_llm_usage(report)
-                )
-                if report.status != "completed":
-                    reason = _failure_reason(report, "reporter")
-                    break
-                content = getattr(report, "content", None)
-                if isinstance(content, str) and content.strip():
-                    markdown = content.strip()
-                    return FinalReportDraft(
-                        title=self._extract_title(markdown, request.query),
-                        executive_summary=self._extract_summary(markdown),
-                        sections=[],
-                        markdown=markdown,
-                    )
-                reason = "reporter returned empty content"
-            logger.warning("Lead reporter call did not complete: %s", reason)
-        except Exception:
-            reason = "reporter raised before completing"
-            logger.warning("Lead reporter call failed", exc_info=True)
+        if markdown is not None:
+            return self._draft_from_markdown(markdown, request.query)
+        logger.warning("Lead reporter call did not complete: %s", reason)
 
         self.fallback_count += 1
         self.last_fallback_reason = reason
@@ -287,7 +464,7 @@ class LeadAgent:
                 content="\n".join(
                     (
                         f"{idx + 1}. {entry.get('title', 'Untitled')} "
-                        f"({entry.get('url', '')})\n"
+                        f"({entry.get('requested_url') or entry.get('final_url') or entry.get('url', '')})\n"
                         f"{entry.get('extracted_text', '')[:900]}"
                     )
                     for idx, entry in enumerate(evidence_payload[:16])
@@ -301,11 +478,68 @@ class LeadAgent:
             sections=sections,
         )
 
+    async def _markdown_call(
+        self, name: str, label: str, instructions: str, job_input: str
+    ) -> tuple[str | None, str]:
+        """Run a writing call and return its markdown, or None and the reason.
+
+        A reasoning model sometimes drafts the whole text inside its reasoning
+        channel and completes with empty content, and a provider filter can
+        replace the text with a refusal sentence, so both cases are retried.
+        """
+        worker = Worker(
+            name=name,
+            model=self._writer_model or role_model(self._runtime.settings, "writer"),
+            instructions=instructions,
+        )
+        reason = f"{label} returned empty content"
+        try:
+            for _ in range(_REPORTER_ATTEMPTS):
+                job = Job(input=job_input, expected_output=reporter_expected_output())
+                self.last_call_count += 1
+                try:
+                    report = await writer_call(self._runtime, worker, job)
+                except TimeoutError:
+                    logger.warning("%s call timed out", name)
+                    reason = f"{label} timed out"
+                    continue
+                self.last_llm_usage = add_usage(
+                    self.last_llm_usage, collect_llm_usage(report)
+                )
+                if report.status != "completed":
+                    return None, _failure_reason(report, label)
+                content = getattr(report, "content", None)
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                if self._is_report(content):
+                    return content.strip(), ""
+                reason = f"{label} returned no report: {' '.join(content.split())[:160]}"
+        except ProviderRejectedError:
+            raise
+        except Exception:
+            logger.warning("%s call failed", name, exc_info=True)
+            return None, f"{label} raised before completing"
+        return None, reason
+
     @staticmethod
-    def _compact_evidence(
-        evidence_payload: list[dict[str, Any]],
-        citations_payload: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+    def _is_report(markdown: str) -> bool:
+        # A provider's output filter can swap a finished report for one
+        # refusal sentence and still report the call as completed. A report,
+        # even one saying the sources answered nothing, opens with a heading.
+        lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+        return any(line.startswith("#") for line in lines[:5])
+
+    @classmethod
+    def _draft_from_markdown(cls, markdown: str, query: str) -> FinalReportDraft:
+        return FinalReportDraft(
+            title=cls._extract_title(markdown, query),
+            executive_summary=cls._extract_summary(markdown),
+            sections=[],
+            markdown=markdown,
+        )
+
+    @staticmethod
+    def _citation_ids(citations_payload: list[dict[str, Any]]) -> dict[str, int]:
         citation_by_evidence: dict[str, int] = {}
         for candidate in citations_payload:
             try:
@@ -317,19 +551,26 @@ class LeadAgent:
             for evidence_id in candidate.get("evidence_ids") or []:
                 if evidence_id:
                     citation_by_evidence.setdefault(str(evidence_id), citation_id)
-        text_chars = max(
-            _MIN_EVIDENCE_TEXT_CHARS,
-            _REPORTER_EVIDENCE_BUDGET // max(1, len(evidence_payload)),
-        )
+        return citation_by_evidence
+
+    @staticmethod
+    def _compact_evidence(
+        evidence_payload: list[dict[str, Any]],
+        citations_payload: list[dict[str, Any]],
+        budget: int = _REPORTER_EVIDENCE_BUDGET,
+    ) -> list[dict[str, Any]]:
+        citation_by_evidence = LeadAgent._citation_ids(citations_payload)
         compact: list[dict[str, Any]] = []
         scores: list[float] = []
         for entry in evidence_payload:
+            raw_conf = entry.get("confidence")
             try:
-                confidence = float(entry.get("confidence", 0.5) or 0.5)
+                confidence = float(raw_conf) if raw_conf is not None else 0.5
             except (TypeError, ValueError):
                 confidence = 0.5
+            raw_cred = entry.get("credibility_score")
             try:
-                credibility = float(entry.get("credibility_score"))
+                credibility = float(raw_cred) if raw_cred is not None else 0.5
             except (TypeError, ValueError):
                 credibility = 0.5
             scores.append(credibility * confidence)
@@ -344,7 +585,7 @@ class LeadAgent:
                     "domain": str(entry.get("domain", "") or ""),
                     "title": str(entry.get("title", "")),
                     "snippet": str(entry.get("snippet", "")),
-                    "extracted_text": str(entry.get("extracted_text", ""))[:text_chars],
+                    "extracted_text": str(entry.get("extracted_text", "")),
                     "confidence": confidence,
                     "published_at": entry.get("published_at"),
                     "source_class": entry.get("source_class"),
@@ -352,28 +593,52 @@ class LeadAgent:
                     "quality_flags": entry.get("quality_flags") or [],
                 }
             )
-        return LeadAgent._apply_evidence_budget(compact, scores)
+        # The share is what the budget leaves after every record's own fields.
+        overheads = [
+            _record_size({**record, "extracted_text": ""}) for record in compact
+        ]
+        text_chars = max(
+            _MIN_EVIDENCE_TEXT_CHARS,
+            (budget - sum(overheads)) // max(1, len(compact)),
+        )
+        compact = [
+            LeadAgent._fit_record(record, overhead + text_chars)
+            for record, overhead in zip(compact, overheads)
+        ]
+        return LeadAgent._apply_evidence_budget(compact, scores, budget=budget)
+
+    @staticmethod
+    def _fit_record(record: dict[str, Any], room: int) -> dict[str, Any]:
+        # JSON escaping makes a record serialize longer than its text, and every
+        # cut character removes at least one serialized character, so cutting
+        # the overflow brings the record within room. The text is clipped to
+        # room first so a long page is not measured whole.
+        text = record["extracted_text"][:room]
+        overflow = _record_size({**record, "extracted_text": text}) - room
+        if overflow > 0:
+            text = text[: max(0, len(text) - overflow)]
+        return {**record, "extracted_text": text}
 
     @staticmethod
     def _apply_evidence_budget(
-        compact: list[dict[str, Any]], scores: list[float]
+        compact: list[dict[str, Any]],
+        scores: list[float],
+        budget: int = _REPORTER_EVIDENCE_BUDGET,
     ) -> list[dict[str, Any]]:
-        sizes = [
-            len(json.dumps(record, ensure_ascii=False, default=str))
-            for record in compact
-        ]
         # Cited records claim the budget first, then the rest by score.
         order = sorted(
             range(len(compact)),
             key=lambda index: (compact[index].get("citation_id") is None, -scores[index]),
         )
-        kept: set[int] = set()
+        kept: dict[int, dict[str, Any]] = {}
         used = 0
         for index in order:
-            if used + sizes[index] <= _REPORTER_EVIDENCE_BUDGET:
-                kept.add(index)
-                used += sizes[index]
-        return [record for index, record in enumerate(compact) if index in kept]
+            record = LeadAgent._fit_record(compact[index], budget - used)
+            size = _record_size(record)
+            if used + size <= budget:
+                kept[index] = record
+                used += size
+        return [kept[index] for index in sorted(kept)]
 
     @staticmethod
     def _compact_citations(citations_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -397,9 +662,10 @@ class LeadAgent:
 
     @staticmethod
     def _normalize_tasks(
-        tasks: list[SubagentTask],
+        tasks: Sequence[_PlannedTask | SubagentTask],
         request: ResearchRequest,
         iteration: int,
+        sub_question_count: int = 0,
     ) -> list[SubagentTask]:
         target = max(1, min(request.parallelism, 8))
         normalized: list[SubagentTask] = []
@@ -410,8 +676,10 @@ class LeadAgent:
             if not focus:
                 continue
             candidate_id = task.task_id.strip() or f"iter_{iteration + 1}_task_{idx}"
-            if candidate_id in seen_ids:
-                candidate_id = f"iter_{iteration + 1}_task_{len(normalized) + 1}"
+            suffix = len(normalized) + 1
+            while candidate_id in seen_ids:
+                candidate_id = f"iter_{iteration + 1}_task_{suffix}"
+                suffix += 1
             seen_ids.add(candidate_id)
             queries = [query.strip() for query in task.search_queries if query.strip()]
             if not queries:
@@ -423,6 +691,14 @@ class LeadAgent:
                     search_queries=queries,
                     expected_output=task.expected_output.strip()
                     or "High quality evidence with primary-source links",
+                    sub_questions=sorted(
+                        {
+                            index
+                            for index in task.sub_questions
+                            if 1 <= index <= sub_question_count
+                        }
+                    ),
+                    scholarly=task.scholarly,
                 )
             )
 
@@ -457,12 +733,9 @@ class LeadAgent:
         return tasks
 
     @staticmethod
-    def _word_target(detail_level: str) -> int:
-        if detail_level == "concise":
-            return 1200
-        if detail_level == "standard":
-            return 2200
-        return 3600
+    def _word_limit(detail_level: str, sources: int) -> int:
+        limit = max(_MIN_REPORT_WORDS, _WORDS_PER_SOURCE * sources)
+        return min(limit, _LENGTH_CEILINGS.get(detail_level, limit))
 
     @staticmethod
     def _extract_title(markdown: str, fallback_query: str) -> str:
